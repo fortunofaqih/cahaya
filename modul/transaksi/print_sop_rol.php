@@ -1,7 +1,5 @@
 <?php
-// modul/transaksi/print_sop_gabungan.php
-// Print SURAT PERINTAH KERJA GABUNGAN (ROL & POTONG) - Format F4 Landscape (Bagi 2 Sisi)
-
+// modul/transaksi/print_sop_rol.php
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
