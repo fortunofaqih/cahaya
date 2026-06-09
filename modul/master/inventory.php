@@ -424,6 +424,20 @@ function generateInventoryId($conn, $inventory_name, $type) {
     .sticky-col-aksi { position: sticky; left: 0; background: white; z-index: 2; }
     .sticky-col-id { position: sticky; left: 45px; background: white; z-index: 2; }
     .sticky-col-name { position: sticky; left: 130px; background: white; z-index: 2; }
+    .btn-info {
+        background-color: #17a2b8;
+        border-color: #17a2b8;
+        color: white;
+    }
+    
+    .btn-info:hover {
+        background-color: #138496;
+        border-color: #117a8b;
+    }
+    
+    .custom-file-label::after {
+        content: "Cari File";
+    }
 </style>
 
 
@@ -431,7 +445,11 @@ function generateInventoryId($conn, $inventory_name, $type) {
 <div class="d-print-none">
     <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-1 pb-2 mb-3 border-bottom">
         <h5 class="fw-bold text-dark m-0"><i class="fa fa-boxes text-info"></i> Master Data Inventory</h5>
+        
         <div class="d-flex gap-2">
+            <button class="btn-vs btn-info" onclick="showModalImportCSV()">
+                <i class="fa fa-upload"></i> Import CSV
+            </button>
             <button class="btn-vs btn-excel" onclick="window.location.href='modul/master/export_inventory.php'">
                 <i class="fa fa-file-excel-o"></i> Export to Excel
             </button>
@@ -444,6 +462,86 @@ function generateInventoryId($conn, $inventory_name, $type) {
     <?= $alert_message; ?>
     <!-- sisa konten -->
 </div>
+</div>
+<!-- ===== MODAL IMPORT CSV ===== -->
+<div class="modal fade" id="modalImportCSV" tabindex="-1" role="dialog" aria-labelledby="modalImportCSVLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header bg-info text-white">
+                <h5 class="modal-title" id="modalImportCSVLabel">
+                    <i class="fa fa-upload"></i> Import Master Inventory dari CSV
+                </h5>
+                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <!-- Alert info -->
+                <div class="alert alert-info alert-dismissible fade show" role="alert">
+                    <strong><i class="fa fa-info-circle"></i> Informasi:</strong>
+                    <ul class="mb-0 mt-2">
+                        <li>File harus berformat <strong>.CSV</strong> (delimiter: koma)</li>
+                        <li>Baris pertama adalah header (akan otomatis di-skip)</li>
+                        <li>Ukuran file maksimal: <strong>5MB</strong></li>
+                        <li>Kolom <strong>inventory_id</strong> dan <strong>inventory_name</strong> wajib diisi</li>
+                        <li>Data dengan <strong>inventory_id</strong> yang sudah ada akan <strong>di-skip</strong></li>
+                    </ul>
+                    <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+ 
+                <!-- Template download -->
+                <div class="mb-3">
+                    <a href="javascript:downloadTemplate()" class="btn btn-sm btn-outline-primary">
+                        <i class="fa fa-download"></i> Download Template CSV
+                    </a>
+                </div>
+ 
+                <!-- Form upload -->
+                <form id="formImportCSV" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="csvFile" class="font-weight-bold">Pilih File CSV:</label>
+                        <div class="custom-file">
+                            <input type="file" class="custom-file-input" id="csvFile" name="csv_file" accept=".csv" required>
+                            <label class="custom-file-label" for="csvFile">Pilih file...</label>
+                        </div>
+                        <small class="form-text text-muted d-block mt-2">
+                            <i class="fa fa-lightbulb-o"></i> Pastikan file menggunakan encoding UTF-8
+                        </small>
+                    </div>
+                </form>
+ 
+                <!-- Progress bar (hidden by default) -->
+                <div id="progressContainer" style="display:none;" class="mt-3">
+                    <div class="progress" style="height: 25px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressBar" role="progressbar" style="width: 0%">
+                            Uploading...
+                        </div>
+                    </div>
+                    <small class="text-muted d-block mt-2">Mohon tunggu, proses sedang berlangsung...</small>
+                </div>
+ 
+                <!-- Result area (hidden by default) -->
+                <div id="resultContainer" style="display:none;" class="mt-3">
+                    <div id="resultMessage" class="alert"></div>
+                    <div id="errorsList" style="display:none;">
+                        <h6 class="font-weight-bold text-danger">Data yang gagal:</h6>
+                        <div id="errorsContent" class="alert alert-warning" style="max-height: 300px; overflow-y: auto;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer bg-light">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">
+                    <i class="fa fa-times"></i> Tutup
+                </button>
+                <button type="button" class="btn btn-info" id="btnSubmitImport" onclick="submitImportCSV()">
+                    <i class="fa fa-check"></i> Import Sekarang
+                </button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- FORM PENCARIAN -->
@@ -1009,4 +1107,156 @@ $(document).ready(function() {
         }
     });
 });
+</script>
+<!-- ===== JAVASCRIPT import csv===== -->
+<script>
+// Show modal import
+function showModalImportCSV() {
+    // Reset form
+    document.getElementById('formImportCSV').reset();
+    document.getElementById('csvFile').classList.remove('is-invalid');
+    document.getElementById('progressContainer').style.display = 'none';
+    document.getElementById('resultContainer').style.display = 'none';
+    document.getElementById('btnSubmitImport').disabled = false;
+    document.getElementById('btnSubmitImport').innerHTML = '<i class="fa fa-check"></i> Import Sekarang';
+    
+    // Show modal
+    $('#modalImportCSV').modal('show');
+}
+ 
+// Update file label when file is selected
+document.addEventListener('change', function(e) {
+    if (e.target.id === 'csvFile') {
+        var fileName = e.target.files[0]?.name || 'Pilih file...';
+        e.target.nextElementSibling.textContent = fileName;
+    }
+});
+ 
+// Submit import
+function submitImportCSV() {
+    const fileInput = document.getElementById('csvFile');
+    
+    // Validasi file
+    if (!fileInput.files.length) {
+        alert('Pilih file terlebih dahulu!');
+        return;
+    }
+    
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append('csv_file', file);
+    
+    // Show progress
+    document.getElementById('progressContainer').style.display = 'block';
+    document.getElementById('resultContainer').style.display = 'none';
+    document.getElementById('btnSubmitImport').disabled = true;
+    
+    // Submit dengan fetch
+    fetch('modul/master/import_inventory_csv.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => {
+        if (!response.ok) {
+            throw new Error('HTTP error, status = ' + response.status);
+        }
+        return response.json();
+    })
+    .then(data => {
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('resultContainer').style.display = 'block';
+        
+        // Result message
+        const resultMessage = document.getElementById('resultMessage');
+        resultMessage.innerHTML = '';
+        
+        if (data.success) {
+            resultMessage.className = 'alert alert-success alert-dismissible fade show';
+            resultMessage.innerHTML = `
+                <strong><i class="fa fa-check-circle"></i> Berhasil!</strong><br>
+                ${data.message}<br>
+                <small class="text-muted">
+                    ✓ Berhasil: ${data.success_count} | 
+                    ✗ Gagal: ${data.error_count}
+                </small>
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            `;
+            
+            // Show errors if any
+            if (data.error_count > 0 && data.errors.length > 0) {
+                document.getElementById('errorsList').style.display = 'block';
+                const errorContent = document.getElementById('errorsContent');
+                errorContent.innerHTML = data.errors
+                    .map(err => '<div><small>' + err + '</small></div>')
+                    .join('');
+            }
+            
+            // Reload table setelah 2 detik
+            setTimeout(() => {
+                location.reload();
+            }, 2000);
+            
+        } else {
+            resultMessage.className = 'alert alert-danger alert-dismissible fade show';
+            resultMessage.innerHTML = `
+                <strong><i class="fa fa-times-circle"></i> Gagal!</strong><br>
+                ${data.message}
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            `;
+        }
+        
+        document.getElementById('btnSubmitImport').disabled = false;
+        document.getElementById('btnSubmitImport').innerHTML = '<i class="fa fa-check"></i> Import Sekarang';
+        
+    })
+    .catch(error => {
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('resultContainer').style.display = 'block';
+        
+        const resultMessage = document.getElementById('resultMessage');
+        resultMessage.className = 'alert alert-danger alert-dismissible fade show';
+        resultMessage.innerHTML = `
+            <strong><i class="fa fa-times-circle"></i> Error!</strong><br>
+            ${error.message}
+            <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+            </button>
+        `;
+        
+        document.getElementById('btnSubmitImport').disabled = false;
+        document.getElementById('btnSubmitImport').innerHTML = '<i class="fa fa-check"></i> Import Sekarang';
+    });
+}
+ 
+// Download template CSV
+function downloadTemplate() {
+    const headers = [
+        'inventory_id', 'inventory_name', 'uom', 'type', 'category', 'remarks',
+        'cap', 'colour', 'quality', 'volume_default', 'uom_pack', 'conversion_rate',
+        'base_uom', 'pack_uom', 'tolerance', 'upper_tolerance', 'lower_tolerance',
+        'merk', 'p', 'l', 't', 'p2', 'density', 'description', 'origin', 'status',
+        'supp_code', 're_order_point', 'minimum_stock', 'maximum_stock', 'shelf_life_days',
+        'is_sub', 'is_job_order', 'dont_show_at_w48', 'stokan', 'internal_name',
+        'catalog', 'part_no', 'printing_type', 'calculation', 'nama_customer',
+        'type_rm', 'tebal', 'ukuran', 'strength', 'create_user', 'date_created',
+        'user_modified', 'date_modified', 'ket_las'
+    ];
+    
+    const csvContent = '"' + headers.join('","') + '"\n';
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'template_inventory_' + new Date().toISOString().split('T')[0] + '.csv');
+    link.style.visibility = 'hidden';
+    
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
 </script>
