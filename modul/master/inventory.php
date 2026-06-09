@@ -445,14 +445,16 @@ function generateInventoryId($conn, $inventory_name, $type) {
 <div class="d-print-none">
     <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-1 pb-2 mb-3 border-bottom">
         <h5 class="fw-bold text-dark m-0"><i class="fa fa-boxes text-info"></i> Master Data Inventory</h5>
-        
         <div class="d-flex gap-2">
-            <button class="btn-vs btn-info" onclick="showModalImportCSV()">
+            <!-- Tombol Import CSV -->
+            <button class="btn-vs btn-info" onclick="showModalImportCSV()" title="Import data dari file CSV">
                 <i class="fa fa-upload"></i> Import CSV
             </button>
+            <!-- Tombol Export Excel (existing) -->
             <button class="btn-vs btn-excel" onclick="window.location.href='modul/master/export_inventory.php'">
                 <i class="fa fa-file-excel-o"></i> Export to Excel
             </button>
+            <!-- Tombol Tambah Item (existing) -->
             <button class="btn-vs btn-add" onclick="showModalTambah()">
                 <i class="fa fa-plus-circle"></i> Tambah Item
             </button>
@@ -464,16 +466,15 @@ function generateInventoryId($conn, $inventory_name, $type) {
 </div>
 </div>
 <!-- ===== MODAL IMPORT CSV ===== -->
-<div class="modal fade" id="modalImportCSV" tabindex="-1" role="dialog" aria-labelledby="modalImportCSVLabel" aria-hidden="true">
-    <div class="modal-dialog" role="document">
+<div class="modal fade" id="modalImportCSV" tabindex="-1" aria-labelledby="modalImportCSVLabel" aria-hidden="true">
+    <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header bg-info text-white">
                 <h5 class="modal-title" id="modalImportCSVLabel">
                     <i class="fa fa-upload"></i> Import Master Inventory dari CSV
                 </h5>
-                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
+                <!-- FIXED: data-bs-dismiss untuk Bootstrap 5 -->
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <!-- Alert info -->
@@ -486,9 +487,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
                         <li>Kolom <strong>inventory_id</strong> dan <strong>inventory_name</strong> wajib diisi</li>
                         <li>Data dengan <strong>inventory_id</strong> yang sudah ada akan <strong>di-skip</strong></li>
                     </ul>
-                    <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-                        <span aria-hidden="true">&times;</span>
-                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
  
                 <!-- Template download -->
@@ -501,11 +500,8 @@ function generateInventoryId($conn, $inventory_name, $type) {
                 <!-- Form upload -->
                 <form id="formImportCSV" enctype="multipart/form-data">
                     <div class="form-group">
-                        <label for="csvFile" class="font-weight-bold">Pilih File CSV:</label>
-                        <div class="custom-file">
-                            <input type="file" class="custom-file-input" id="csvFile" name="csv_file" accept=".csv" required>
-                            <label class="custom-file-label" for="csvFile">Pilih file...</label>
-                        </div>
+                        <label for="csvFile" class="form-label fw-bold">Pilih File CSV:</label>
+                        <input type="file" class="form-control" id="csvFile" name="csv_file" accept=".csv" required>
                         <small class="form-text text-muted d-block mt-2">
                             <i class="fa fa-lightbulb-o"></i> Pastikan file menggunakan encoding UTF-8
                         </small>
@@ -526,14 +522,15 @@ function generateInventoryId($conn, $inventory_name, $type) {
                 <div id="resultContainer" style="display:none;" class="mt-3">
                     <div id="resultMessage" class="alert"></div>
                     <div id="errorsList" style="display:none;">
-                        <h6 class="font-weight-bold text-danger">Data yang gagal:</h6>
+                        <h6 class="fw-bold text-danger">Data yang gagal:</h6>
                         <div id="errorsContent" class="alert alert-warning" style="max-height: 300px; overflow-y: auto;">
                         </div>
                     </div>
                 </div>
             </div>
             <div class="modal-footer bg-light">
-                <button type="button" class="btn btn-secondary" data-dismiss="modal">
+                <!-- FIXED: data-bs-dismiss untuk Bootstrap 5 -->
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
                     <i class="fa fa-times"></i> Tutup
                 </button>
                 <button type="button" class="btn btn-info" id="btnSubmitImport" onclick="submitImportCSV()">
@@ -1110,7 +1107,7 @@ $(document).ready(function() {
 </script>
 <!-- ===== JAVASCRIPT import csv===== -->
 <script>
-// Show modal import
+// Show modal import dengan Bootstrap 5 (vanilla JavaScript)
 function showModalImportCSV() {
     // Reset form
     document.getElementById('formImportCSV').reset();
@@ -1120,19 +1117,32 @@ function showModalImportCSV() {
     document.getElementById('btnSubmitImport').disabled = false;
     document.getElementById('btnSubmitImport').innerHTML = '<i class="fa fa-check"></i> Import Sekarang';
     
-    // Show modal
-    $('#modalImportCSV').modal('show');
+    // Show modal dengan Bootstrap 5
+    const modalElement = document.getElementById('modalImportCSV');
+    const modal = new bootstrap.Modal(modalElement);
+    modal.show();
+}
+ 
+// Close modal (untuk digunakan di script lain jika diperlukan)
+function closeModalImportCSV() {
+    const modalElement = document.getElementById('modalImportCSV');
+    const modal = bootstrap.Modal.getInstance(modalElement);
+    if (modal) {
+        modal.hide();
+    }
 }
  
 // Update file label when file is selected
 document.addEventListener('change', function(e) {
     if (e.target.id === 'csvFile') {
-        var fileName = e.target.files[0]?.name || 'Pilih file...';
-        e.target.nextElementSibling.textContent = fileName;
+        const fileName = e.target.files[0]?.name || 'Pilih file...';
+        // Bootstrap 5 tidak pakai custom-file-label
+        // Update display text atau biarkan browser default
+        console.log('File selected: ' + fileName);
     }
 });
  
-// Submit import
+// Submit import dengan fetch
 function submitImportCSV() {
     const fileInput = document.getElementById('csvFile');
     
@@ -1179,9 +1189,7 @@ function submitImportCSV() {
                     ✓ Berhasil: ${data.success_count} | 
                     ✗ Gagal: ${data.error_count}
                 </small>
-                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             `;
             
             // Show errors if any
@@ -1203,9 +1211,7 @@ function submitImportCSV() {
             resultMessage.innerHTML = `
                 <strong><i class="fa fa-times-circle"></i> Gagal!</strong><br>
                 ${data.message}
-                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             `;
         }
         
@@ -1222,9 +1228,7 @@ function submitImportCSV() {
         resultMessage.innerHTML = `
             <strong><i class="fa fa-times-circle"></i> Error!</strong><br>
             ${error.message}
-            <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-                <span aria-hidden="true">&times;</span>
-            </button>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
         `;
         
         document.getElementById('btnSubmitImport').disabled = false;
