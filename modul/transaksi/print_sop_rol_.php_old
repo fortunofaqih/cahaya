@@ -1,0 +1,287 @@
+<?php
+// modul/transaksi/print_sop_rol.php
+// Print SURAT PERINTAH KERJA ROL - Format A5 Portrait
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+// PERBAIKAN: Path yang benar ke koneksi.php (2 level ke atas)
+if (!isset($conn)) {
+    include_once __DIR__ . '/../../koneksi.php';
+}
+
+// Cek apakah koneksi berhasil
+if (!isset($conn) || !$conn) {
+    die("Koneksi database gagal. Silakan periksa file koneksi.php");
+}
+
+$sop_id = isset($_GET['sop_id']) ? mysqli_real_escape_string($conn, $_GET['sop_id']) : '';
+if (empty($sop_id)) {
+    die("SOP ID tidak ditemukan");
+}
+
+// Ambil data header SOP
+$head_query = mysqli_query($conn, "SELECT * FROM head_sop WHERE sop_id = '$sop_id' LIMIT 1");
+if (!$head_query) {
+    die("Query error: " . mysqli_error($conn));
+}
+$head = mysqli_fetch_assoc($head_query);
+
+if (!$head) {
+    die("Data SOP tidak ditemukan untuk ID: " . $sop_id);
+}
+
+// Ambil data detail SOP (spesifikasi Roll)
+$detail_query = mysqli_query($conn, "SELECT * FROM det_sop WHERE sop_id = '$sop_id' LIMIT 1");
+$detail = mysqli_fetch_assoc($detail_query);
+
+// Format tanggal
+$tgl_order = date('d-M-Y', strtotime($head['sop_date']));
+$tgl_kirim = !empty($detail['shipment_due_date']) ? date('d-M-Y', strtotime($detail['shipment_due_date'])) : '-';
+
+// Set header untuk print
+header("Content-Type: text/html; charset=UTF-8");
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>SURAT PERINTAH KERJA ROL - <?= $sop_id ?></title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        @page {
+            size: A5 portrait; /* DIUBAH kembali ke Portrait sesuai instruksi */
+            margin: 5mm 7mm;
+        }
+        
+        body {
+            font-family: 'Courier New', 'Segoe UI', monospace;
+            font-size: 8.5pt; /* Sedikit dikecilkan agar hemat space vertikal */
+            background: white;
+            color: #000;
+            line-height: 1.2;
+        }
+        
+        .print-container {
+            max-width: 100%;
+            margin: 0 auto;
+        }
+        
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 5px;
+            border-bottom: 1.5px solid #000;
+            padding-bottom: 3px;
+        }
+        
+        .header h1 {
+            font-size: 13pt;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+        
+        .header .subtitle {
+            font-size: 8pt;
+        }
+        
+        /* Info Box / Spesifikasi */
+        .info-box {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 2px;
+            font-size: 8.5pt;
+        }
+        
+        .info-box td {
+            padding: 1px 3px;
+            vertical-align: top;
+            border: none;
+        }
+        
+        .info-box td.label {
+            width: 28%;
+            font-weight: normal;
+        }
+        
+        .info-box td.titik {
+            width: 2%;
+        }
+        
+        .info-box td.val {
+            width: 70%;
+            font-weight: bold;
+        }
+        
+        /* Separator */
+        .separator {
+            border-top: 1px dashed #000;
+            margin: 4px 0;
+        }
+        
+        /* ====================================================
+           REVISI UTAMA: STYLE TABEL HASIL PRODUKSI ROL (PORTRAIT)
+           ==================================================== */
+        .produksi-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 5px;
+            font-size: 9pt;
+        }
+        
+        .produksi-table th, 
+        .produksi-table td {
+            border: 1px solid #000;
+            padding: 0; 
+            text-align: center;
+            vertical-align: middle;
+        }
+        
+        .produksi-table th {
+            font-weight: normal;
+            font-size: 8.5pt;
+            height: 18px;
+        }
+        
+        /* Tinggi baris isi agar pas di A5 Portrait tanpa overflow ke lembar 2 */
+        .produksi-table tbody td {
+            height: 24px; 
+        }
+        
+        /* Proporsi kolom format Portrait */
+        .col-tgl { width: 8%; }
+        .col-rol { width: 14%; }   /* Kolom untuk angka 1, 2, 3 */
+        .col-tot-sis { width: 10%; } /* Kolom pecahan untuk Total dan Sisa */
+        .col-prf { width: 8%; }
+        
+        /* TTD Area */
+        .ttd-section {
+            margin-top: 10px;
+            width: 100%;
+            font-size: 9pt;
+        }
+        
+        /* Print button */
+        .print-btn {
+            display: block;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        
+        .btn-print {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 6px 15px;
+            cursor: pointer;
+            font-size: 11pt;
+            border-radius: 5px;
+        }
+        
+        @media print {
+            .print-btn {
+                display: none;
+            }
+            body {
+                padding: 0;
+                margin: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="print-btn">
+        <button class="btn-print" onclick="window.print();">🖨️ Cetak / Print</button>
+    </div>
+    
+    <div class="print-container">
+        <!-- HEADER -->
+        <div class="header">
+            <h1>SURAT PERINTAH KERJA ROL (CP)</h1>
+            <div class="subtitle">SPK / PROD / <?= date('Y') ?></div>
+        </div>
+        
+        <!-- INFORMASI DI ATAS TABEL (DIBAGI 2 KOLOM KIRI & KANAN AGAR HEMAT SPACE VERTIKAL) -->
+        <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+                <!-- KOLOM KIRI -->
+                <td style="width: 50%; vertical-align: top; padding-right: 5px;">
+                    <table class="info-box">
+                        <tr><td class="label">Tgl Order</td><td class="titik">:</td><td class="val"><?= $tgl_order ?></td></tr>
+                        <tr><td class="label">Nama Customer</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($head['customer'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Berat Jenis</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['berat_jenis_rol'] ?: $detail['spec_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Ukuran</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['ukuran_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Berat/Rol</td><td class="titik">:</td><td class="val"><?= number_format($detail['berat_rol'] ?: 0, 2) ?> KG/ROLL</td></tr>
+                        <tr><td class="label">Isi/Bal</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['isi_bal_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Jumlah Order</td><td class="titik">:</td><td class="val"><?= number_format($detail['jml_order_rol'] ?: 0, 0) ?> ROLL</td></tr>
+                        <tr><td class="label">Treat/Tidak</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['treat_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Nat/Warna/Bobin</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['nat_warna_rol'] ?: $detail['nat_warna_potong'] ?: '-') ?> / <?= htmlspecialchars($detail['bobin_krepyak_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Kirim/Las</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['kirim_las_rol'] ?: '-') ?></td></tr>
+                    </table>
+                </td>
+                
+                <!-- KOLOM KANAN -->
+                <td style="width: 50%; vertical-align: top; padding-left: 5px;">
+                    <table class="info-box">
+                        <tr><td class="label">Std Pengecekan</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['standar_cek_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Gramatur Asli</td><td class="titik">:</td><td class="val"><?= number_format($detail['gramatur_asli_rol'] ?: 0, 2) ?></td></tr>
+                        <tr><td class="label">Tebal Asli</td><td class="titik">:</td><td class="val"><?= number_format($detail['tebal_asli_rol'] ?: 0, 2) ?></td></tr>
+                        <tr><td class="label">Spesifikasi</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['spec_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Gramatur</td><td class="titik">:</td><td class="val"><?= number_format($detail['gramatur_rol'] ?: 0, 2) ?> -- <?= number_format($detail['gramatur_plus_rol'] ?: 0, 2) ?></td></tr>
+                        <tr><td class="label">Tebal</td><td class="titik">:</td><td class="val"><?= number_format($detail['tebal_rol'] ?: 0, 2) ?> -- <?= number_format($detail['tebal_plus_rol'] ?: 0, 2) ?></td></tr>
+                        <tr><td class="label">Keterangan</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['keterangan_rol'] ?: $detail['keterangan_potong'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Kode</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['code_rol'] ?: $detail['code_potong'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Tgl Kirim</td><td class="titik">:</td><td class="val"><?= $tgl_kirim ?></td></tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+        
+        <!-- TABEL HASIL PRODUKSI ROL (PERSIS FORMAT SEPERTI GAMBAR rol.jpg) -->
+      <table class="produksi-table">
+        <thead>
+            <tr>
+                <th rowspan="3" class="col-tgl">Tgl</th>
+                <th colspan="6">Hasil Produksi Rol</th>
+                <th rowspan="6">Total</th>
+                <th rowspan="3" class="col-sisa">Sisa</th>
+                <th rowspan="3" class="col-prf">Prf</th>
+            </tr>
+            <tr>
+                <th colspan="2">1</th>
+                <th colspan="2">2</th>
+                <th colspan="2">3</th>
+            </tr>
+            
+           
+        </thead>
+        <tbody>
+           
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+            <tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+        </tbody>
+    </table>
+        
+        <!-- SECTION TANDA TANGAN (SESUAI GAMBAR rol.jpg) -->
+        <table class="ttd-section">
+            <tr>
+                <td style="width: 100%; padding-top: 10px;">
+                    Dibuat Oleh,<br><br><br><br>
+                    ( &nbsp; &nbsp; admin &nbsp; &nbsp; )
+                </td>
+            </tr>
+        </table>
+        
+    </div>
+</body>
+</html>

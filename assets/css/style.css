@@ -1,0 +1,42 @@
+/* Tampilan tabel rapat ala Crystal Report */
+.table-crystal {
+  font-size: 11px; /* Font kecil */
+  font-family: "Arial", sans-serif;
+  white-space: nowrap; /* Mencegah text turun ke bawah kecuali diset manual */
+}
+
+.table-crystal th,
+.table-crystal td {
+  padding: 0.15rem 0.3rem !important; /* Jarak sangat rapat */
+  vertical-align: middle;
+  border: 1px solid #dee2e6;
+}
+
+.table-crystal thead th {
+  background-color: #f8f9fa;
+  font-weight: bold;
+  text-align: center;
+}
+
+/* Tombol aksi (Edit/Delete) berukuran mini */
+.btn-micro {
+  padding: 0.1rem 0.3rem;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.table-no-spacing {
+  border-collapse: collapse !important;
+  border-spacing: 0 !important;
+}
+
+.table-no-spacing th,
+.table-no-spacing td {
+  border: none !important;
+  padding: 8px !important;
+}
+
+/* Khusus untuk kolom sticky agar tidak ada jarak */
+.table-no-spacing th.sticky-col,
+.table-no-spacing td.sticky-col {
+  border-right: 1px solid #dee2e6 !important;
+}
