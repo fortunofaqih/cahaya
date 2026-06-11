@@ -43,13 +43,12 @@ header("Cache-Control: no-cache, must-revalidate");
 <table border="1">
     <thead>
         <tr>
-            <th>Order No</th><th>Order Date</th><th>SOP</th><th>SOP Date</th><th>PO</th>
-            <th>Marketing</th><th>Sales</th><th>Customer ID</th><th>Customer Name</th>
-            <th>Customer Address</th><th>Customer City</th><th>Station</th>
-            <th>Shipment Due Date</th><th>Shipment Location</th><th>Tolerance</th>
-            <th>Payment Type</th><th>Payment Term</th><th>Currency</th>
-            <th>Grand Total</th><th>Down Payment</th><th>Status</th>
-            <th>Approval</th><th>Remarks</th><th>User Created</th><th>Date Created</th>
+            <th>Order No</th><th>Order Date</th><th>PO</th>
+            <th>Marketing</th><th>Sales</th><th>Customer Name</th>
+            <th>Customer Address</th><th>Customer City</th>
+            <th>Payment Type</th><th>Days</th>
+            <th>Grand Total</th><th>Down Payment</th>
+            <th>Remarks</th><th>User Created</th><th>Date Created</th>
         </tr>
     </thead>
     <tbody>
@@ -58,35 +57,30 @@ header("Cache-Control: no-cache, must-revalidate");
             FROM head_sales_order h
             LEFT JOIN m_marketing m ON h.marketing_id = m.marketing_id
             LEFT JOIN m_sales s ON h.sales_id = s.sales_id
-            $where ORDER BY h.order_date DESC");
+            $where 
+            ORDER BY h.order_date DESC");
+
+        if (!$query) {
+            die("Query Error: " . mysqli_error($conn));
+        }
         
         while ($row = mysqli_fetch_assoc($query)) {
             echo "<tr>";
-            echo "<td>" . $row['order_no'] . "</td>";
-            echo "<td>" . $row['order_date'] . "</td>";
-            echo "<td>" . $row['sop'] . "</td>";
-            echo "<td>" . $row['sop_date'] . "</td>";
-            echo "<td>" . $row['po'] . "</td>";
-            echo "<td>" . ($row['marketing_name'] ?? '') . "</td>";
-            echo "<td>" . ($row['sales_name'] ?? '') . "</td>";
-            echo "<td>" . $row['customer_id'] . "</td>";
-            echo "<td>" . $row['customer_name'] . "</td>";
-            echo "<td>" . $row['customer_address'] . "</td>";
-            echo "<td>" . $row['customer_city'] . "</td>";
-            echo "<td>" . $row['station'] . "</td>";
-            echo "<td>" . $row['shipment_due_date'] . "</td>";
-            echo "<td>" . $row['shipment_location'] . "</td>";
-            echo "<td>" . $row['tolerance'] . "%" . "</td>";
-            echo "<td>" . $row['payment_type'] . "</td>";
-            echo "<td>" . $row['payment_term'] . "</td>";
-            echo "<td>" . $row['currency'] . "</td>";
-            echo "<td>" . number_format($row['grand_total'], 2) . "</td>";
-            echo "<td>" . number_format($row['down_payment'], 2) . "</td>";
-            echo "<td>" . $row['status'] . "</td>";
-            echo "<td>" . $row['approval_status'] . "</td>";
-            echo "<td>" . $row['remarks'] . "</td>";
-            echo "<td>" . $row['create_user'] . "</td>";
-            echo "<td>" . $row['date_created'] . "</td>";
+            echo "<td>" . htmlspecialchars($row['order_no'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['order_date'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['po'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['marketing_name'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['sales_name'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['customer_name'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['customer_address'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['customer_city'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['payment_type'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['days'] ?? '') . "</td>";
+            echo "<td>" . number_format($row['grand_total'] ?? 0, 2) . "</td>";
+            echo "<td>" . number_format($row['down_payment'] ?? 0, 2) . "</td>";
+            echo "<td>" . htmlspecialchars($row['remarks'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['create_user'] ?? '') . "</td>";
+            echo "<td>" . htmlspecialchars($row['date_created'] ?? '') . "</td>";
             echo "</tr>";
         }
         ?>

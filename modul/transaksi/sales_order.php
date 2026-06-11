@@ -127,6 +127,13 @@ $query = mysqli_query($conn, "
     }
     .btn-cetak-so { background: #17a2b8 !important; color: white !important; border: none; }
     .btn-cetak-so:hover { background: #138496 !important; transform: translateY(-1px); }
+     /* Custom Button VB Style */
+        .btn-vb { background: linear-gradient(to bottom, #ffffff, #e6e6e6); border: 1px solid #adadad; color: #333; }
+        .btn-vb:hover { background: linear-gradient(to bottom, #e6e6e6, #cccccc); border-color: #adadad; color: #000; }
+        .btn-vb-primary { background: linear-gradient(to bottom, #2b579a, #1e3d6b); border: 1px solid #183054; color: #fff; }
+        .btn-vb-primary:hover { background: linear-gradient(to bottom, #23477d, #142948); border-color: #122542; color: #fff; }
+        .btn-vb-success { background: linear-gradient(to bottom, #257b43, #19532d); border: 1px solid #123c20; color: #fff; }
+        .btn-vb-success:hover { background: linear-gradient(to bottom, #1d6135, #113a1f); color: #fff; }
 </style>
 
 <div class="d-print-none">
@@ -168,18 +175,28 @@ $query = mysqli_query($conn, "
                 <input type="text" name="so_id" class="form-control form-control-sm" placeholder="Search SO..." value="<?= $so_id ?>">
             </div>
             <div class="col-md-1">
-                <div class="form-check">
+                <!--<div class="form-check">
                     <input class="form-check-input" type="checkbox" name="export_checked" id="export_checked" <?= $export_checked == 'on' ? 'checked' : '' ?>>
                     <label class="form-check-label small">Export</label>
                 </div>
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" name="show_checked" id="show_checked" <?= $show_checked == 'on' ? 'checked' : '' ?>>
                     <label class="form-check-label small">Show Checked</label>
-                </div>
+                </div>-->
             </div>
-            <div class="col-md-2">
-                <button type="submit" class="btn btn-sm btn-primary w-100"><i class="fa fa-search"></i> Search</button>
-            </div>
+          <div class="col-md-2">
+            <button type="submit" class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100 mb-2">
+                <i class="fa fa-search"></i> Search
+            </button>
+
+            <button 
+                type="button"
+                class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100"
+                onclick="window.location.href='index.php?page=add_sales_order'"
+            >
+                <i class="fa fa-plus-circle"></i> Create New SO
+            </button>
+        </div>
         </form>
     </div>
     
@@ -189,13 +206,9 @@ $query = mysqli_query($conn, "
             <button class="btn-vs btn-excel" onclick="window.location.href='modul/transaksi/export_sales_order.php?start_date=<?= $start_date ?>&end_date=<?= $end_date ?>&status=<?= $status ?>&approval_status=<?= $approval_status ?>&so_id=<?= $so_id ?>'">
                 <i class="fa fa-file-excel-o"></i> Export to Excel
             </button>
-            <button class="btn-vs btn-print" onclick="window.print()">
-                <i class="fa fa-print"></i> Print
-            </button>
+         
         </div>
-        <button class="btn-vs btn-add" onclick="window.location.href='index.php?page=add_sales_order'">
-            <i class="fa fa-plus-circle"></i> Add New SO
-        </button>
+        
     </div>
 </div>
 

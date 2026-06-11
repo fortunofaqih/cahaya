@@ -11,6 +11,24 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+function parseRupiah($value) {
+    if ($value === null || $value === '') {
+        return 0;
+    }
+
+    $value = trim((string)$value);
+
+    // Hilangkan titik ribuan
+    $value = str_replace('.', '', $value);
+
+    // Kalau ada koma desimal, ubah ke titik
+    $value = str_replace(',', '.', $value);
+
+    // Sisakan angka, minus, dan titik
+    $value = preg_replace('/[^0-9.\-]/', '', $value);
+
+    return floatval($value);
+}
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header('Location: index.php?page=sales_order');
@@ -44,7 +62,7 @@ $days               = intval($_POST['days'] ?? 30);
 $currency           = mysqli_real_escape_string($conn, $_POST['currency'] ?? 'IDR');
 $allow_auto_correct = isset($_POST['allow_auto_correct']) ? 'Checked' : 'Unchecked';
 $remarks            = mysqli_real_escape_string($conn, trim($_POST['remarks'] ?? ''));
-$down_payment_input = floatval($_POST['down_payment'] ?? 0);
+$down_payment_input = parseRupiah($_POST['down_payment'] ?? 0);
 
 // ── Validasi ───────────────────────────────────────────────
 if (empty($order_no) || empty($customer_id)) {
@@ -101,9 +119,10 @@ if (mysqli_num_rows($cek_po) > 0) {
 // ════════════════════════════════════════════════════════════
 // HITUNG ULANG SEMUA PERHITUNGAN DI SERVER (VALIDASI)
 // ════════════════════════════════════════════════════════════
-$inventory_ids   = $_POST['inventory_id'] ?? [];
-$quantities      = $_POST['quantity'] ?? [];
-$price_units     = $_POST['price_unit'] ?? [];
+$inventory_ids = $_POST['inventory_id'] ?? [];
+$quantities    = $_POST['quantity'] ?? [];
+$price_units   = $_POST['price_unit'] ?? [];
+$prices        = $_POST['price'] ?? [];
 
 $calculated_grand_total = 0;
 $details_for_db = [];
@@ -111,28 +130,28 @@ $details_for_db = [];
 for ($i = 0; $i < count($inventory_ids); $i++) {
     $inv_id = trim($inventory_ids[$i] ?? '');
     if (empty($inv_id)) continue;
-    
-    $qty = floatval($quantities[$i] ?? 0);
-    $price_unit = floatval($price_units[$i] ?? 0);
-    
-    // Hitung ulang price dan subtotal
-    $price = $qty * $price_unit;
+
+    $qty        = floatval($quantities[$i] ?? 0);
+    $price_unit = parseRupiah($price_units[$i] ?? 0);
+    $price      = parseRupiah($prices[$i] ?? 0);
+
+    // Subtotal mengikuti kolom price
     $subtotal = $price;
-    
+
     $calculated_grand_total += $subtotal;
-    
+
     $details_for_db[] = [
-        'inventory_id' => $inv_id,
+        'inventory_id'   => $inv_id,
         'inventory_name' => $_POST['inventory_name'][$i] ?? '',
-        'quantity' => $qty,
-        'uom' => $_POST['uom'][$i] ?? '',
-        'quantity_pack' => floatval($_POST['quantity_pack'][$i] ?? 0),
-        'uom_pack' => $_POST['uom_pack'][$i] ?? '',
-        'uom_detail' => $_POST['uom_detail'][$i] ?? '',
-        'price_unit' => $price_unit,
-        'price' => $price,
-        'subtotal' => $subtotal,
-        'remarks' => $_POST['remarks_detail'][$i] ?? ''
+        'quantity'       => $qty,
+        'uom'            => $_POST['uom'][$i] ?? '',
+        'quantity_pack'  => floatval($_POST['quantity_pack'][$i] ?? 0),
+        'uom_pack'       => $_POST['uom_pack'][$i] ?? '',
+        'uom_detail'     => $_POST['uom_detail'][$i] ?? '',
+        'price_unit'     => $price_unit,
+        'price'          => $price,
+        'subtotal'       => $subtotal,
+        'remarks'        => $_POST['remarks_detail'][$i] ?? ''
     ];
 }
 

@@ -361,14 +361,14 @@ $po_number    = generatePONumber($conn, $tahun);
                         <input type="number" step="0.01" name="tolerance" value="10.00">
                     </div>
                     <div class="ff" style="padding-top: 6px;">
-                        <label style="color:#212529; text-transform:none; cursor:pointer;">
+                        <!--<label style="color:#212529; text-transform:none; cursor:pointer;">
                             <input type="checkbox" name="backward_calculation" value="Checked" style="width:auto; display:inline-block; margin-right:5px;"> 
                             Backward Calculation
-                        </label>
+                        </label>-->
                     </div>
                     <div class="ff">
                         <label>Remarks / Keterangan</label>
-                        <textarea name="remarks" rows="2" placeholder="Catatan tambahan internal..."></textarea>
+                        <textarea name="remarks" rows="2" placeholder="Tulis STOKAN atau lainnya"></textarea>
                     </div>
                 </div>
             </div>
@@ -399,7 +399,7 @@ $po_number    = generatePONumber($conn, $tahun);
                             <th style="width:80px;">UoM Pack</th>
                             <th style="width:90px;">UoM Detail</th>
                             <th style="width:110px;">Price Unit</th>
-                            <th style="width:110px;">Price Total</th>
+                            <th style="width:110px;">Price</th>
                             <th style="width:120px;">SubTotal</th>
                             <th>Keterangan / Notes Detail</th>
                             <th style="width:45px;">Aksi</th>
@@ -419,7 +419,14 @@ $po_number    = generatePONumber($conn, $tahun);
             <div class="so-footer-row">
                 <div style="display:flex; align-items:center; gap:10px;">
                     <span style="font-size:11px; font-weight:bold; color:var(--text-label)">DOWN PAYMENT (DP) :</span>
-                    <input type="number" step="0.01" name="down_payment" id="down_payment" value="0.00" style="width:160px; padding:5px; border:1px solid #ccc; border-radius:3px; font-weight:bold; text-align:right;">
+                  <input 
+                    type="text" 
+                    name="down_payment" 
+                    id="down_payment" 
+                    value="0" 
+                    inputmode="numeric"
+                    style="width:160px; padding:5px; border:1px solid #ccc; border-radius:3px; font-weight:bold; text-align:right;"
+                >
                     <input type="hidden" name="grand_total" id="grand_total_hidden">
                 </div>
                 <div style="display:flex; gap:30px; font-size:12px; font-weight:bold;">
@@ -455,6 +462,24 @@ function escHtml(s) {
 
 function formatNumber(num) {
     return parseFloat(num || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function parseRupiah(value) {
+    if (!value) return 0;
+
+    value = String(value)
+        .replace(/\./g, '')
+        .replace(/,/g, '.')
+        .replace(/[^\d.]/g, '');
+
+    return parseFloat(value) || 0;
+}
+
+function formatRupiahInput(value) {
+    value = parseRupiah(value);
+
+    return value.toLocaleString('id-ID', {
+        maximumFractionDigits: 0
+    });
 }
 
 function updateRowNumbers() {
@@ -495,9 +520,37 @@ function buildRow(data) {
         <td><input type="number" step="0.01" name="quantity_pack[]" class="qty-pack" value="${data.quantity_pack || 0}" style="text-align:center; border:1px solid #ddd; border-radius:2px;"></td>
         <td><input type="text" name="uom_pack[]" class="inv-uom-pack" value="${escHtml(data.uom_pack || '')}" readonly style="text-align:center; background:#f1f3f5;"></td>
         <td><input type="text" name="uom_detail[]" class="inv-uom-detail" value="${escHtml(data.uom_detail || '')}" style="border:1px solid #ddd; border-radius:2px; text-align:center;"></td>
-        <td><input type="number" step="0.01" name="price_unit[]" class="price-unit" value="${data.price_unit || 0}" style="text-align:right; border:1px solid #ddd; border-radius:2px;"></td>
-        <td><input type="number" step="0.01" name="price[]" class="price" value="${data.price || 0}" readonly style="text-align:right; background:#f1f3f5;"></td>
-        <td><input type="number" step="0.01" name="subtotal[]" class="subtotal" value="${data.subtotal || 0}" readonly style="text-align:right; font-weight:bold; background:#f1f3f5;"></td>
+       <td>
+            <input 
+                type="text" 
+                name="price_unit[]" 
+                class="price-unit rupiah-input" 
+                value="${formatRupiahInput(data.price_unit || 0)}" 
+                inputmode="numeric"
+                style="text-align:right; border:1px solid #ddd; border-radius:2px;"
+            >
+        </td>
+
+        <td>
+            <input 
+                type="text" 
+                name="price[]" 
+                class="price rupiah-input" 
+                value="${formatRupiahInput(data.price || 0)}" 
+                inputmode="numeric"
+                style="text-align:right; border:1px solid #ddd; border-radius:2px;"
+            >
+        </td>
+        <td>
+    <input 
+        type="text" 
+        name="subtotal[]" 
+        class="subtotal rupiah-input" 
+        value="${formatRupiahInput(data.subtotal || 0)}" 
+        readonly 
+        style="text-align:right; font-weight:bold; background:#f1f3f5;"
+    >
+</td>
         <td><input type="text" name="remarks_detail[]" class="inv-remarks" value="${escHtml(data.remarks || '')}" placeholder="Notes..." style="border:1px solid #ddd; border-radius:2px; padding:2px 4px;"></td>
         <td style="text-align:center;"><button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button></td>
     </tr>`;
@@ -506,39 +559,34 @@ function buildRow(data) {
 // =====================================================
 // FUNGSI PERHITUNGAN OTOMATIS
 // =====================================================
-
 function calculateRow(row) {
     var $row = $(row);
-    var qty = parseFloat($row.find('.qty').val()) || 0;
-    var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
-    var priceUnit = parseFloat($row.find('.price-unit').val()) || 0;
-    
-    // Gunakan qty pack untuk perhitungan price
-    var qtyUntukHitungan = qtyPack > 0 ? qtyPack : qty;
-    
-    // Hitung price = (qty pack atau qty) * price_unit
-    var price = qtyUntukHitungan * priceUnit;
-    var subtotal = price;
-    
-    // Update field (readonly)
-    $row.find('.price').val(price.toFixed(2));
-    $row.find('.subtotal').val(subtotal.toFixed(2));
-    
-    // Update grand total
+
+    var qtyPack   = parseFloat($row.find('.qty-pack').val()) || 0;
+    var priceUnit = parseRupiah($row.find('.price-unit').val());
+    var price     = parseRupiah($row.find('.price').val());
+
+    // Pilih salah satu: prioritas price_unit, kalau 0 pakai price
+    var hargaDipakai = priceUnit > 0 ? priceUnit : price;
+
+    var subtotal = qtyPack * hargaDipakai;
+
+    $row.find('.subtotal').val(formatRupiahInput(subtotal));
+
     calculateGrandTotal();
 }
 
 function calculateGrandTotal() {
     var total = 0;
+
     $('.subtotal').each(function() {
-        var val = parseFloat($(this).val()) || 0;
+        var val = parseRupiah($(this).val()) || 0;
         total += val;
     });
-    
-    var dp = parseFloat($('#down_payment').val()) || 0;
+
+    var dp = parseRupiah($('#down_payment').val()) || 0;
     var balance = total - dp;
-    
-    // Update display
+
     $('#subtotal_display').val(formatNumber(total));
     $('#grand_total_hidden').val(total.toFixed(2));
     $('#st_summary').text(formatNumber(total));
@@ -562,7 +610,15 @@ $(document).on('input', '.qty-pack', function() {
     }
 });
 
-$(document).on('input', '.price-unit', function() {
+$(document).on('input', '.price-unit, .price', function() {
+    var cursorPosition = this.selectionStart;
+    var beforeLength = this.value.length;
+
+    this.value = formatRupiahInput(this.value);
+
+    var afterLength = this.value.length;
+    this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
+
     var $row = $(this).closest('.detail-row');
     if ($row.length) {
         calculateRow($row[0]);
@@ -570,9 +626,16 @@ $(document).on('input', '.price-unit', function() {
 });
 
 $(document).on('input', '#down_payment', function() {
+    var cursorPosition = this.selectionStart;
+    var beforeLength = this.value.length;
+
+    this.value = formatRupiahInput(this.value);
+
+    var afterLength = this.value.length;
+    this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
+
     calculateGrandTotal();
 });
-
 // =====================================================
 // CRUD ROWS
 // =====================================================
@@ -683,6 +746,10 @@ $(document).ready(function() {
             return false;
         }
         
+     $('.price-unit, .price, .subtotal, #down_payment').each(function() {
+    $(this).val(parseRupiah($(this).val()).toFixed(2));
+});
+
         $('#btnSave').prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving...');
         return true;
     });
