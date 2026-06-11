@@ -38,6 +38,15 @@ switch ($page) {
     case 'supplier':
         include 'modul/master/supplier.php';
         break;
+    case 'import_customer':
+        include 'modul/master/import_customer.php';
+        break;
+     case 'export_customer':
+        include 'modul/master/export_customer.php';
+        break;
+    case 'area':
+        include 'modul/master/area.php';
+        break;
     case 'marketing':
         include 'modul/master/marketing.php';
         break;
@@ -55,6 +64,12 @@ switch ($page) {
         break;
     case 'mesin':
         include 'modul/master/mesin.php';
+        break;
+     case 'export_mesin':
+        include 'modul/master/export_mesin.php';
+        break;
+    case 'import_mesin':
+        include 'modul/master/import_mesin.php';
         break;
     case 'uom':
         include 'modul/master/uom.php';

@@ -92,6 +92,7 @@ $user_role = $_SESSION['id_role']; // 1 = IT Admin, 2 = Marketing, 3 = Finance
                         <div class="menu-header">Master Data</div>
                         <li class="nav-item"><a class="nav-link" href="index.php?page=customer"><i class="fa fa-users me-2"></i> Customer</a></li>
                         <!-- <li class="nav-item"><a class="nav-link" href="index.php?page=supplier"><i class="fa fa-truck me-2"></i> Supplier</a></li> -->
+                         <li class="nav-item"><a class="nav-link" href="index.php?page=area"><i class="fa fa-map-marker-alt me-2"></i> Area</a></li>
                          <li class="nav-item"><a class="nav-link" href="index.php?page=marketing"><i class="fa fa-chart-line me-2"></i> Marketing</a></li>
                         <li class="nav-item"><a class="nav-link" href="index.php?page=sales"><i class="fa fa-user-tie me-2"></i> Sales</a></li>
                         <li class="nav-item"><a class="nav-link" href="index.php?page=inventory"><i class="fa fa-boxes me-2"></i> Inventory</a></li>

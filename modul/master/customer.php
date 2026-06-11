@@ -17,57 +17,47 @@ if (isset($_SESSION['alert'])) {
     unset($_SESSION['alert']);
 }
 
+
 // ----------------------------------------------------
-// PROSES EXPORT EXCEL
+// FUNGSI GET CUSTOMER OPTIONS (UNTUK PARENT)
 // ----------------------------------------------------
-if (isset($_GET['action']) && $_GET['action'] == 'export_excel') {
-    if (ob_get_level()) ob_end_clean();
-    header("Content-Type: application/vnd.ms-excel");
-    header("Content-Disposition: attachment; filename=Master_Customer_Lengkap_" . date('Ymd_His') . ".xls");
-    header("Cache-Control: no-cache, must-revalidate");
-    ?>
-    <table border="1">
-        <thead>
-            <tr style="background-color: #f2f2f2; font-weight: bold;">
-                <th>Customer ID</th><th>Customer</th><th>City</th><th>Address</th>
-                <th>Contact Person</th><th>Contact Person Phone</th><th>ID Number</th>
-                <th>Phone</th><th>Credit Limit</th><th>Email</th><th>Type</th>
-                <th>Parent ID</th><th>Parent Customer</th><th>Bagian</th>
-                <th>Is Active</th><th>User Created</th><th>Date Created</th>
-                <th>User Modified</th><th>Date Modified</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php
-            $q_excel = mysqli_query($conn, "SELECT * FROM m_customer ORDER BY customer_id ASC");
-            while ($d = mysqli_fetch_assoc($q_excel)) {
-                echo "<tr>";
-                echo "<td>" . htmlspecialchars($d['customer_id']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['customer']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['city']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['address']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['contact_person']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['contact_person_phone']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['id_number']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['phone']) . "</td>";
-                echo "<td>" . number_format($d['credit_limit'], 2) . "</td>";
-                echo "<td>" . htmlspecialchars($d['email']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['type']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['parent_id']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['parent_customer']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['bagian']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['is_active']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['user_created']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['date_created']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['user_modified']) . "</td>";
-                echo "<td>" . htmlspecialchars($d['date_modified']) . "</td>";
-                echo "</tr>";
-            }
-            ?>
-        </tbody>
-    </table>
-    <?php
-    exit;
+function getCustomerOptions($conn, $selected_id = '') {
+    $query = mysqli_query($conn, "SELECT customer_id, customer FROM m_customer ORDER BY customer ASC");
+    $options = '<option value="">-- Pilih Parent Customer --</option>';
+    while ($row = mysqli_fetch_assoc($query)) {
+        $selected = ($selected_id == $row['customer_id']) ? 'selected' : '';
+        $options .= '<option value="' . htmlspecialchars($row['customer_id']) . '" data-name="' . htmlspecialchars($row['customer']) . '" ' . $selected . '>' 
+                    . htmlspecialchars($row['customer_id']) . ' - ' . htmlspecialchars($row['customer']) . '</option>';
+    }
+    return $options;
+}
+
+// ----------------------------------------------------
+// FUNGSI GET SALES OPTIONS
+// ----------------------------------------------------
+function getSalesOptions($conn, $selected_id = '') {
+    $query = mysqli_query($conn, "SELECT sales_id, sales_name FROM m_sales WHERE is_active = 'Checked' ORDER BY sales_name ASC");
+    $options = '<option value="">-- Pilih Sales Founder --</option>';
+    while ($row = mysqli_fetch_assoc($query)) {
+        $selected = ($selected_id == $row['sales_id']) ? 'selected' : '';
+        $options .= '<option value="' . htmlspecialchars($row['sales_id']) . '" data-name="' . htmlspecialchars($row['sales_name']) . '" ' . $selected . '>' 
+                    . htmlspecialchars($row['sales_id']) . ' - ' . htmlspecialchars($row['sales_name']) . '</option>';
+    }
+    return $options;
+}
+
+// ----------------------------------------------------
+// FUNGSI GET AREA OPTIONS
+// ----------------------------------------------------
+function getAreaOptions($conn, $selected_kode = '') {
+    $query = mysqli_query($conn, "SELECT id, area, area_description, kode FROM m_area ORDER BY area ASC");
+    $options = '<option value="">-- Pilih Area --</option>';
+    while ($row = mysqli_fetch_assoc($query)) {
+        $selected = ($selected_kode == $row['kode']) ? 'selected' : '';
+        $options .= '<option value="' . htmlspecialchars($row['kode']) . '" data-area="' . htmlspecialchars($row['area']) . '" ' . $selected . '>' 
+                    . htmlspecialchars($row['kode']) . ' - ' . htmlspecialchars($row['area']) . ' (' . htmlspecialchars($row['area_description']) . ')</option>';
+    }
+    return $options;
 }
 
 // ----------------------------------------------------
@@ -96,14 +86,19 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
     $address                = mysqli_real_escape_string($conn, trim($_POST['address']));
     $contact_person         = mysqli_real_escape_string($conn, trim($_POST['contact_person']));
     $contact_person_phone   = mysqli_real_escape_string($conn, trim($_POST['contact_person_phone']));
-    
     $id_number              = mysqli_real_escape_string($conn, trim($_POST['id_number']));
     $id_name                = $customer; 
     $phone                  = mysqli_real_escape_string($conn, trim($_POST['phone']));
     $credit_limit           = floatval($_POST['credit_limit']);
     $email                  = mysqli_real_escape_string($conn, trim($_POST['email']));
     $old_code               = mysqli_real_escape_string($conn, trim($_POST['old_code']));
-    $area_code              = mysqli_real_escape_string($conn, trim($_POST['city'])); 
+    $area_code              = mysqli_real_escape_string($conn, trim($_POST['area_code']));
+    $effective_date_area    = !empty($_POST['effective_date_area']) ? mysqli_real_escape_string($conn, trim($_POST['effective_date_area'])) : NULL;
+    $remark_area            = mysqli_real_escape_string($conn, trim($_POST['remark_area']));
+    $sales_id               = mysqli_real_escape_string($conn, trim($_POST['sales_id']));
+    $sales_name             = mysqli_real_escape_string($conn, trim($_POST['sales_name']));
+    $effective_date_sales   = !empty($_POST['effective_date_sales']) ? mysqli_real_escape_string($conn, trim($_POST['effective_date_sales'])) : NULL;
+    $remark_sales           = mysqli_real_escape_string($conn, trim($_POST['remark_sales']));
     $remarks                = mysqli_real_escape_string($conn, trim($_POST['remarks']));
     $type                   = mysqli_real_escape_string($conn, trim($_POST['type']));
     $parent_id              = mysqli_real_escape_string($conn, trim($_POST['parent_id']));
@@ -119,8 +114,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
         if (mysqli_num_rows($cek) > 0) {
             $_SESSION['alert'] = "<div class='alert alert-danger p-1 mb-1 small style-crystal'>Gagal Simpan: ID Customer sudah terdaftar!</div>";
         } else {
-            $sql_insert = "INSERT INTO m_customer (customer_id, customer, city, address, contact_person, contact_person_phone, id_number, id_name, phone, credit_limit, email, old_code, area_code, remarks, type, parent_id, parent_customer, bagian, is_active, user_created, date_created) 
-                           VALUES ('$id', '$customer', '$city', '$address', '$contact_person', '$contact_person_phone', '$id_number', '$id_name', '$phone', '$credit_limit', '$email', '$old_code', '$area_code', '$remarks', '$type', '$parent_id', '$parent_customer', '$bagian', '$is_active', '$user_now', '$datetime_now')";
+            $sql_insert = "INSERT INTO m_customer (
+                customer_id, customer, city, address, contact_person, contact_person_phone, 
+                id_number, id_name, phone, credit_limit, email, old_code, area_code, 
+                effective_date_area, remark_area, sales_id, sales_name, effective_date_sales, 
+                remark_sales, remarks, type, parent_id, parent_customer, bagian, is_active, 
+                user_created, date_created
+            ) VALUES (
+                '$id', '$customer', '$city', '$address', '$contact_person', '$contact_person_phone', 
+                '$id_number', '$id_name', '$phone', '$credit_limit', '$email', '$old_code', '$area_code', 
+                " . ($effective_date_area ? "'$effective_date_area'" : "NULL") . ", 
+                '$remark_area', '$sales_id', '$sales_name', 
+                " . ($effective_date_sales ? "'$effective_date_sales'" : "NULL") . ", 
+                '$remark_sales', '$remarks', '$type', '$parent_id', '$parent_customer', '$bagian', 
+                '$is_active', '$user_now', '$datetime_now'
+            )";
             if (mysqli_query($conn, $sql_insert)) {
                 $_SESSION['alert'] = "<div class='alert alert-success p-1 mb-1 small style-crystal'>Data Customer Berhasil Disimpan!</div>";
             } else {
@@ -128,7 +136,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
             }
         }
         
-        // Redirect setelah POST (PRG Pattern) - CEGAH DOUBLE SUBMIT
         echo "<script>window.location.href='index.php?page=customer';</script>";
         exit;
         
@@ -137,7 +144,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
                         customer='$customer', city='$city', address='$address', 
                         contact_person='$contact_person', contact_person_phone='$contact_person_phone',
                         id_number='$id_number', id_name='$id_name', phone='$phone', credit_limit='$credit_limit', 
-                        email='$email', old_code='$old_code', area_code='$area_code', remarks='$remarks', type='$type', 
+                        email='$email', old_code='$old_code', area_code='$area_code', 
+                        effective_date_area = " . ($effective_date_area ? "'$effective_date_area'" : "NULL") . ",
+                        remark_area='$remark_area',
+                        sales_id='$sales_id', sales_name='$sales_name',
+                        effective_date_sales = " . ($effective_date_sales ? "'$effective_date_sales'" : "NULL") . ",
+                        remark_sales='$remark_sales',
+                        remarks='$remarks', type='$type', 
                         parent_id='$parent_id', parent_customer='$parent_customer', bagian='$bagian', 
                         is_active='$is_active', 
                         user_modified='$user_now', date_modified='$datetime_now' 
@@ -148,7 +161,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
             $_SESSION['alert'] = "<div class='alert alert-danger p-1 mb-1 small style-crystal'>Error: " . mysqli_error($conn) . "</div>";
         }
         
-        // Redirect setelah POST (PRG Pattern)
         echo "<script>window.location.href='index.php?page=customer';</script>";
         exit;
     }
@@ -227,25 +239,44 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
         overflow: hidden !important;
         text-overflow: ellipsis !important;
     }
+    /* Select2 Custom Style */
+    .select2-container--default .select2-selection--single {
+        height: 29px !important;
+        padding: 2px 0px !important;
+        font-size: 11px !important;
+    }
+    .select2-container--default .select2-selection--single .select2-selection__rendered {
+        line-height: 25px !important;
+        font-size: 11px !important;
+    }
+    .select2-container--default .select2-selection--single .select2-selection__arrow {
+        height: 27px !important;
+    }
+    .select2-dropdown {
+        font-size: 11px !important;
+    }
 </style>
+
+<!-- Include Select2 CSS & JS -->
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
 <div class="style-crystal d-print-none">
     <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-0 pb-1 mb-1 border-bottom">
         <h5 class="fw-bold text-dark m-0"><i class="fa fa-users text-primary"></i> Master Data Customer</h5>
         <div class="btn-group gap-2">
-            <!-- Tombol Export Excel - Lebih Besar -->
-            <button class="btn btn-success fw-bold" style="padding: 6px 14px; font-size: 12px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1);" onclick="window.location.href='modul/master/export_customer.php'">
-                <i class="fa fa-file-excel-o" style="font-size: 14px; margin-right: 6px;"></i> 
-                Export to Excel
+            <!-- Tombol Export Excel -->
+            <button class="btn btn-success fw-bold" onclick="window.location.href='modul/master/export_customer.php'">
+                    <i class="fa fa-file-excel-o"></i> Export Excel
+                </button>
+            
+            <!-- Tombol Import CSV -->
+            <button class="btn btn-info fw-bold text-white" style="padding: 6px 14px; font-size: 12px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1);" onclick="window.location.href='index.php?page=import_customer'">
+                <i class="fa fa-upload" style="font-size: 14px; margin-right: 6px;"></i> 
+                Import CSV
             </button>
             
-            <!-- Tombol Print - Lebih Besar -->
-             <!-- <button class="btn btn-secondary fw-bold" style="padding: 6px 14px; font-size: 12px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1);" onclick="window.print()">
-                <i class="fa fa-print" style="font-size: 14px; margin-right: 6px;"></i> 
-                Print Data
-            </button> -->
-            
-            <!-- Tombol Tambah Data - Lebih Besar -->
+            <!-- Tombol Tambah Data -->
             <button class="btn btn-primary fw-bold" style="padding: 6px 14px; font-size: 12px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1);" onclick="showModalTambah()">
                 <i class="fa fa-plus-circle" style="font-size: 14px; margin-right: 6px;"></i> 
                 Tambah Customer
@@ -274,21 +305,20 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
         <thead>
             <tr>
                 <th class="d-print-none" style="position: sticky; left: 0; background: #f0f4f8; z-index: 3; width: 50px;">Aksi</th>
-                <th style="position: sticky; left: 40px; background: #f0f4f8; z-index: 3; width: 10px;">ID</th>
-                <th style="position: sticky; left: 90px; background: #f0f4f8; z-index: 3; width: 90px; text-align: left;">Customer</th>
-                <th style="position: sticky; left: 200px; background: #f0f4f8; z-index: 3; width: 200px; text-align: left;">Address</th>
-                <th >City</th>
+                <th style="position: sticky; left: 40px; background: #f0f4f8; z-index: 3; width: 80px;">ID</th>
+                <th style="position: sticky; left: 90px; background: #f0f4f8; z-index: 3; width: 150px; text-align: left;">Customer</th>
+                <th style="position: sticky; left: 150px; background: #f0f4f8; z-index: 3; width: 180px; text-align: left;">Address</th>
+                <th>City</th>
                 <th style="text-align: left;">Contact Person</th>
                 <th>Contact Person Phone</th>
                 <th>ID Number</th>
                 <th>Phone</th>
                 <th style="text-align: right;">Credit Limit</th>
                 <th>Email</th>
-                <th>Old Code</th>
-                <th>Remarks</th>
+                <th>Area</th>
+                <th>Sales</th>
                 <th>Type</th>
-                <th>Parent ID</th>
-                <th>Parent Customer</th>
+                <th>Parent</th>
                 <th>Bagian</th>
                 <th>Is Active</th>
                 <th>User Created</th>
@@ -299,9 +329,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
             <?php
             $query_list = mysqli_query($conn, "SELECT * FROM m_customer $where_clause ORDER BY customer_id DESC");
             if (!$query_list) {
-                echo "<td><td colspan='28' class='text-center text-danger py-1'>Error Query: ".mysqli_error($conn)."</td></tr>";
+                echo "<tr><td colspan='25' class='text-center text-danger py-1'>Error Query: ".mysqli_error($conn)."</td></tr>";
             } elseif (mysqli_num_rows($query_list) == 0) {
-                echo "<tr><td colspan='28' class='text-center text-muted py-1'>Tidak ada data customer ditemukan.</td></tr>";
+                echo "<tr><td colspan='25' class='text-center text-muted py-1'>Tidak ada data customer ditemukan.</td></tr>";
             } else {
                 while ($d = mysqli_fetch_assoc($query_list)) {
                 ?>
@@ -311,21 +341,35 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                         <a href="index.php?page=customer&action=delete&id=<?= urlencode($d['customer_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm('Hapus data <?= $d['customer'] ?>?')"><i class="fa fa-trash"></i></a>
                     </td>
                     <td class="fw-bold text-secondary text-center" style="position: sticky; left: 40px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); font-family:Consolas, monospace;"><?= htmlspecialchars($d['customer_id']) ?></td>
-                    <td class="fw-bold text-primary text-uppercase-crystal" style="position: sticky; left: 90px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); max-width: 200px; overflow: hidden; text-overflow: ellipsis;"><?= htmlspecialchars($d['customer']) ?></td>
-                    <td class="text-uppercase-crystal col-cut-address" style="position: sticky; left: 200px; background: #fff; z-index: 2; box-shadow: 2px 0 3px rgba(0,0,0,0.1); color:#555;"><?= htmlspecialchars($d['address']) ?></td>
+                    <td class="fw-bold text-primary text-uppercase-crystal" style="position: sticky; left: 90px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); max-width: 150px; overflow: hidden; text-overflow: ellipsis;"><?= htmlspecialchars($d['customer']) ?></td>
+                    <td class="text-uppercase-crystal col-cut-address" style="position: sticky; left: 150px; background: #fff; z-index: 2; box-shadow: 2px 0 3px rgba(0,0,0,0.1); color:#555;"><?= htmlspecialchars($d['address']) ?></td>
                     
                     <td class="text-uppercase-crystal"><?= htmlspecialchars($d['city']) ?></td>
                     <td class="text-uppercase-crystal"><?= htmlspecialchars($d['contact_person']) ?></td>
                     <td><?= htmlspecialchars($d['contact_person_phone']) ?></td>
-                    
                     <td><?= htmlspecialchars($d['id_number']) ?></td>
                     <td><?= htmlspecialchars($d['phone']) ?></td>
                     <td class="text-end fw-bold text-success"><?= number_format($d['credit_limit'], 2) ?></td>
                     <td><?= htmlspecialchars($d['email']) ?></td>
-                    <td><?= htmlspecialchars($d['old_code']) ?></td>
-                    <td class="col-cut-remarks"><?= htmlspecialchars($d['remarks']) ?></td>
+                    <td class="text-center">
+                        <?php 
+                        if (!empty($d['area_code'])) {
+                            echo '<span class="badge bg-info">' . htmlspecialchars($d['area_code']) . '</span>';
+                        } else {
+                            echo '-';
+                        }
+                        ?>
+                    </td>
+                    <td class="text-center">
+                        <?php 
+                        if (!empty($d['sales_name'])) {
+                            echo '<span class="badge bg-success">' . htmlspecialchars($d['sales_name']) . '</span>';
+                        } else {
+                            echo '-';
+                        }
+                        ?>
+                    </td>
                     <td class="text-center"><?= htmlspecialchars($d['type']) ?></td>
-                    <td><?= htmlspecialchars($d['parent_id']) ?></td>
                     <td class="text-uppercase-crystal"><?= htmlspecialchars($d['parent_customer']) ?></td>
                     <td><?= htmlspecialchars($d['bagian']) ?></td>
                     <td class="text-center fw-bold text-secondary"><?= htmlspecialchars($d['is_active']) ?></td>
@@ -350,7 +394,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                 <div class="modal-body p-3">
                     
                     <div class="row g-3">
-                        
+                        <!-- Kolom 1: Data Dasar -->
                         <div class="col-md-4 border-end border-2 border-light shadow-xs bg-white p-3 rounded">
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">ID / Kode Customer</label>
@@ -370,15 +414,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 <label class="form-label fw-bold mb-0 text-secondary">ID Number (NIK / KTP)</label>
                                 <input type="text" name="id_number" id="form_id_number" class="form-control form-control-sm">
                             </div>
-
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Address</label>
                                 <textarea name="address" id="form_address" class="form-control form-control-sm" rows="3" placeholder="Alamat Pengiriman/Operasional..."></textarea>
                             </div>
-
-                        </div>
-
-                        <div class="col-md-4 border-end border-2 border-light bg-white p-3 rounded">
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">City</label>
                                 <input type="text" name="city" id="form_city" class="form-control form-control-sm" placeholder="Surabaya, Sidoarjo, dsb">
@@ -387,7 +426,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 <label class="form-label fw-bold mb-0 text-secondary">Phone</label>
                                 <input type="text" name="phone" id="form_phone" class="form-control form-control-sm">
                             </div>
-
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Credit Limit (Rp)</label>
                                 <input type="number" step="0.01" name="credit_limit" id="form_credit_limit" class="form-control form-control-sm text-end fw-bold text-success" value="0.00">
@@ -396,7 +434,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 <label class="form-label fw-bold mb-0 text-secondary">Email</label>
                                 <input type="text" name="email" id="form_email" class="form-control form-control-sm">
                             </div>
+                        </div>
 
+                        <!-- Kolom 2: Contact & Area Management -->
+                        <div class="col-md-4 border-end border-2 border-light bg-white p-3 rounded">
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Contact Person</label>
                                 <input type="text" name="contact_person" id="form_contact_person" class="form-control form-control-sm">
@@ -405,7 +446,26 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 <label class="form-label fw-bold mb-0 text-secondary">Contact Person Phone</label>
                                 <input type="text" name="contact_person_phone" id="form_contact_person_phone" class="form-control form-control-sm">
                             </div>
-                          
+                            
+                            <!-- AREA MANAGEMENT SECTION -->
+                            <div class="border-top pt-2 mt-2">
+                                <h6 class="fw-bold text-primary mb-2"><i class="fa fa-map-marker"></i> Area Management</h6>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Kode Area</label>
+                                    <select name="area_code" id="form_area_code" class="form-select form-select-sm select2-area" style="width: 100%;">
+                                        <?= getAreaOptions($conn, '') ?>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Tanggal Efektif Area</label>
+                                    <input type="date" name="effective_date_area" id="form_effective_date_area" class="form-control form-control-sm">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Remark Area</label>
+                                    <textarea name="remark_area" id="form_remark_area" class="form-control form-control-sm" rows="2" placeholder="Catatan untuk area..."></textarea>
+                                </div>
+                            </div>
+
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Bidang / Bagian</label>
                                 <select name="bagian" id="form_bagian" class="form-select form-select-sm">
@@ -429,23 +489,42 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                     <option value="Public Sector/Government">Public Sector/Government</option>
                                     <option value="Education">Education</option>
                                     <option value="Others/Miscellaneous">Others/Miscellaneous</option>
-
                                 </select>
                             </div>
                             <div class="mb-0">
-                                <label class="form-label fw-bold mb-0 text-secondary">Lain-Lain</label>
-                                <input type="text" name="area_code" id="form_area_code" class="form-control form-control-sm" placeholder="Catatan Tambahan Lokasi">
-                            </div>
-                        </div>
-
-                        <div class="col-md-4 bg-white p-3 rounded">
-                            <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Old Code</label>
                                 <input type="text" name="old_code" id="form_old_code" class="form-control form-control-sm">
                             </div>
+                        </div>
+
+                        <!-- Kolom 3: Parent, Sales & Others -->
+                        <div class="col-md-4 bg-white p-3 rounded">
+                            <!-- SALES FOUNDER SECTION -->
+                            <div class="border-bottom pb-2 mb-2">
+                                <h6 class="fw-bold text-success mb-2"><i class="fa fa-user"></i> Sales Founder</h6>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Pilih Sales</label>
+                                    <select name="sales_id" id="form_sales_id" class="form-select form-select-sm select2-sales" style="width: 100%;">
+                                        <?= getSalesOptions($conn, '') ?>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Nama Sales</label>
+                                    <input type="text" name="sales_name" id="form_sales_name" class="form-control form-control-sm" readonly placeholder="Terisi otomatis dari pilihan sales">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Tanggal Efektif Sales</label>
+                                    <input type="date" name="effective_date_sales" id="form_effective_date_sales" class="form-control form-control-sm">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Remark Sales</label>
+                                    <textarea name="remark_sales" id="form_remark_sales" class="form-control form-control-sm" rows="2" placeholder="Catatan untuk sales..."></textarea>
+                                </div>
+                            </div>
+
                             <div class="mb-2">
-                                <label class="form-label fw-bold mb-0 text-secondary">Remark</label>
-                                <textarea name="remarks" id="form_remarks" class="form-control form-control-sm" rows="5" placeholder="Tulis catatan atau riwayat khusus di sini..."></textarea>
+                                <label class="form-label fw-bold mb-0 text-secondary">Remark (General)</label>
+                                <textarea name="remarks" id="form_remarks" class="form-control form-control-sm" rows="2" placeholder="Tulis catatan atau riwayat khusus di sini..."></textarea>
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Type</label>
@@ -456,29 +535,47 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 </select>
                             </div>
 
-                            <div class="mb-2">
-                                <label class="form-label fw-bold mb-0 text-secondary">Parent Name</label>
-                                <input type="text" name="parent_customer" id="form_parent_customer" class="form-control form-control-sm" value="<?php echo "-" ?>">
+                            <!-- PARENT CUSTOMER SECTION -->
+                           <!-- PARENT CUSTOMER SECTION -->
+                            <div class="border-top pt-2 mt-2">
+                                <h6 class="fw-bold text-warning mb-2"><i class="fa fa-sitemap"></i> Parent Customer</h6>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Parent Name</label>
+                                    <select name="parent_id" id="form_parent_id" class="form-select form-select-sm select2-parent" style="width: 100%;">
+                                        <option value="">-- Pilih Parent Customer --</option>
+                                        <?php
+                                        $query_parent = mysqli_query($conn, "SELECT customer_id, customer FROM m_customer ORDER BY customer ASC");
+                                        while ($row_parent = mysqli_fetch_assoc($query_parent)) {
+                                            // Tampilkan hanya nama customer saja di dropdown
+                                            echo '<option value="' . htmlspecialchars($row_parent['customer_id']) . '" data-code="' . htmlspecialchars($row_parent['customer_id']) . '">' 
+                                                . htmlspecialchars($row_parent['customer']) . '</option>';
+                                        }
+                                        ?>
+                                    </select>
+                                    <small class="text-muted">Pilih nama customer yang menjadi parent/induk</small>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label fw-bold mb-0 text-secondary">Parent Code</label>
+                                    <input type="text" name="parent_customer" id="form_parent_customer" class="form-control form-control-sm" readonly placeholder="Akan terisi otomatis">
+                                    <small class="text-muted">Kode parent akan terisi otomatis berdasarkan pilihan</small>
+                                </div>
                             </div>
-                            <div class="mb-3">
-                                <label class="form-label fw-bold mb-0 text-secondary">Parent Code</label>
-                                <input type="text" name="parent_id" id="form_parent_id" class="form-control form-control-sm" value="<?php echo "-" ?>">
-                            </div>
+
                             <div class="mb-0 pt-2 border-top">
                                 <div class="form-check form-switch">
                                     <input class="form-check-input" type="checkbox" name="is_active" id="form_is_active" value="Checked" checked>
-                                    <label class="form-check-label fw-bold text-dark" for="form_is_active">IsActive</label>
+                                    <label class="form-check-label fw-bold text-dark" for="form_is_active">Is Active</label>
                                 </div>
                             </div>
                         </div>
 
-                    </div> </div>
+                    </div> 
+                </div>
                 <div class="modal-footer bg-light py-2">
                     <button type="button" class="btn btn-sm btn-secondary fw-bold" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-sm btn-primary fw-bold px-3"><i class="fa fa-save"></i> Save Customer</button>
                 </div>
             </form>
-
         </div>
     </div>
 </div>
@@ -488,6 +585,54 @@ var bootstrapModal;
 
 document.addEventListener("DOMContentLoaded", function() {
     bootstrapModal = new bootstrap.Modal(document.getElementById('modalCustomer'));
+    
+    // Initialize Select2 untuk Area
+    $('.select2-area').select2({
+        dropdownParent: $('#modalCustomer'),
+        placeholder: "-- Pilih Area --",
+        allowClear: true,
+        width: '100%'
+    });
+    
+    // Initialize Select2 untuk Sales
+    $('.select2-sales').select2({
+        dropdownParent: $('#modalCustomer'),
+        placeholder: "-- Pilih Sales Founder --",
+        allowClear: true,
+        width: '100%'
+    });
+    
+    // Initialize Select2 untuk Parent Customer
+    $('.select2-parent').select2({
+        dropdownParent: $('#modalCustomer'),
+        placeholder: "-- Pilih Parent Customer --",
+        allowClear: true,
+        width: '100%'
+    });
+    
+    // Event handler untuk sales select
+    $('#form_sales_id').on('change', function() {
+        var selectedOption = $(this).find('option:selected');
+        var salesName = selectedOption.text(); // Ambil nama sales dari text option
+        var salesId = selectedOption.val(); // Ambil ID sales
+        
+        $('#form_sales_name').val(salesName || '');
+    });
+    
+    // Event handler untuk parent select - Update code berdasarkan pilihan
+    $('#form_parent_id').on('change', function() {
+        var selectedOption = $(this).find('option:selected');
+        var parentCode = selectedOption.val(); // Ambil customer_id sebagai code
+        var parentName = selectedOption.text(); // Ambil nama customer
+        
+        // Isi parent_customer dengan customer_id (sebagai code)
+        $('#form_parent_customer').val(parentCode || '');
+        
+        // Optional: Tampilkan informasi untuk debugging
+        if (parentCode) {
+            console.log('Parent terpilih: ' + parentName + ' dengan kode: ' + parentCode);
+        }
+    });
 });
 
 function toggleAutoId(checkboxElement) {
@@ -516,6 +661,14 @@ function showModalTambah() {
     idInput.readOnly = true;
     
     document.getElementById('form_is_active').checked = true;
+    
+    // Reset select2 values
+    $('#form_area_code').val('').trigger('change');
+    $('#form_sales_id').val('').trigger('change');
+    $('#form_parent_id').val('').trigger('change');
+    $('#form_sales_name').val('');
+    $('#form_parent_customer').val('');
+    
     bootstrapModal.show();
 }
 
@@ -542,12 +695,26 @@ function showModalEdit(dataObj) {
     document.getElementById('form_credit_limit').value = dataObj.credit_limit;
     document.getElementById('form_email').value = dataObj.email;
     document.getElementById('form_old_code').value = dataObj.old_code;
-    document.getElementById('form_area_code').value = dataObj.area_code;
-    document.getElementById('form_type').value = dataObj.type;
-    document.getElementById('form_parent_id').value = dataObj.parent_id;
-    document.getElementById('form_parent_customer').value = dataObj.parent_customer;
-    document.getElementById('form_bagian').value = dataObj.bagian;
-    document.getElementById('form_remarks').value = dataObj.remarks;
+    
+    // Area fields
+    $('#form_area_code').val(dataObj.area_code || '').trigger('change');
+    document.getElementById('form_effective_date_area').value = dataObj.effective_date_area || '';
+    document.getElementById('form_remark_area').value = dataObj.remark_area || '';
+    
+    // Sales fields
+    $('#form_sales_id').val(dataObj.sales_id || '').trigger('change');
+    document.getElementById('form_sales_name').value = dataObj.sales_name || '';
+    document.getElementById('form_effective_date_sales').value = dataObj.effective_date_sales || '';
+    document.getElementById('form_remark_sales').value = dataObj.remark_sales || '';
+    
+    document.getElementById('form_type').value = dataObj.type || 'Lokal';
+    
+    // Parent fields
+     $('#form_parent_id').val(dataObj.parent_id || '').trigger('change');
+    document.getElementById('form_parent_customer').value = dataObj.parent_customer || '';
+    
+    document.getElementById('form_bagian').value = dataObj.bagian || '';
+    document.getElementById('form_remarks').value = dataObj.remarks || '';
     
     document.getElementById('form_is_active').checked = (dataObj.is_active === 'Checked');
 

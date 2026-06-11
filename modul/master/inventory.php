@@ -7,6 +7,40 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+// ====================================================================
+// HANDLE DELETE ACTION
+// ====================================================================
+
+if (isset($_GET['action']) && $_GET['action'] == 'delete' && isset($_GET['id'])) {
+    $inventory_id = mysqli_real_escape_string($conn, trim($_GET['id']));
+    
+    // Validasi
+    if (empty($inventory_id)) {
+        $_SESSION['alert'] = "<div class='alert alert-danger p-2 small'>ID tidak valid!</div>";
+        echo "<script>window.location.href='index.php?page=inventory';</script>";
+        exit;
+    }
+    
+    // Cek data ada
+    $cek = mysqli_query($conn, "SELECT inventory_id FROM m_inventory WHERE inventory_id='$inventory_id' LIMIT 1");
+    if (mysqli_num_rows($cek) == 0) {
+        $_SESSION['alert'] = "<div class='alert alert-warning p-2 small'>Data tidak ditemukan!</div>";
+        echo "<script>window.location.href='index.php?page=inventory';</script>";
+        exit;
+    }
+    
+    // DELETE
+    $sql_delete = "DELETE FROM m_inventory WHERE inventory_id='$inventory_id'";
+    
+    if (mysqli_query($conn, $sql_delete)) {
+        $_SESSION['alert'] = "<div class='alert alert-success p-2 small'>✓ Data Berhasil Dihapus!</div>";
+    } else {
+        $_SESSION['alert'] = "<div class='alert alert-danger p-2 small'>Error: " . mysqli_error($conn) . "</div>";
+    }
+    
+    echo "<script>window.location.href='index.php?page=inventory';</script>";
+    exit;
+}
 
 // ----------------------------------------------------
 // TAMPILKAN ALERT DARI SESSION (PRG Pattern)
@@ -695,7 +729,6 @@ function generateInventoryId($conn, $inventory_name, $type) {
     </table>
 </div>
 
-<!-- MODAL FORM (sama seperti sebelumnya, tidak diubah) -->
 <!-- MODAL FORM DENGAN TABS YANG RAPI -->
 <div class="modal fade d-print-none" id="modalInventory" data-bs-backdrop="static" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -1146,7 +1179,6 @@ document.addEventListener('change', function(e) {
 function submitImportCSV() {
     const fileInput = document.getElementById('csvFile');
     
-    // Validasi file
     if (!fileInput.files.length) {
         alert('Pilih file terlebih dahulu!');
         return;
@@ -1161,76 +1193,122 @@ function submitImportCSV() {
     document.getElementById('resultContainer').style.display = 'none';
     document.getElementById('btnSubmitImport').disabled = true;
     
-    // Submit dengan fetch
-    fetch('modul/master/import_inventory_csv.php', {
+    // Test dengan file minimal
+    fetch('/cahaya/modul/master/import_inventory_csv.php', {
         method: 'POST',
         body: formData
     })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('HTTP error, status = ' + response.status);
-        }
-        return response.json();
-    })
+    .then(response => response.json())
     .then(data => {
+        console.log('Response:', data);
+        
         document.getElementById('progressContainer').style.display = 'none';
         document.getElementById('resultContainer').style.display = 'block';
         
-        // Result message
         const resultMessage = document.getElementById('resultMessage');
         resultMessage.innerHTML = '';
         
         if (data.success) {
-            resultMessage.className = 'alert alert-success alert-dismissible fade show';
+            resultMessage.className = 'alert alert-success';
+            resultMessage.innerHTML = `
+                <strong><i class="fa fa-check-circle"></i> Debug Info:</strong><br>
+                <pre class="mt-2 mb-0 small" style="white-space: pre-wrap;">${JSON.stringify(data, null, 2)}</pre>
+            `;
+            
+            // Jika sukses, lanjutkan ke import sebenarnya
+            if (confirm('Debug sukses! Lanjutkan import data? File akan diimport ke database.')) {
+                realImport(file);
+            }
+        } else {
+            resultMessage.className = 'alert alert-danger';
+            resultMessage.innerHTML = `
+                <strong><i class="fa fa-times-circle"></i> Debug Failed:</strong><br>
+                <pre class="mt-2 mb-0 small">${JSON.stringify(data, null, 2)}</pre>
+            `;
+            document.getElementById('btnSubmitImport').disabled = false;
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('resultContainer').style.display = 'block';
+        document.getElementById('resultMessage').innerHTML = `
+            <div class="alert alert-danger">
+                <strong>Error!</strong><br>
+                ${error.message}
+            </div>
+        `;
+        document.getElementById('btnSubmitImport').disabled = false;
+    });
+}
+
+// Function untuk import sebenarnya setelah debug sukses
+function realImport(file) {
+    const formData = new FormData();
+    formData.append('csv_file', file);
+    
+    document.getElementById('progressContainer').style.display = 'block';
+    document.getElementById('resultContainer').style.display = 'none';
+    document.getElementById('btnSubmitImport').disabled = true;
+    
+    // Gunakan file import_safe.php
+    fetch('/cahaya/modul/master/import_inventory.csv.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(async response => {
+        const text = await response.text();
+        console.log('Raw response length:', text.length);
+        console.log('First 200 chars:', text.substring(0, 200));
+        
+        // Coba parse JSON
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            console.error('JSON parse error:', e);
+            console.error('Full response:', text);
+            throw new Error('Invalid JSON response from server. Server returned: ' + text.substring(0, 100));
+        }
+    })
+    .then(data => {
+        console.log('Import response:', data);
+        
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('resultContainer').style.display = 'block';
+        
+        const resultMessage = document.getElementById('resultMessage');
+        if (data.success) {
+            resultMessage.className = 'alert alert-success';
             resultMessage.innerHTML = `
                 <strong><i class="fa fa-check-circle"></i> Berhasil!</strong><br>
                 ${data.message}<br>
-                <small class="text-muted">
-                    ✓ Berhasil: ${data.success_count} | 
-                    ✗ Gagal: ${data.error_count}
-                </small>
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                <small>✓ Berhasil: ${data.success_count} data</small>
             `;
             
-            // Show errors if any
-            if (data.error_count > 0 && data.errors.length > 0) {
-                document.getElementById('errorsList').style.display = 'block';
-                const errorContent = document.getElementById('errorsContent');
-                errorContent.innerHTML = data.errors
-                    .map(err => '<div><small>' + err + '</small></div>')
-                    .join('');
-            }
-            
-            // Reload table setelah 2 detik
-            setTimeout(() => {
-                location.reload();
-            }, 2000);
-            
+            setTimeout(() => location.reload(), 2000);
         } else {
-            resultMessage.className = 'alert alert-danger alert-dismissible fade show';
+            resultMessage.className = 'alert alert-danger';
             resultMessage.innerHTML = `
                 <strong><i class="fa fa-times-circle"></i> Gagal!</strong><br>
-                ${data.message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                ${data.message}<br>
+                ${data.errors ? '<small>Errors: ' + data.errors.join(', ') + '</small>' : ''}
             `;
         }
         
         document.getElementById('btnSubmitImport').disabled = false;
         document.getElementById('btnSubmitImport').innerHTML = '<i class="fa fa-check"></i> Import Sekarang';
-        
     })
     .catch(error => {
+        console.error('Import error:', error);
         document.getElementById('progressContainer').style.display = 'none';
         document.getElementById('resultContainer').style.display = 'block';
-        
-        const resultMessage = document.getElementById('resultMessage');
-        resultMessage.className = 'alert alert-danger alert-dismissible fade show';
-        resultMessage.innerHTML = `
-            <strong><i class="fa fa-times-circle"></i> Error!</strong><br>
-            ${error.message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        document.getElementById('resultMessage').innerHTML = `
+            <div class="alert alert-danger">
+                <strong>Error!</strong><br>
+                ${error.message}<br>
+                <small class="text-muted">Cek console browser (F12) untuk detail lengkap</small>
+            </div>
         `;
-        
         document.getElementById('btnSubmitImport').disabled = false;
         document.getElementById('btnSubmitImport').innerHTML = '<i class="fa fa-check"></i> Import Sekarang';
     });

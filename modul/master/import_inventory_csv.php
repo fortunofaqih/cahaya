@@ -1,294 +1,319 @@
 <?php
-// import_inventory_csv.php
-// Script untuk import master data inventory dari file CSV
-// Author: Heron
-// Features: Validasi data, prevent SQL injection, handle empty fields, duplicate detection
+// ===== FILE: C:\xampp\htdocs\cahaya\modul\master\import_inventory_csv.php =====
+// ===== IMPORT CSV LENGKAP DENGAN SEMUA KOLOM =====
 
 session_start();
-header('Content-Type: application/json');
 
-// Koneksi database (sesuaikan dengan koneksi existing Anda)
-require_once('koneksi.php'); // atau lokasi file koneksi Anda
+// Error reporting untuk debugging
+error_reporting(E_ALL);
+ini_set('display_errors', 0); // Jangan tampilkan ke browser
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/import_error.log');
 
-// Cek request method
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Invalid request method']);
+header('Content-Type: application/json; charset=utf-8');
+
+// Function untuk send JSON response
+function sendJsonResponse($success, $message, $data = []) {
+    // Bersihkan output buffer
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+    
+    $response = array_merge([
+        'success' => $success,
+        'message' => $message
+    ], $data);
+    
+    echo json_encode($response, JSON_PRETTY_PRINT);
     exit;
 }
 
-// Validasi file upload
-if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
-    echo json_encode(['success' => false, 'message' => 'File upload failed or no file selected']);
-    exit;
-}
-
-$file = $_FILES['csv_file']['tmp_name'];
-$filename = $_FILES['csv_file']['name'];
-
-// Validasi ekstensi file
-if (!preg_match('/\.csv$/i', $filename)) {
-    echo json_encode(['success' => false, 'message' => 'File harus berekstensi .csv']);
-    exit;
-}
-
-// Validasi file size (max 5MB)
-if ($_FILES['csv_file']['size'] > 5242880) {
-    echo json_encode(['success' => false, 'message' => 'File size terlalu besar (max 5MB)']);
-    exit;
+// Function untuk clean value (kosong menjadi null)
+function cleanValue($value, $type = 'string') {
+    if (!isset($value) || $value === '' || $value === '-' || $value === 'NULL') {
+        return null;
+    }
+    
+    $value = trim($value);
+    
+    if ($type === 'int') {
+        return (int)$value;
+    } elseif ($type === 'float' || $type === 'decimal') {
+        return (float)$value;
+    }
+    
+    return $value;
 }
 
 try {
-    // Buka file CSV
-    if (!is_readable($file)) {
-        throw new Exception('File tidak dapat dibaca');
+    // ==================== 1. VALIDASI SESSION ====================
+    if (!isset($_SESSION['username'])) {
+        sendJsonResponse(false, 'Session tidak valid. Silakan login kembali.');
     }
     
-    $handle = fopen($file, 'r');
-    if ($handle === false) {
-        throw new Exception('Gagal membuka file CSV');
+    // ==================== 2. KONEKSI DATABASE ====================
+    $koneksi_path = __DIR__ . '/../../koneksi.php';
+    if (!file_exists($koneksi_path)) {
+        sendJsonResponse(false, 'File koneksi.php tidak ditemukan');
     }
     
-    // Array untuk menyimpan hasil import
+    require_once $koneksi_path;
+    
+    if (!isset($conn) || !$conn) {
+        sendJsonResponse(false, 'Koneksi database gagal');
+    }
+    
+    // ==================== 3. VALIDASI REQUEST METHOD ====================
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        sendJsonResponse(false, 'Method tidak diizinkan. Gunakan POST.');
+    }
+    
+    // ==================== 4. VALIDASI FILE UPLOAD ====================
+    if (!isset($_FILES['csv_file']) || $_FILES['csv_file']['error'] !== UPLOAD_ERR_OK) {
+        $error_code = isset($_FILES['csv_file']['error']) ? $_FILES['csv_file']['error'] : 'unknown';
+        sendJsonResponse(false, 'Upload file gagal. Error code: ' . $error_code);
+    }
+    
+    $tmp_file = $_FILES['csv_file']['tmp_name'];
+    $file_name = $_FILES['csv_file']['name'];
+    $file_size = $_FILES['csv_file']['size'];
+    
+    // Validasi ekstensi file
+    if (!preg_match('/\.csv$/i', $file_name)) {
+        sendJsonResponse(false, 'File harus berekstensi .csv');
+    }
+    
+    // Validasi ukuran file (max 10MB)
+    if ($file_size > 10485760) {
+        sendJsonResponse(false, 'Ukuran file terlalu besar (max 10MB)');
+    }
+    
+    // ==================== 5. BUKA DAN BACA CSV ====================
+    $handle = fopen($tmp_file, 'r');
+    if (!$handle) {
+        sendJsonResponse(false, 'Gagal membuka file CSV');
+    }
+    
+    // Matikan foreign key check sementara untuk menghindari error constraint
+    $conn->query("SET FOREIGN_KEY_CHECKS = 0");
+    
+    // ==================== 6. BACA HEADER (Baris Pertama) ====================
+    $headers = fgetcsv($handle, 0, ',', '"', '\\');
+    $row_num = 1;
+    
     $success_count = 0;
     $error_count = 0;
     $errors = [];
-    $row_num = 0;
+    $warnings = [];
     
-    // Header mapping (sesuaikan dengan urutan kolom CSV Anda)
-    $expected_headers = [
-        'inventory_id', 'inventory_name', 'uom', 'type', 'category', 'remarks', 
-        'cap', 'colour', 'quality', 'volume_default', 'uom_pack', 'conversion_rate',
-        'base_uom', 'pack_uom', 'tolerance', 'upper_tolerance', 'lower_tolerance',
-        'merk', 'p', 'l', 't', 'p2', 'density', 'description', 'origin', 'status',
-        'supp_code', 're_order_point', 'minimum_stock', 'maximum_stock', 'shelf_life_days',
-        'is_sub', 'is_job_order', 'dont_show_at_w48', 'stokan', 'internal_name',
-        'catalog', 'part_no', 'printing_type', 'calculation', 'nama_customer',
-        'type_rm', 'tebal', 'ukuran', 'strength', 'create_user', 'date_created',
-        'user_modified', 'date_modified', 'ket_las'
-    ];
+    // Prepare statement untuk INSERT semua kolom
+    $sql = "INSERT INTO m_inventory (
+        inventory_id, inventory_name, uom, type, category, remarks,
+        cap, colour, quality, volume_default, uom_pack, conversion_rate,
+        base_uom, pack_uom, tolerance, upper_tolerance, lower_tolerance,
+        merk, p, l, t, p2, density, description, origin, status,
+        supp_code, re_order_point, minimum_stock, maximum_stock, shelf_life_days,
+        is_sub, is_job_order, dont_show_at_w48, stokan, internal_name,
+        catalog, part_no, printing_type, calculation, nama_customer,
+        type_rm, tebal, ukuran, strength, create_user, date_created,
+        user_modified, date_modified, ket_las
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     
-    while (($row = fgetcsv($handle, 4096, ',', '"')) !== false) {
+    $stmt = $conn->prepare($sql);
+    
+    if (!$stmt) {
+        fclose($handle);
+        $conn->query("SET FOREIGN_KEY_CHECKS = 1");
+        sendJsonResponse(false, 'Prepare statement gagal: ' . $conn->error);
+    }
+    
+    // ==================== 7. PROSES SETIAP BARIS CSV ====================
+    while (($row = fgetcsv($handle, 0, ',', '"', '\\')) !== false) {
         $row_num++;
         
-        // Skip header row (baris pertama)
-        if ($row_num === 1) {
-            // Optional: Validasi header
-            // if ($row !== $expected_headers) {
-            //     throw new Exception('Format CSV tidak sesuai dengan template');
-            // }
+        // Skip baris kosong
+        if (count($row) < 2 || (count($row) == 1 && empty(trim($row[0])))) {
             continue;
         }
         
-        // Skip empty rows
-        if (empty(array_filter($row))) {
-            continue;
-        }
+        // Ambil data wajib
+        $inventory_id = isset($row[0]) ? trim($row[0]) : '';
+        $inventory_name = isset($row[1]) ? trim($row[1]) : '';
         
-        // Validasi minimal: inventory_id dan inventory_name harus ada
-        if (empty(trim($row[0])) || empty(trim($row[1]))) {
+        // Validasi data wajib
+        if (empty($inventory_id)) {
             $error_count++;
-            $errors[] = "Baris " . $row_num . ": inventory_id atau inventory_name kosong";
+            $errors[] = "Baris $row_num: inventory_id kosong";
             continue;
         }
         
-        // Mapping data dari CSV ke variable
-        $data = [
-            'inventory_id' => trim($row[0]),
-            'inventory_name' => trim($row[1]),
-            'uom' => !empty(trim($row[2])) ? trim($row[2]) : NULL,
-            'type' => !empty(trim($row[3])) ? trim($row[3]) : NULL,
-            'category' => !empty(trim($row[4])) ? trim($row[4]) : NULL,
-            'remarks' => !empty(trim($row[5])) ? trim($row[5]) : NULL,
-            'cap' => !empty(trim($row[6])) ? trim($row[6]) : NULL,
-            'colour' => !empty(trim($row[7])) ? trim($row[7]) : NULL,
-            'quality' => !empty(trim($row[8])) ? trim($row[8]) : NULL,
-            'volume_default' => !empty(trim($row[9])) ? (float)$row[9] : 1.0000,
-            'uom_pack' => !empty(trim($row[10])) ? trim($row[10]) : NULL,
-            'conversion_rate' => !empty(trim($row[11])) ? (float)$row[11] : 1.0000,
-            'base_uom' => !empty(trim($row[12])) ? trim($row[12]) : 'KG',
-            'pack_uom' => !empty(trim($row[13])) ? trim($row[13]) : 'PCS',
-            'tolerance' => !empty(trim($row[14])) ? (int)$row[14] : 0,
-            'upper_tolerance' => !empty(trim($row[15])) ? (float)$row[15] : 0.00,
-            'lower_tolerance' => !empty(trim($row[16])) ? (float)$row[16] : 0.00,
-            'merk' => !empty(trim($row[17])) ? trim($row[17]) : NULL,
-            'p' => !empty(trim($row[18])) ? (float)$row[18] : 0.00,
-            'l' => !empty(trim($row[19])) ? (float)$row[19] : 0.00,
-            't' => !empty(trim($row[20])) ? (float)$row[20] : 0.00,
-            'p2' => !empty(trim($row[21])) ? (float)$row[21] : 0.00,
-            'density' => !empty(trim($row[22])) ? (float)$row[22] : 0.00,
-            'description' => !empty(trim($row[23])) ? trim($row[23]) : NULL,
-            'origin' => !empty(trim($row[24])) ? trim($row[24]) : NULL,
-            'status' => !empty(trim($row[25])) ? trim($row[25]) : 'Active',
-            'supp_code' => !empty(trim($row[26])) ? trim($row[26]) : NULL,
-            're_order_point' => !empty(trim($row[27])) ? (float)$row[27] : 0.00,
-            'minimum_stock' => !empty(trim($row[28])) ? (float)$row[28] : 0.00,
-            'maximum_stock' => !empty(trim($row[29])) ? (float)$row[29] : 0.00,
-            'shelf_life_days' => !empty(trim($row[30])) ? (int)$row[30] : 0,
-            'is_sub' => !empty(trim($row[31])) ? trim($row[31]) : 'Unchecked',
-            'is_job_order' => !empty(trim($row[32])) ? trim($row[32]) : 'Unchecked',
-            'dont_show_at_w48' => !empty(trim($row[33])) ? trim($row[33]) : 'Unchecked',
-            'stokan' => !empty(trim($row[34])) ? trim($row[34]) : 'Unchecked',
-            'internal_name' => !empty(trim($row[35])) ? trim($row[35]) : NULL,
-            'catalog' => !empty(trim($row[36])) ? trim($row[36]) : NULL,
-            'part_no' => !empty(trim($row[37])) ? trim($row[37]) : NULL,
-            'printing_type' => !empty(trim($row[38])) ? trim($row[38]) : NULL,
-            'calculation' => !empty(trim($row[39])) ? trim($row[39]) : NULL,
-            'nama_customer' => !empty(trim($row[40])) ? trim($row[40]) : NULL,
-            'type_rm' => !empty(trim($row[41])) ? trim($row[41]) : NULL,
-            'tebal' => !empty(trim($row[42])) ? (float)$row[42] : 0.0000,
-            'ukuran' => !empty(trim($row[43])) ? trim($row[43]) : NULL,
-            'strength' => !empty(trim($row[44])) ? trim($row[44]) : NULL,
-            'create_user' => !empty(trim($row[45])) ? trim($row[45]) : $_SESSION['username'] ?? 'SYSTEM',
-            'date_created' => !empty(trim($row[46])) ? trim($row[46]) : date('Y-m-d H:i:s'),
-            'user_modified' => !empty(trim($row[47])) ? trim($row[47]) : NULL,
-            'date_modified' => !empty(trim($row[48])) ? trim($row[48]) : NULL,
-            'ket_las' => !empty(trim($row[49])) ? trim($row[49]) : NULL,
-        ];
-        
-        // Cek duplikat berdasarkan inventory_id
-        $check_query = "SELECT inventory_id FROM m_inventory WHERE inventory_id = ? LIMIT 1";
-        $check_stmt = $conn->prepare($check_query);
-        
-        if (!$check_stmt) {
-            throw new Exception('Prepare statement gagal: ' . $conn->error);
+        if (empty($inventory_name)) {
+            $error_count++;
+            $errors[] = "Baris $row_num: inventory_name kosong untuk ID '{$inventory_id}'";
+            continue;
         }
         
-        $check_stmt->bind_param('s', $data['inventory_id']);
+        // Cek duplikat
+        $check_stmt = $conn->prepare("SELECT inventory_id FROM m_inventory WHERE inventory_id = ?");
+        $check_stmt->bind_param("s", $inventory_id);
         $check_stmt->execute();
         $check_result = $check_stmt->get_result();
         
         if ($check_result->num_rows > 0) {
-            // Data sudah ada, skip atau update (di sini skip)
             $error_count++;
-            $errors[] = "Baris " . $row_num . ": inventory_id '{$data['inventory_id']}' sudah ada";
+            $errors[] = "Baris $row_num: inventory_id '{$inventory_id}' sudah ada (skip)";
             $check_stmt->close();
             continue;
         }
         $check_stmt->close();
         
-        // Prepare INSERT statement
-        $insert_query = "INSERT INTO m_inventory (
-            inventory_id, inventory_name, uom, type, category, remarks,
-            cap, colour, quality, volume_default, uom_pack, conversion_rate,
-            base_uom, pack_uom, tolerance, upper_tolerance, lower_tolerance,
-            merk, p, l, t, p2, density, description, origin, status,
-            supp_code, re_order_point, minimum_stock, maximum_stock, shelf_life_days,
-            is_sub, is_job_order, dont_show_at_w48, stokan, internal_name,
-            catalog, part_no, printing_type, calculation, nama_customer,
-            type_rm, tebal, ukuran, strength, create_user, date_created,
-            user_modified, date_modified, ket_las
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        
-        $stmt = $conn->prepare($insert_query);
-        
-        if (!$stmt) {
-            $error_count++;
-            $errors[] = "Baris " . $row_num . ": Prepare statement gagal - " . $conn->error;
-            continue;
-        }
-        
-        // Bind parameters dengan type string (s = string, d = double, i = integer)
-        // Order harus sesuai dengan query INSERT
-        $bind_types = 'sssssssssdssssdddsdddddsssssdsddissssssssssdsssss';
-        
-        $bind_params = [
-            $data['inventory_id'],
-            $data['inventory_name'],
-            $data['uom'],
-            $data['type'],
-            $data['category'],
-            $data['remarks'],
-            $data['cap'],
-            $data['colour'],
-            $data['quality'],
-            $data['volume_default'],
-            $data['uom_pack'],
-            $data['conversion_rate'],
-            $data['base_uom'],
-            $data['pack_uom'],
-            $data['tolerance'],
-            $data['upper_tolerance'],
-            $data['lower_tolerance'],
-            $data['merk'],
-            $data['p'],
-            $data['l'],
-            $data['t'],
-            $data['p2'],
-            $data['density'],
-            $data['description'],
-            $data['origin'],
-            $data['status'],
-            $data['supp_code'],
-            $data['re_order_point'],
-            $data['minimum_stock'],
-            $data['maximum_stock'],
-            $data['shelf_life_days'],
-            $data['is_sub'],
-            $data['is_job_order'],
-            $data['dont_show_at_w48'],
-            $data['stokan'],
-            $data['internal_name'],
-            $data['catalog'],
-            $data['part_no'],
-            $data['printing_type'],
-            $data['calculation'],
-            $data['nama_customer'],
-            $data['type_rm'],
-            $data['tebal'],
-            $data['ukuran'],
-            $data['strength'],
-            $data['create_user'],
-            $data['date_created'],
-            $data['user_modified'],
-            $data['date_modified'],
-            $data['ket_las'],
+        // Mapping data dari CSV (50 kolom)
+        $data = [
+            'inventory_id' => $inventory_id,
+            'inventory_name' => $inventory_name,
+            'uom' => cleanValue($row[2] ?? null),
+            'type' => cleanValue($row[3] ?? null),
+            'category' => cleanValue($row[4] ?? null),
+            'remarks' => cleanValue($row[5] ?? null),
+            'cap' => cleanValue($row[6] ?? null),
+            'colour' => cleanValue($row[7] ?? null),
+            'quality' => cleanValue($row[8] ?? null),
+            'volume_default' => cleanValue($row[9] ?? null, 'decimal') ?? 1.0000,
+            'uom_pack' => cleanValue($row[10] ?? null),
+            'conversion_rate' => cleanValue($row[11] ?? null, 'decimal') ?? 1.0000,
+            'base_uom' => cleanValue($row[12] ?? null) ?? 'KG',
+            'pack_uom' => cleanValue($row[13] ?? null) ?? 'PCS',
+            'tolerance' => cleanValue($row[14] ?? null, 'int') ?? 0,
+            'upper_tolerance' => cleanValue($row[15] ?? null, 'decimal') ?? 0.00,
+            'lower_tolerance' => cleanValue($row[16] ?? null, 'decimal') ?? 0.00,
+            'merk' => cleanValue($row[17] ?? null),
+            'p' => cleanValue($row[18] ?? null, 'decimal') ?? 0.00,
+            'l' => cleanValue($row[19] ?? null, 'decimal') ?? 0.00,
+            't' => cleanValue($row[20] ?? null, 'decimal') ?? 0.00,
+            'p2' => cleanValue($row[21] ?? null, 'decimal') ?? 0.00,
+            'density' => cleanValue($row[22] ?? null, 'decimal') ?? 0.00,
+            'description' => cleanValue($row[23] ?? null),
+            'origin' => cleanValue($row[24] ?? null),
+            'status' => cleanValue($row[25] ?? null) ?? 'Active',
+            'supp_code' => cleanValue($row[26] ?? null),
+            're_order_point' => cleanValue($row[27] ?? null, 'decimal') ?? 0.00,
+            'minimum_stock' => cleanValue($row[28] ?? null, 'decimal') ?? 0.00,
+            'maximum_stock' => cleanValue($row[29] ?? null, 'decimal') ?? 0.00,
+            'shelf_life_days' => cleanValue($row[30] ?? null, 'int') ?? 0,
+            'is_sub' => cleanValue($row[31] ?? null) ?? 'Unchecked',
+            'is_job_order' => cleanValue($row[32] ?? null) ?? 'Unchecked',
+            'dont_show_at_w48' => cleanValue($row[33] ?? null) ?? 'Unchecked',
+            'stokan' => cleanValue($row[34] ?? null) ?? 'Unchecked',
+            'internal_name' => cleanValue($row[35] ?? null),
+            'catalog' => cleanValue($row[36] ?? null),
+            'part_no' => cleanValue($row[37] ?? null),
+            'printing_type' => cleanValue($row[38] ?? null),
+            'calculation' => cleanValue($row[39] ?? null),
+            'nama_customer' => cleanValue($row[40] ?? null),
+            'type_rm' => cleanValue($row[41] ?? null),
+            'tebal' => cleanValue($row[42] ?? null, 'decimal') ?? 0.0000,
+            'ukuran' => cleanValue($row[43] ?? null),
+            'strength' => cleanValue($row[44] ?? null),
+            'create_user' => cleanValue($row[45] ?? null) ?? $_SESSION['username'],
+            'date_created' => cleanValue($row[46] ?? null) ?? date('Y-m-d H:i:s'),
+            'user_modified' => cleanValue($row[47] ?? null),
+            'date_modified' => cleanValue($row[48] ?? null),
+            'ket_las' => cleanValue($row[49] ?? null),
         ];
         
-        // Bind dengan array unpacking
-        $stmt->bind_param($bind_types, ...$bind_params);
+        // Convert nilai decimal/float ke tipe yang benar
+        $data['volume_default'] = (float)$data['volume_default'];
+        $data['conversion_rate'] = (float)$data['conversion_rate'];
+        $data['tolerance'] = (int)$data['tolerance'];
+        $data['upper_tolerance'] = (float)$data['upper_tolerance'];
+        $data['lower_tolerance'] = (float)$data['lower_tolerance'];
+        $data['p'] = (float)$data['p'];
+        $data['l'] = (float)$data['l'];
+        $data['t'] = (float)$data['t'];
+        $data['p2'] = (float)$data['p2'];
+        $data['density'] = (float)$data['density'];
+        $data['re_order_point'] = (float)$data['re_order_point'];
+        $data['minimum_stock'] = (float)$data['minimum_stock'];
+        $data['maximum_stock'] = (float)$data['maximum_stock'];
+        $data['shelf_life_days'] = (int)$data['shelf_life_days'];
+        $data['tebal'] = (float)$data['tebal'];
         
-        try {
-            if ($stmt->execute()) {
-                $success_count++;
-            } else {
-                $error_count++;
-                $errors[] = "Baris " . $row_num . ": Execute gagal - " . $stmt->error;
-            }
-        } catch (Exception $e) {
-            $error_count++;
-            $errors[] = "Baris " . $row_num . ": " . $e->getMessage();
+        // Bind parameters (50 parameter dengan tipe string semua untuk kemudahan)
+        $types = str_repeat('s', 50);
+        $params = [$types];
+        
+        foreach ($data as $key => $value) {
+            $params[] = &$data[$key];
         }
         
-        $stmt->close();
+        call_user_func_array([$stmt, 'bind_param'], $params);
+        
+        // Eksekusi insert
+        if ($stmt->execute()) {
+            $success_count++;
+            
+            // Cek dan catat warning category tidak ditemukan
+            if ($data['category'] !== null) {
+                $cat_check = $conn->prepare("SELECT categori_id FROM m_category WHERE categori_id = ?");
+                $cat_check->bind_param("s", $data['category']);
+                $cat_check->execute();
+                if ($cat_check->get_result()->num_rows === 0) {
+                    $warnings[] = "Baris $row_num: Category '{$data['category']}' tidak ditemukan di tabel referensi (disimpan sebagai NULL)";
+                }
+                $cat_check->close();
+            }
+        } else {
+            $error_count++;
+            $errors[] = "Baris $row_num: " . $stmt->error;
+        }
     }
     
+    // ==================== 8. CLEANUP ====================
+    $stmt->close();
     fclose($handle);
     
-    // Buat response message
-    $message = "Import selesai! " . $success_count . " data berhasil diimport";
+    // Kembalikan foreign key check
+    $conn->query("SET FOREIGN_KEY_CHECKS = 1");
     
-    if ($error_count > 0) {
-        $message .= ", " . $error_count . " data gagal.";
+    // ==================== 9. RESPONSE ====================
+    $message = "Import selesai!";
+    $status = true;
+    
+    if ($success_count > 0) {
+        $message .= " $success_count data berhasil diimport.";
+        
+        if ($error_count > 0) {
+            $message .= " $error_count data gagal (duplicate atau error).";
+            $status = true; // Tetap true karena ada yang berhasil
+        }
     } else {
-        $message .= ".";
+        $message .= " Tidak ada data yang berhasil diimport.";
+        $status = false;
     }
     
-    echo json_encode([
-        'success' => true,
-        'message' => $message,
+    if (!empty($warnings)) {
+        $message .= " " . count($warnings) . " warning(s): Category tidak ditemukan.";
+    }
+    
+    sendJsonResponse($status, $message, [
         'success_count' => $success_count,
         'error_count' => $error_count,
-        'errors' => $errors
+        'warnings' => $warnings,
+        'errors' => array_slice($errors, 0, 30),
+        'total_processed' => $row_num - 1
     ]);
     
 } catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Error: ' . $e->getMessage()
-    ]);
+    // Rollback jika ada error fatal
+    if (isset($conn) && $conn) {
+        $conn->query("SET FOREIGN_KEY_CHECKS = 1");
+    }
+    
+    sendJsonResponse(false, 'Error: ' . $e->getMessage());
 }
 
-$conn->close();
+// Tutup koneksi
+if (isset($conn) && $conn) {
+    $conn->close();
+}
 ?>
