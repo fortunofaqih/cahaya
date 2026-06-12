@@ -233,6 +233,11 @@ $po_number    = generatePONumber($conn, $tahun);
     font-size: 11px !important;
     padding: 6px 10px !important;
 }
+.required {
+    color: red;
+    font-weight: bold; /* Opsional: untuk membuat bintang lebih tebal */
+    margin-left: 2px;  /* Opsional: memberi sedikit jarak dari kata Sales */
+}
 </style>
 
 <div class="so-wrap">
@@ -260,8 +265,8 @@ $po_number    = generatePONumber($conn, $tahun);
                     </div>
 
                     <div class="ff">
-                        <label>Marketing</label>
-                        <select name="marketing_id" id="marketing_id">
+                        <label>Marketing <span class="required">*</span></label>
+                        <select name="marketing_id" id="marketing_id" required>
                             <option value="">-- Pilih Marketing --</option>
                             <?php while ($m = mysqli_fetch_assoc($marketing_rs)): ?>
                                 <option value="<?= htmlspecialchars($m['marketing_id']) ?>"><?= htmlspecialchars($m['marketing_name']) ?></option>
@@ -269,13 +274,13 @@ $po_number    = generatePONumber($conn, $tahun);
                         </select>
                     </div>
                     <div class="ff">
-                        <label>Sales</label>
-                        <select name="sales_id" id="sales_id">
-                            <option value="">-- Pilih Sales --</option>
-                            <?php while ($s = mysqli_fetch_assoc($sales_rs)): ?>
-                                <option value="<?= htmlspecialchars($s['sales_id']) ?>"><?= htmlspecialchars($s['sales_name']) ?></option>
-                            <?php endwhile; ?>
-                        </select>
+                    <label>Sales <span class="required">*</span></label>
+                    <select name="sales_id" id="sales_id" required>
+                        <option value="">-- Pilih Sales --</option>
+                        <?php while ($s = mysqli_fetch_assoc($sales_rs)): ?>
+                            <option value="<?= htmlspecialchars($s['sales_id']) ?>"><?= htmlspecialchars($s['sales_name']) ?></option>
+                        <?php endwhile; ?>
+                    </select>
                     </div>
                     <!-- Hidden fields untuk status -->
                     <input type="hidden" name="status" value="Open">
@@ -285,10 +290,10 @@ $po_number    = generatePONumber($conn, $tahun);
 
             <!-- PANEL 2: Customer Information -->
             <div class="so-panel">
-                <div class="so-panel-header"><i class="fa-solid fa-building-user"></i> Customer Information</div>
+                <div class="so-panel-header"><i class="fa-solid fa-building-user"></i> Customer Information </div>
                 <div class="so-panel-body">
                     <div class="ff">
-                        <label>Customer Name</label>
+                        <label>Customer Name <span class="required">*</span></label>
                         <select name="customer_id" id="customer_id" required>
                             <option value="">-- Pilih Customer --</option>
                             <?php 

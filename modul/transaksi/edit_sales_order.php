@@ -191,7 +191,7 @@ $customer_rs  = mysqli_query($conn, "SELECT customer_id, customer, address, city
                         <label>Order Date</label>
                         <input type="date" name="order_date" value="<?= htmlspecialchars($head['order_date']) ?>">
                     </div>
-                    <div class="ff">
+                    <!--<div class="ff">
                         <label>PO Number <span class="comment">// readonly</span></label>
                         <input type="text" value="<?= htmlspecialchars($head['po']) ?>" readonly>
                         <input type="hidden" name="po" value="<?= htmlspecialchars($head['po']) ?>">
@@ -204,7 +204,7 @@ $customer_rs  = mysqli_query($conn, "SELECT customer_id, customer, address, city
                     <div class="ff">
                         <label>SOP Date</label>
                         <input type="date" name="sop_date" value="<?= htmlspecialchars($head['sop_date']) ?>">
-                    </div>
+                    </div>-->
                     <div class="ff">
                         <label>Marketing</label>
                         <select name="marketing_id" id="marketing_id">
@@ -275,14 +275,14 @@ $customer_rs  = mysqli_query($conn, "SELECT customer_id, customer, address, city
                         <label>Tolerance (%)</label>
                         <input type="number" step="0.01" name="tolerance" value="<?= htmlspecialchars($head['tolerance'] ?? '10') ?>">
                     </div>
-                    <div class="ff">
+                    <!--<div class="ff">
                         <label>Backward Calculation</label>
                         <div class="checkbox-row">
                             <input type="checkbox" name="backward_calculation" value="Checked"
                                 <?= ($head['backward_calculation'] ?? '') == 'Checked' ? 'checked' : '' ?>>
                             <span>Enable backward calculation</span>
                         </div>
-                    </div>
+                    </div>-->
                     <div class="ff">
                         <label>Payment Term</label>
                         <select name="payment_term">
@@ -319,14 +319,14 @@ $customer_rs  = mysqli_query($conn, "SELECT customer_id, customer, address, city
                         <label>Kurs</label>
                         <input type="text" name="kurs" value="<?= htmlspecialchars($head['kurs'] ?? '1.00') ?>" readonly>
                     </div>
-                    <div class="ff">
+                    <!--<div class="ff">
                         <label>Allow Auto Correct</label>
                         <div class="checkbox-row">
                             <input type="checkbox" name="allow_auto_correct" value="Checked"
                                 <?= ($head['allow_auto_correct'] ?? '') == 'Checked' ? 'checked' : '' ?>>
                             <span>Enable auto correct</span>
                         </div>
-                    </div>
+                    </div>-->
                     <div class="ff">
                         <label>Status</label>
                         <select name="status">
@@ -402,7 +402,13 @@ $customer_rs  = mysqli_query($conn, "SELECT customer_id, customer, address, city
             <div class="so-footer-row">
                 <div class="dp-block">
                     <span>Down Payment :</span>
-                    <input type="number" step="0.01" name="down_payment" id="down_payment" value="<?= htmlspecialchars($head['down_payment'] ?? 0) ?>">
+                    <input 
+                        type="text" 
+                        name="down_payment" 
+                        id="down_payment" 
+                        value="<?= number_format((float)($head['down_payment'] ?? 0), 0, ',', '.') ?>"
+                        inputmode="numeric"
+                    >
                     <input type="hidden" name="grand_total" id="grand_total_hidden">
                 </div>
                 <div class="totals-block">
@@ -455,8 +461,78 @@ function escHtml(s) {
         return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];
     });
 }
-function fmtNum(n) {
-    return parseFloat(n||0).toLocaleString('id-ID',{minimumFractionDigits:2,maximumFractionDigits:2});
+function parseRupiah(value) {
+    if (value === null || value === undefined || value === '') {
+        return 0;
+    }
+
+    value = String(value).trim();
+
+    // Hilangkan karakter selain angka, titik, koma, minus
+    value = value.replace(/[^0-9.,\-]/g, '');
+
+    if (value === '' || value === '-' || value === '.' || value === ',') {
+        return 0;
+    }
+
+    var hasDot   = value.indexOf('.') !== -1;
+    var hasComma = value.indexOf(',') !== -1;
+
+    if (hasDot && hasComma) {
+        // Format Indonesia: 1.000.000,50
+        value = value.replace(/\./g, '');
+        value = value.replace(',', '.');
+    } else if (hasComma && !hasDot) {
+        // Format: 20000,50
+        value = value.replace(',', '.');
+    } else if (hasDot && !hasComma) {
+        var dotCount = (value.match(/\./g) || []).length;
+
+        if (dotCount > 1) {
+            // Format ribuan: 1.000.000
+            value = value.replace(/\./g, '');
+        } else {
+            var parts = value.split('.');
+            var decimalLength = parts[1] ? parts[1].length : 0;
+
+            if (decimalLength === 3) {
+                // Format input rupiah: 20.000
+                value = value.replace(/\./g, '');
+            }
+            // Kalau decimalLength 1 atau 2, anggap format database/desimal: 20000.00
+        }
+    }
+
+    return parseFloat(value) || 0;
+}
+
+function formatRupiahInput(value) {
+    value = parseRupiah(value);
+
+    return value.toLocaleString('id-ID', {
+        maximumFractionDigits: 0
+    });
+}
+function formatRupiahTyping(value) {
+    value = String(value || '').replace(/\D/g, '');
+
+    if (value === '') {
+        return '0';
+    }
+
+    value = parseInt(value, 10);
+
+    return value.toLocaleString('id-ID', {
+        maximumFractionDigits: 0
+    });
+}
+function fmtNum(value) {
+    value = parseRupiah(value);
+
+    return value.toLocaleString('id-ID', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
 }
 
 function updateRowNumbers() {
@@ -489,9 +565,33 @@ function buildRow(d) {
         <td><input type="number" step="0.01" name="quantity_pack[]" class="qty-pack"      value="${d.quantity_pack||0}"></td>
         <td><input type="text"               name="uom_pack[]"      class="inv-uom-pack"  value="${escHtml(d.uom_pack||'')}"  readonly></td>
         <td><input type="text"               name="uom_detail[]"    class="inv-uom-detail"value="${escHtml(d.uom_detail||'')}"></td>
-        <td><input type="number" step="0.01" name="price_unit[]"    class="price-unit"    value="${d.price_unit||0}"></td>
-        <td><input type="number" step="0.01" name="price[]"         class="price"         value="${d.price||0}"     readonly></td>
-        <td><input type="number" step="0.01" name="subtotal[]"      class="subtotal"      value="${d.subtotal||0}"   readonly></td>
+        <td>
+            <input 
+                type="text" 
+                name="price_unit[]" 
+                class="price-unit rupiah-input" 
+                value="${formatRupiahInput(d.price_unit || 0)}"
+                inputmode="numeric"
+            >
+        </td>
+        <td>
+            <input 
+                type="text" 
+                name="price[]" 
+                class="price rupiah-input" 
+                value="${formatRupiahInput(d.price || 0)}"
+                inputmode="numeric"
+            >
+        </td>
+        <td>
+            <input 
+                type="text" 
+                name="subtotal[]" 
+                class="subtotal rupiah-input" 
+                value="${formatRupiahInput(d.subtotal || 0)}"
+                readonly
+            >
+        </td>
         <td><input type="text"               name="remarks_detail[]"class="inv-remarks"   value="${escHtml(d.remarks||'')}" placeholder="catatan..."></td>
         <td style="text-align:center;">
             <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-times"></i></button>
@@ -576,25 +676,38 @@ function deleteSelected() {
 }
 
 function calculateRow(row) {
-    var qty       = parseFloat($(row).find('.qty').val()) || 0;
-    var priceUnit = parseFloat($(row).find('.price-unit').val()) || 0;
-    var price     = qty * priceUnit;
-    $(row).find('.price').val(price.toFixed(2));
-    $(row).find('.subtotal').val(price.toFixed(2));
+    var $row = $(row);
+
+    var qtyPack   = parseFloat($row.find('.qty-pack').val()) || 0;
+    var priceUnit = parseRupiah($row.find('.price-unit').val());
+    var price     = parseRupiah($row.find('.price').val());
+
+    // Prioritas pakai price_unit.
+    // Kalau price_unit = 0, baru pakai price.
+    var hargaDipakai = priceUnit > 0 ? priceUnit : price;
+
+    var subtotal = qtyPack * hargaDipakai;
+
+    $row.find('.subtotal').val(formatRupiahInput(subtotal));
+
     calculateGrandTotal();
 }
 
 function calculateGrandTotal() {
     var subtotalTotal = 0;
+
     document.querySelectorAll('.subtotal').forEach(function(el) {
-        subtotalTotal += parseFloat(el.value) || 0;
+        subtotalTotal += parseRupiah(el.value);
     });
+
     var grandTotal  = subtotalTotal;
-    var downPayment = parseFloat(document.getElementById('down_payment').value) || 0;
+    var downPayment = parseRupiah(document.getElementById('down_payment').value);
     var balance     = grandTotal - downPayment;
+
     document.getElementById('subtotal_display').value    = fmtNum(subtotalTotal);
     document.getElementById('grand_total_display').value = fmtNum(grandTotal);
     document.getElementById('grand_total_hidden').value  = grandTotal.toFixed(2);
+
     document.getElementById('st_summary').textContent      = fmtNum(subtotalTotal);
     document.getElementById('gt_summary').textContent      = fmtNum(grandTotal);
     document.getElementById('balance_summary').textContent = fmtNum(balance);
@@ -629,16 +742,38 @@ document.addEventListener('DOMContentLoaded', function() {
     calculateGrandTotal();
 
     // Input delegation
-    $(document).on('input', '.qty, .price-unit', function() {
-        calculateRow($(this).closest('tr')[0]);
-    });
-    $(document).on('input', '#down_payment', function() {
-        calculateGrandTotal();
+ $(document).on('input', '.qty-pack, .price-unit, .price', function() {
+    if ($(this).hasClass('rupiah-input')) {
+        this.value = formatRupiahTyping(this.value);
+
+        // Taruh cursor di akhir supaya tidak mental saat titik ribuan berubah
+        this.selectionStart = this.selectionEnd = this.value.length;
+    }
+
+    calculateRow($(this).closest('tr')[0]);
+});
+
+ $(document).on('input', '#down_payment', function() {
+    this.value = formatRupiahTyping(this.value);
+
+    // Taruh cursor di akhir
+    this.selectionStart = this.selectionEnd = this.value.length;
+
+    calculateGrandTotal();
+});
+
+        // Select All
+        document.getElementById('selectAll').addEventListener('change', function() {
+            document.querySelectorAll('.rowCheckbox').forEach(function(cb){ cb.checked = this.checked; }, this);
+        });
+
+        document.getElementById('formEditSO').addEventListener('submit', function() {
+    $('.price-unit, .price, .subtotal, #down_payment').each(function() {
+        $(this).val(parseRupiah($(this).val()).toFixed(2));
     });
 
-    // Select All
-    document.getElementById('selectAll').addEventListener('change', function() {
-        document.querySelectorAll('.rowCheckbox').forEach(function(cb){ cb.checked = this.checked; }, this);
+        var grandTotal = parseRupiah($('#grand_total_hidden').val());
+        $('#grand_total_hidden').val(grandTotal.toFixed(2));
+        });
     });
-});
 </script>

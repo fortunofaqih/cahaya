@@ -1,6 +1,10 @@
 <?php
 // modul/transaksi/update_sales_order.php
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 if (!isset($_SESSION['username'])) {
     echo "<script>window.location.href='../../login.php';</script>";
     exit;
@@ -15,14 +19,41 @@ function parseRupiah($value) {
 
     $value = trim((string)$value);
 
-    // Hilangkan titik ribuan
-    $value = str_replace('.', '', $value);
+    // Hilangkan karakter selain angka, titik, koma, minus
+    $value = preg_replace('/[^0-9.,\-]/', '', $value);
 
-    // Kalau ada koma desimal, ubah ke titik
-    $value = str_replace(',', '.', $value);
+    if ($value === '' || $value === '-' || $value === '.' || $value === ',') {
+        return 0;
+    }
 
-    // Sisakan angka, minus, dan titik
-    $value = preg_replace('/[^0-9.\-]/', '', $value);
+    $hasDot   = strpos($value, '.') !== false;
+    $hasComma = strpos($value, ',') !== false;
+
+    if ($hasDot && $hasComma) {
+        // Format Indonesia: 1.000.000,50
+        $value = str_replace('.', '', $value);
+        $value = str_replace(',', '.', $value);
+    } elseif ($hasComma && !$hasDot) {
+        // Format: 20000,50
+        $value = str_replace(',', '.', $value);
+    } elseif ($hasDot && !$hasComma) {
+        $dotCount = substr_count($value, '.');
+
+        if ($dotCount > 1) {
+            // Format ribuan: 1.000.000
+            $value = str_replace('.', '', $value);
+        } else {
+            // Bisa jadi 20.000 atau 20000.00
+            $parts = explode('.', $value);
+            $decimalLength = strlen($parts[1] ?? '');
+
+            if ($decimalLength === 3) {
+                // Format ribuan: 20.000
+                $value = str_replace('.', '', $value);
+            }
+            // Kalau decimalLength 1 atau 2, biarkan sebagai desimal: 20000.00
+        }
+    }
 
     return floatval($value);
 }
@@ -61,8 +92,7 @@ $status            = mysqli_real_escape_string($conn, $_POST['status'] ?? 'Open'
 $approval_status   = mysqli_real_escape_string($conn, $_POST['approval_status'] ?? 'Pending');
 $down_payment      = parseRupiah($_POST['down_payment'] ?? 0);
 
-// Jangan langsung pakai grand_total dari POST.
-// Nanti dihitung ulang dari detail.
+// Grand total dihitung ulang dari detail
 $grand_total = 0;
 
 // ── Validasi ──────────────────────────────────────────────────────────
@@ -120,7 +150,6 @@ try {
         $price_unit = parseRupiah($price_units[$i] ?? 0);
         $price      = parseRupiah($prices[$i] ?? 0);
 
-        // Logic utama:
         // Subtotal = Qty Pack x Price Unit
         // Jika Price Unit 0, pakai Price
         $harga_dipakai = $price_unit > 0 ? $price_unit : $price;
