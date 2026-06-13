@@ -41,6 +41,9 @@ switch ($page) {
     case 'import_customer':
         include 'modul/master/import_customer.php';
         break;
+         case 'import_uom':
+        include 'modul/master/import_uom_page.php';
+        break;
      case 'export_customer':
         include 'modul/master/export_customer.php';
         break;

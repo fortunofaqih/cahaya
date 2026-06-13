@@ -251,7 +251,7 @@ $po_number    = generatePONumber($conn, $tahun);
         <input type="hidden" name="po" value="<?= htmlspecialchars($po_number) ?>">
         
         <!-- PANEL 1: Order Information -->
-        <div class="panel-row">
+        <div class="panel-row">UoM Pack
             <div class="so-panel">
                 <div class="so-panel-header"><i class="fa-solid fa-file-invoice"></i> Order Information</div>
                 <div class="so-panel-body">
@@ -521,9 +521,9 @@ function buildRow(data) {
             <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="${escHtml(data.inventory_name || '')}">
         </td>
         <td><input type="number" step="0.01" name="quantity[]" class="qty" value="${data.quantity || 0}" style="text-align:center; border:1px solid #ddd; border-radius:2px;"></td>
-        <td><input type="text" name="uom[]" class="inv-uom" value="${escHtml(data.uom || '')}" readonly style="text-align:center; background:#f1f3f5;"></td>
+        <td><input type="text" name="uom[]" class="inv-uom" value="${escHtml(data.uom || '')}" style="text-align:center; background:#f1f3f5;"></td>
         <td><input type="number" step="0.01" name="quantity_pack[]" class="qty-pack" value="${data.quantity_pack || 0}" style="text-align:center; border:1px solid #ddd; border-radius:2px;"></td>
-        <td><input type="text" name="uom_pack[]" class="inv-uom-pack" value="${escHtml(data.uom_pack || '')}" readonly style="text-align:center; background:#f1f3f5;"></td>
+        <td><input type="text" name="uom_pack[]" class="inv-uom-pack" value="${escHtml(data.uom_pack || '')}"  style="text-align:center; background:#f1f3f5;"></td>
         <td><input type="text" name="uom_detail[]" class="inv-uom-detail" value="${escHtml(data.uom_detail || '')}" style="border:1px solid #ddd; border-radius:2px; text-align:center;"></td>
        <td>
             <input 
