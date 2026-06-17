@@ -22,6 +22,10 @@ $user_role = $_SESSION['id_role']; // 1 = IT Admin, 2 = Marketing, 3 = Finance
     <!-- FontAwesome untuk Icon Menu -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!-- Flatpickr CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <!-- Flatpickr JS -->
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <style>
         body { font-size: 13px; background-color: #f8f9fa; }
         .sidebar { 

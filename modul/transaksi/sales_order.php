@@ -8,33 +8,152 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
-// Filter pencarian
-$start_date = isset($_GET['start_date']) ? $_GET['start_date'] : date('Y-m-01');
-$end_date = isset($_GET['end_date']) ? $_GET['end_date'] : date('Y-m-t');
-$status = isset($_GET['status']) ? $_GET['status'] : '';
-$approval_status = isset($_GET['approval_status']) ? $_GET['approval_status'] : '';
-$so_id = isset($_GET['so_id']) ? $_GET['so_id'] : '';
-$export_checked = isset($_GET['export_checked']) ? $_GET['export_checked'] : '';
-$show_checked = isset($_GET['show_checked']) ? $_GET['show_checked'] : '';
+// =============================================
+// FILTER PENCARIAN - DEFAULT HARI INI
+// =============================================
+function formatDateIndonesian($date) {
+    if (empty($date) || $date == '0000-00-00') {
+        return '';
+    }
 
-// Build WHERE clause
+    $bulan = [
+        1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
+    ];
+
+    $timestamp = strtotime($date);
+
+    if (!$timestamp) {
+        return '';
+    }
+
+    $tanggal = date('d', $timestamp);
+    $bulan_num = (int)date('m', $timestamp);
+    $tahun = date('Y', $timestamp);
+
+    return $tanggal . '-' . $bulan[$bulan_num] . '-' . $tahun;
+}
+
+function convertFilterDateToMysql($date) {
+    if ($date === null || trim($date) === '') {
+        return '';
+    }
+
+    $date = trim($date);
+
+    // Jika sudah format database: 2026-06-17
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return $date;
+    }
+
+    $months = [
+        'Jan' => '01',
+        'Feb' => '02',
+        'Mar' => '03',
+        'Apr' => '04',
+        'May' => '05',
+        'Mei' => '05',
+        'Jun' => '06',
+        'Jul' => '07',
+        'Aug' => '08',
+        'Agu' => '08',
+        'Sep' => '09',
+        'Oct' => '10',
+        'Okt' => '10',
+        'Nov' => '11',
+        'Dec' => '12',
+        'Des' => '12'
+    ];
+
+    // Format dari datepicker: 17-Jun-2026
+    $parts = explode('-', $date);
+
+    if (count($parts) === 3) {
+        $day = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
+        $monthText = $parts[1];
+        $year = $parts[2];
+
+        if (isset($months[$monthText])) {
+            return $year . '-' . $months[$monthText] . '-' . $day;
+        }
+    }
+
+    return '';
+}
+
+// Raw value untuk ditampilkan kembali di form
+$start_date_raw = isset($_GET['start_date']) && trim($_GET['start_date']) !== ''
+    ? trim($_GET['start_date'])
+    : formatDateIndonesian(date('Y-m-d'));
+
+$end_date_raw = isset($_GET['end_date']) && trim($_GET['end_date']) !== ''
+    ? trim($_GET['end_date'])
+    : formatDateIndonesian(date('Y-m-d'));
+
+// Value SQL untuk query
+$start_date_sql = convertFilterDateToMysql($start_date_raw);
+$end_date_sql = convertFilterDateToMysql($end_date_raw);
+
+// Jika gagal convert, fallback hari ini
+if ($start_date_sql === '') {
+    $start_date_sql = date('Y-m-d');
+    $start_date_raw = formatDateIndonesian($start_date_sql);
+}
+
+if ($end_date_sql === '') {
+    $end_date_sql = date('Y-m-d');
+    $end_date_raw = formatDateIndonesian($end_date_sql);
+}
+
+// Validasi silang tanggal SQL
+if ($start_date_sql > $end_date_sql) {
+    $temp_sql = $start_date_sql;
+    $start_date_sql = $end_date_sql;
+    $end_date_sql = $temp_sql;
+
+    $temp_raw = $start_date_raw;
+    $start_date_raw = $end_date_raw;
+    $end_date_raw = $temp_raw;
+}
+
+// Escape input
+$status = isset($_GET['status']) ? mysqli_real_escape_string($conn, trim($_GET['status'])) : '';
+$approval_status = isset($_GET['approval_status']) ? mysqli_real_escape_string($conn, trim($_GET['approval_status'])) : '';
+$so_id = isset($_GET['so_id']) ? mysqli_real_escape_string($conn, trim($_GET['so_id'])) : '';
+$export_checked = isset($_GET['export_checked']) ? mysqli_real_escape_string($conn, trim($_GET['export_checked'])) : '';
+$show_checked = isset($_GET['show_checked']) ? mysqli_real_escape_string($conn, trim($_GET['show_checked'])) : '';
+
+$start_date_safe = mysqli_real_escape_string($conn, $start_date_sql);
+$end_date_safe = mysqli_real_escape_string($conn, $end_date_sql);
+
+// =============================================
+// BUILD WHERE CLAUSE
+// =============================================
 $where = "WHERE 1=1";
-if ($start_date && $end_date) {
-    $where .= " AND order_date BETWEEN '$start_date' AND '$end_date'";
-}
-if ($status) {
-    $where .= " AND status = '$status'";
-}
-if ($approval_status) {
-    $where .= " AND approval_status = '$approval_status'";
-}
-if ($so_id) {
-    $where .= " AND order_no LIKE '%$so_id%'";
-}
-if ($show_checked == 'on') {
-    $where .= " AND export_flag = 'Checked'";
+
+// Pakai DATE() supaya aman jika order_date bertipe DATETIME
+$where .= " AND DATE(h.order_date) BETWEEN '$start_date_safe' AND '$end_date_safe'";
+
+if ($status !== '') {
+    $where .= " AND h.status = '$status'";
 }
 
+if ($approval_status !== '') {
+    $where .= " AND h.approval_status = '$approval_status'";
+}
+
+if ($so_id !== '') {
+    $where .= " AND h.order_no LIKE '%$so_id%'";
+}
+
+if ($show_checked == 'on') {
+    $where .= " AND h.export_flag = 'Checked'";
+}
+
+// =============================================
+// QUERY UTAMA (sudah JOIN dengan m_marketing dan m_sales)
+// =============================================
 $query = mysqli_query($conn, "
     SELECT h.*,
            m.marketing_name,
@@ -45,30 +164,60 @@ $query = mysqli_query($conn, "
     $where
     ORDER BY h.order_date DESC, h.order_no DESC
 ");
+
+if (!$query) {
+    die("Query Sales Order Error: " . mysqli_error($conn));
+}
 ?>
 
 <style>
-    /* Crystal Report Style */
     .crystal-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        color: white;
-        padding: 8px 15px;
+        color: #fff;
+        padding: 10px 15px;
         border-radius: 5px 5px 0 0;
         font-weight: bold;
+        margin-bottom: 15px;
     }
-    .panel-crystal {
-        border: 1px solid #dee2e6;
+
+    .crystal-header h5 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 700;
+    }
+
+    .filter-box {
+        background: #f8f9fa;
+        padding: 12px;
         border-radius: 5px;
         margin-bottom: 15px;
-        background: white;
+        border: 1px solid #dee2e6;
     }
-    .panel-title {
-        background: #f0f4f8;
-        padding: 8px 12px;
-        font-weight: bold;
-        border-bottom: 1px solid #dee2e6;
-        color: #2b4c7e;
+
+    .filter-box label {
+        margin-bottom: 4px;
+        color: #333;
     }
+
+    .filter-box .form-control,
+    .filter-box .form-select {
+        font-size: 12px;
+        height: 31px;
+    }
+
+    .btn-vb-primary {
+        background: linear-gradient(to bottom, #2b579a, #1e3d6b);
+        border: 1px solid #183054;
+        color: #fff;
+    }
+
+    .btn-vb-primary:hover,
+    .btn-vb-primary:focus {
+        background: linear-gradient(to bottom, #23477d, #142948);
+        border-color: #122542;
+        color: #fff;
+    }
+
     .btn-vs {
         padding: 8px 20px !important;
         font-size: 12px !important;
@@ -77,46 +226,23 @@ $query = mysqli_query($conn, "
         transition: all 0.2s ease;
         margin-right: 5px;
     }
+
     .btn-vs i {
         margin-right: 6px;
     }
-    .btn-excel { background: #1d6f42 !important; color: white !important; border: none; }
-    .btn-excel:hover { background: #0f5a36 !important; transform: translateY(-1px); }
-    .btn-print { background: #6c757d !important; color: white !important; border: none; }
-    .btn-print:hover { background: #5a6268 !important; transform: translateY(-1px); }
-    .btn-add { background: #0d6efd !important; color: white !important; border: none; }
-    .btn-add:hover { background: #0b5ed7 !important; transform: translateY(-1px); }
-    .filter-box {
-        background: #f8f9fa;
-        padding: 12px;
-        border-radius: 5px;
-        margin-bottom: 15px;
-        border: 1px solid #dee2e6;
+
+    .btn-excel {
+        background: #1d6f42 !important;
+        color: #fff !important;
+        border: none;
     }
-    .table-crystal {
-        font-size: 11px;
-        border-collapse: collapse;
-        width: 100%;
+
+    .btn-excel:hover {
+        background: #0f5a36 !important;
+        color: #fff !important;
+        transform: translateY(-1px);
     }
-    .table-crystal th {
-        background: #e9ecef;
-        padding: 6px 4px;
-        border: 1px solid #dee2e6;
-        font-weight: bold;
-        white-space: nowrap;
-    }
-    .table-crystal td {
-        padding: 4px;
-        border: 1px solid #dee2e6;
-        white-space: nowrap;
-    }
-    .badge-open { background: #28a745; color: white; padding: 2px 8px; border-radius: 10px; font-size: 9px; }
-    .badge-close { background: #dc3545; color: white; padding: 2px 8px; border-radius: 10px; font-size: 9px; }
-    .badge-approve { background: #17a2b8; color: white; padding: 2px 8px; border-radius: 10px; font-size: 9px; }
-    .badge-reject { background: #fd7e14; color: white; padding: 2px 8px; border-radius: 10px; font-size: 9px; }
-    .badge-pending { background: #ffc107; color: #000; padding: 2px 8px; border-radius: 10px; font-size: 9px; }
-    
-    /* Style untuk tombol aksi */
+
     .btn-action {
         padding: 4px 8px !important;
         font-size: 10px !important;
@@ -124,16 +250,155 @@ $query = mysqli_query($conn, "
         margin: 0 2px;
         display: inline-block;
         text-decoration: none;
+        white-space: nowrap;
     }
-    .btn-cetak-so { background: #17a2b8 !important; color: white !important; border: none; }
-    .btn-cetak-so:hover { background: #138496 !important; transform: translateY(-1px); }
-     /* Custom Button VB Style */
-        .btn-vb { background: linear-gradient(to bottom, #ffffff, #e6e6e6); border: 1px solid #adadad; color: #333; }
-        .btn-vb:hover { background: linear-gradient(to bottom, #e6e6e6, #cccccc); border-color: #adadad; color: #000; }
-        .btn-vb-primary { background: linear-gradient(to bottom, #2b579a, #1e3d6b); border: 1px solid #183054; color: #fff; }
-        .btn-vb-primary:hover { background: linear-gradient(to bottom, #23477d, #142948); border-color: #122542; color: #fff; }
-        .btn-vb-success { background: linear-gradient(to bottom, #257b43, #19532d); border: 1px solid #123c20; color: #fff; }
-        .btn-vb-success:hover { background: linear-gradient(to bottom, #1d6135, #113a1f); color: #fff; }
+
+    .btn-cetak-so {
+        background: #17a2b8 !important;
+        color: #fff !important;
+        border: none;
+    }
+
+    .btn-cetak-so:hover {
+        background: #138496 !important;
+        color: #fff !important;
+        transform: translateY(-1px);
+    }
+
+    .table-wrapper-so {
+        max-height: 550px;
+        overflow: auto;
+        border: 1px solid #dee2e6;
+        background: #fff;
+    }
+
+    .table-crystal {
+        font-size: 11px;
+        border-collapse: separate;
+        border-spacing: 0;
+        width: max-content;
+        min-width: 100%;
+        margin-bottom: 0;
+    }
+
+    .table-crystal th,
+    .table-crystal td {
+        padding: 5px 6px;
+        border-right: 1px solid #dee2e6;
+        border-bottom: 1px solid #dee2e6;
+        white-space: nowrap;
+        vertical-align: middle;
+        background: #fff;
+    }
+
+    .table-crystal th {
+        background: #e9ecef;
+        font-weight: 700;
+        color: #333;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+    }
+
+    .table-crystal tbody tr:hover td {
+        background: #f8fbff;
+    }
+
+    .sticky-col-aksi {
+        position: sticky;
+        left: 0;
+        z-index: 6;
+        min-width: 135px;
+        width: 135px;
+        max-width: 135px;
+        background: #fff !important;
+    }
+
+    .table-crystal th.sticky-col-aksi {
+        background: #e9ecef !important;
+        z-index: 8;
+    }
+
+    .sticky-col-order {
+        position: sticky;
+        left: 135px;
+        z-index: 6;
+        min-width: 130px;
+        width: 130px;
+        max-width: 130px;
+        background: #fff !important;
+        font-weight: 700;
+    }
+
+    .table-crystal th.sticky-col-order {
+        background: #e9ecef !important;
+        z-index: 8;
+    }
+
+    .text-ellipsis-100 {
+        max-width: 100px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .text-ellipsis-120 {
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .text-ellipsis-150 {
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .badge-open,
+    .badge-close,
+    .badge-approve,
+    .badge-reject,
+    .badge-pending {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 9px;
+        font-weight: 600;
+        line-height: 1.4;
+    }
+
+    .badge-open {
+        background: #28a745;
+        color: #fff;
+    }
+
+    .badge-close {
+        background: #dc3545;
+        color: #fff;
+    }
+
+    .badge-approve {
+        background: #17a2b8;
+        color: #fff;
+    }
+
+    .badge-reject {
+        background: #fd7e14;
+        color: #fff;
+    }
+
+    .badge-pending {
+        background: #ffc107;
+        color: #000;
+    }
+
+    .approval-select {
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+        font-size: 11px;
+        cursor: pointer;
+        min-width: 90px;
+    }
 </style>
 
 <div class="d-print-none">
@@ -141,50 +406,66 @@ $query = mysqli_query($conn, "
         <h5 class="m-0"><i class="fa fa-file-invoice"></i> Sales Order (SO)</h5>
     </div>
     
-    <!-- FILTER PANEL -->
-    <div class="filter-box">
-        <form method="GET" action="index.php" class="row g-2 align-items-end">
-            <input type="hidden" name="page" value="sales_order">
-            <div class="col-md-2">
-                <label class="form-label fw-bold small">Start Date</label>
-                <input type="date" name="start_date" class="form-control form-control-sm" value="<?= $start_date ?>">
-            </div>
-            <div class="col-md-2">
-                <label class="form-label fw-bold small">End Date</label>
-                <input type="date" name="end_date" class="form-control form-control-sm" value="<?= $end_date ?>">
-            </div>
-            <div class="col-md-1">
-                <label class="form-label fw-bold small">Status</label>
-                <select name="status" class="form-select form-select-sm">
-                    <option value="">All</option>
-                    <option value="Open" <?= $status == 'Open' ? 'selected' : '' ?>>Open</option>
-                    <option value="Close" <?= $status == 'Close' ? 'selected' : '' ?>>Close</option>
-                </select>
-            </div>
-            <div class="col-md-2">
-                <label class="form-label fw-bold small">Approval Status</label>
-                <select name="approval_status" class="form-select form-select-sm">
-                    <option value="">All</option>
-                    <option value="Approve" <?= $approval_status == 'Approve' ? 'selected' : '' ?>>Approve</option>
-                    <option value="Reject" <?= $approval_status == 'Reject' ? 'selected' : '' ?>>Reject</option>
-                    <option value="Pending" <?= $approval_status == 'Pending' ? 'selected' : '' ?>>Pending</option>
-                </select>
-            </div>
-            <div class="col-md-2">
-                <label class="form-label fw-bold small">SO ID</label>
-                <input type="text" name="so_id" class="form-control form-control-sm" placeholder="Search SO..." value="<?= $so_id ?>">
-            </div>
-            <div class="col-md-1">
-                <!--<div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="export_checked" id="export_checked" <?= $export_checked == 'on' ? 'checked' : '' ?>>
-                    <label class="form-check-label small">Export</label>
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="show_checked" id="show_checked" <?= $show_checked == 'on' ? 'checked' : '' ?>>
-                    <label class="form-check-label small">Show Checked</label>
-                </div>-->
-            </div>
-          <div class="col-md-2">
+  <!-- FILTER PANEL -->
+<div class="filter-box">
+    <form method="GET" action="index.php" class="row g-2 align-items-end">
+        <input type="hidden" name="page" value="sales_order">
+
+        <div class="col-md-2">
+            <label class="form-label fw-bold small">Start Date</label>
+            <input 
+                type="text" 
+                name="start_date" 
+                class="form-control form-control-sm datepicker" 
+                value="<?= htmlspecialchars($start_date_raw) ?>"
+                autocomplete="off"
+            >
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label fw-bold small">End Date</label>
+            <input 
+                type="text" 
+                name="end_date" 
+                class="form-control form-control-sm datepicker" 
+                value="<?= htmlspecialchars($end_date_raw) ?>"
+                autocomplete="off"
+            >
+        </div>
+
+        <div class="col-md-1">
+            <label class="form-label fw-bold small">Status</label>
+            <select name="status" class="form-select form-select-sm">
+                <option value="">All</option>
+                <option value="Open" <?= $status == 'Open' ? 'selected' : '' ?>>Open</option>
+                <option value="Close" <?= $status == 'Close' ? 'selected' : '' ?>>Close</option>
+            </select>
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label fw-bold small">Approval Status</label>
+            <select name="approval_status" class="form-select form-select-sm">
+                <option value="">All</option>
+                <option value="Approve" <?= $approval_status == 'Approve' ? 'selected' : '' ?>>Approve</option>
+                <option value="Reject" <?= $approval_status == 'Reject' ? 'selected' : '' ?>>Reject</option>
+                <option value="Pending" <?= $approval_status == 'Pending' ? 'selected' : '' ?>>Pending</option>
+            </select>
+        </div>
+
+        <div class="col-md-2">
+            <label class="form-label fw-bold small">SO ID</label>
+            <input 
+                type="text" 
+                name="so_id" 
+                class="form-control form-control-sm" 
+                placeholder="Search SO..." 
+                value="<?= htmlspecialchars($so_id) ?>"
+            >
+        </div>
+
+        <div class="col-md-1"></div>
+
+        <div class="col-md-2">
             <button type="submit" class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100 mb-2">
                 <i class="fa fa-search"></i> Search
             </button>
@@ -197,15 +478,15 @@ $query = mysqli_query($conn, "
                 <i class="fa fa-plus-circle"></i> Create New SO
             </button>
         </div>
-        </form>
-    </div>
+    </form>
+</div>
     
     <!-- ACTION BUTTONS -->
     <div class="mb-3 d-flex justify-content-between">
         <div>
-            <button class="btn-vs btn-excel" onclick="window.location.href='modul/transaksi/export_sales_order.php?start_date=<?= $start_date ?>&end_date=<?= $end_date ?>&status=<?= $status ?>&approval_status=<?= $approval_status ?>&so_id=<?= $so_id ?>'">
-                <i class="fa fa-file-excel-o"></i> Export to Excel
-            </button>
+           <button class="btn-vs btn-excel" onclick="window.location.href='modul/transaksi/export_sales_order.php?start_date=<?= urlencode($start_date_raw) ?>&end_date=<?= urlencode($end_date_raw) ?>&status=<?= urlencode($status) ?>&approval_status=<?= urlencode($approval_status) ?>&so_id=<?= urlencode($so_id) ?>'">
+            <i class="fa fa-file-excel-o"></i> Export to Excel
+        </button>
          
         </div>
         
@@ -213,12 +494,12 @@ $query = mysqli_query($conn, "
 </div>
 
 <!-- TABLE HEADER -->
-<div class="table-responsive" style="max-height: 550px; overflow-y: auto;">
+<div class="table-wrapper-so">
     <table class="table-crystal table-hover">
         <thead>
             <tr>
-                <th style="position: sticky; left: 0; background: #e9ecef; z-index: 2;">Aksi</th>
-                <th style="position: sticky; left: 133px; background: #e9ecef; z-index: 2;">Order No</th>
+                <th class="sticky-col-aksi">Aksi</th>
+                <th class="sticky-col-order">Order No</th>
                 <th>Order Date</th>
                 
                 <th>Marketing</th>
@@ -252,57 +533,54 @@ $query = mysqli_query($conn, "
                 echo "<tr><td colspan='29' class='text-center py-3'>Tidak ada data Sales Order ditemukan.</td></tr>";
             } else {
                 while ($row = mysqli_fetch_assoc($query)) {
-                    $status_class = $row['status'] == 'Open' ? 'badge-open' : 'badge-close';
-                    $approval_class = $row['approval_status'] == 'Approve' ? 'badge-approve' : ($row['approval_status'] == 'Reject' ? 'badge-reject' : 'badge-pending');
-                    
-                    // Get Marketing Name
-                    $mkt = mysqli_fetch_assoc(mysqli_query($conn, "SELECT marketing_name FROM m_marketing WHERE marketing_id='{$row['marketing_id']}'"));
-                    $marketing_name = $mkt ? $mkt['marketing_name'] : '';
-                    
-                    // Get Sales Name
-                    $sls = mysqli_fetch_assoc(mysqli_query($conn, "SELECT sales_name FROM m_sales WHERE sales_id='{$row['sales_id']}'"));
-                    $sales_name = $sls ? $sls['sales_name'] : '';
-            ?>
-            <tr>
-                <td style="position: sticky; left: 0; background: white; z-index: 1; white-space: nowrap;">
-                    <a href="index.php?page=edit_sales_order&id=<?= $row['order_no'] ?>" class="btn btn-sm btn-warning" style="padding: 2px 6px;"><i class="fa fa-edit"></i></a>
-                    <a href="javascript:void(0)" onclick="confirmDelete('<?= $row['order_no'] ?>')" class="btn btn-sm btn-danger" style="padding: 2px 6px;"><i class="fa fa-trash"></i></a>
-                    <a href="modul/transaksi/cetak_sales_order.php?no_so=<?= urlencode($row['order_no']) ?>" target="_blank" class="btn-action btn-cetak-so"><i class="fa fa-print"></i> Cetak</a>
-                </td>
-                <td style="position: sticky; left: 133px; background: white; z-index: 1; font-weight: bold;"><?= $row['order_no'] ?></td>
-                <td><?= date('d-m-Y', strtotime($row['order_date'])) ?></td>
-                
-                <td><?= $marketing_name ?></td>
-                <td><?= $sales_name ?></td>
-                <td><?= $row['customer_id'] ?></td>
-                <td><?= $row['customer_name'] ?></td>
-                <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;"><?= $row['customer_address'] ?></td>
-                <td><?= $row['customer_city'] ?></td>
-                <td><?= $row['station'] ?></td>
-                <td><?= $row['shipment_due_date'] ? date('d-m-Y', strtotime($row['shipment_due_date'])) : '' ?></td>
-                <td style="max-width: 120px; overflow: hidden; text-overflow: ellipsis;"><?= $row['shipment_location'] ?></td>
-                <td class="text-end"><?= number_format($row['tolerance'], 2) ?>%</td>
-                <td><?= $row['payment_type'] ?></td>
-                <td><?= $row['payment_term'] ?></td>
-                <td><?= $row['currency'] ?></td>
-                <td class="text-end">1</td>
-                <td class="text-end fw-bold text-primary"><?= number_format($row['grand_total'], 2) ?></td>
-                <td class="text-end"><?= number_format($row['down_payment'], 2) ?></td>
-                <td class="text-center"><span class="<?= $status_class ?>"><?= $row['status'] ?></span></td>
-                <td class="text-center">
-                    <select class="approval-select" data-order="<?= $row['order_no'] ?>" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd; font-size: 11px; cursor: pointer;">
-                        <option value="Pending" <?= $row['approval_status'] == 'Pending' ? 'selected' : '' ?> style="background: #ffc107; color: #000;">Pending</option>
-                        <option value="Approve" <?= $row['approval_status'] == 'Approve' ? 'selected' : '' ?> style="background: #28a745; color: #fff;">Approve</option>
-                        <option value="Reject" <?= $row['approval_status'] == 'Reject' ? 'selected' : '' ?> style="background: #dc3545; color: #fff;">Reject</option>
-                    </select>
-                </td>
-                <td style="max-width: 100px; overflow: hidden; text-overflow: ellipsis;"><?= $row['remarks'] ?></td>
-                <td><?= $row['create_user'] ?></td>
-                <td><?= date('d-m-Y H:i', strtotime($row['date_created'])) ?></td>
-                <td><?= $row['user_modified'] ?></td>
-                <td><?= $row['date_modified'] ? date('d-m-Y H:i', strtotime($row['date_modified'])) : '' ?></td>
-            </tr>
-            <?php } } ?>
+    $status_class = $row['status'] == 'Open' ? 'badge-open' : 'badge-close';
+    $approval_class = $row['approval_status'] == 'Approve' ? 'badge-approve' : ($row['approval_status'] == 'Reject' ? 'badge-reject' : 'badge-pending');
+    
+    // Gunakan fungsi format tanggal
+    $order_date_formatted = formatDateIndonesian($row['order_date']);
+    $shipment_due_formatted = formatDateIndonesian($row['shipment_due_date']);
+    $date_created_formatted = formatDateIndonesian($row['date_created']);
+    $date_modified_formatted = formatDateIndonesian($row['date_modified']);
+?>
+<tr>
+    <td class="sticky-col-aksi">
+        <a href="index.php?page=edit_sales_order&id=<?= $row['order_no'] ?>" class="btn btn-sm btn-warning" style="padding: 2px 6px;"><i class="fa fa-edit"></i></a>
+        <a href="javascript:void(0)" onclick="confirmDelete('<?= $row['order_no'] ?>')" class="btn btn-sm btn-danger" style="padding: 2px 6px;"><i class="fa fa-trash"></i></a>
+        <a href="modul/transaksi/cetak_sales_order.php?no_so=<?= urlencode($row['order_no']) ?>" target="_blank" class="btn-action btn-cetak-so"><i class="fa fa-print"></i> Cetak</a>
+    </td>
+    <td class="sticky-col-order"><?= $row['order_no'] ?></td>
+    <td><?= $order_date_formatted ?></td>  <!-- FORMAT BARU -->
+    <td><?= $row['marketing_name'] ?></td>
+    <td><?= $row['sales_name'] ?></td>
+    <td><?= $row['customer_id'] ?></td>
+    <td><?= $row['customer_name'] ?></td>
+    <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;"><?= $row['customer_address'] ?></td>
+    <td><?= $row['customer_city'] ?></td>
+    <td><?= $row['station'] ?></td>
+    <td><?= $shipment_due_formatted ?></td>  <!-- FORMAT BARU -->
+    <td style="max-width: 120px; overflow: hidden; text-overflow: ellipsis;"><?= $row['shipment_location'] ?></td>
+    <td class="text-end"><?= number_format($row['tolerance'], 2) ?>%</td>
+    <td><?= $row['payment_type'] ?></td>
+    <td><?= $row['payment_term'] ?></td>
+    <td><?= $row['currency'] ?></td>
+    <td class="text-end">1</td>
+    <td class="text-end fw-bold text-primary"><?= number_format($row['grand_total'], 2) ?></td>
+    <td class="text-end"><?= number_format($row['down_payment'], 2) ?></td>
+    <td class="text-center"><span class="<?= $status_class ?>"><?= $row['status'] ?></span></td>
+    <td class="text-center">
+        <select class="approval-select" data-order="<?= $row['order_no'] ?>" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd; font-size: 11px; cursor: pointer;">
+            <option value="Pending" <?= $row['approval_status'] == 'Pending' ? 'selected' : '' ?> style="background: #ffc107; color: #000;">Pending</option>
+            <option value="Approve" <?= $row['approval_status'] == 'Approve' ? 'selected' : '' ?> style="background: #28a745; color: #fff;">Approve</option>
+            <option value="Reject" <?= $row['approval_status'] == 'Reject' ? 'selected' : '' ?> style="background: #dc3545; color: #fff;">Reject</option>
+        </select>
+    </td>
+    <td style="max-width: 100px; overflow: hidden; text-overflow: ellipsis;"><?= $row['remarks'] ?></td>
+    <td><?= $row['create_user'] ?></td>
+    <td><?= $date_created_formatted ?></td>  <!-- FORMAT BARU -->
+    <td><?= $row['user_modified'] ?></td>
+    <td><?= $date_modified_formatted ?></td>  <!-- FORMAT BARU -->
+</tr>
+<?php } }?>
         </tbody>
     </table>
 </div>
@@ -409,7 +687,14 @@ $(document).ready(function() {
         select.data('old-value', select.val());
     });
 });
-
+$(document).ready(function() {
+    // Inisialisasi datepicker dengan format d-M-Y
+    $(".datepicker").flatpickr({
+        dateFormat: "d-M-Y",
+        altFormat: "d-M-Y",
+        allowInput: true
+    });
+});
 </script>
 
 <?php

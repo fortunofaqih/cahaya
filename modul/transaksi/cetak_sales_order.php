@@ -20,6 +20,9 @@ if (empty($no_so)) {
     exit;
 }
 
+// Ambil data dari detail_sales_order berdasarkan order_no
+$query_detail_so = mysqli_query($conn, "SELECT * FROM detail_sales_order WHERE order_no='$no_so'");
+
 // Cari no_po di head_sales_order berdasarkan order_no
 $q_cari_po = mysqli_query($conn, "SELECT po FROM head_sales_order WHERE order_no='$no_so'");
 $data_so = mysqli_fetch_assoc($q_cari_po);
@@ -36,12 +39,27 @@ $query_h = mysqli_query($conn, "SELECT * FROM hed_po WHERE no_po='$no_po'");
 $h = mysqli_fetch_assoc($query_h);
 
 // Ambil data detail dari det_po berdasarkan no_po
-$d = mysqli_query($conn, "SELECT * FROM det_po WHERE no_po='$no_po'");
+$query_det_po = mysqli_query($conn, "SELECT * FROM det_po WHERE no_po='$no_po'");
 
 if (!$h) {
     echo "<script>alert('Data PO tidak ditemukan!'); window.location.href='index.php?page=sales_order';</script>";
     exit;
 }
+
+// Ambil semua data detail_sales_order ke array
+$detail_so_array = [];
+while ($row_detail = mysqli_fetch_assoc($query_detail_so)) {
+    $detail_so_array[] = $row_detail;
+}
+
+// Ambil semua data det_po ke array
+$det_po_array = [];
+while ($row_det_po = mysqli_fetch_assoc($query_det_po)) {
+    $det_po_array[] = $row_det_po;
+}
+
+// Pastikan jumlah data sama, jika tidak, ambil jumlah minimal
+$total_rows = min(count($detail_so_array), count($det_po_array));
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -64,7 +82,7 @@ if (!$h) {
         
         /* Container cetak */
         .print-container {
-            max-width: 800px;
+            max-width: 900px;
             margin: 0 auto;
             background: white;
         }
@@ -105,7 +123,7 @@ if (!$h) {
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 20px;
-            font-size: 11px;
+            font-size: 10px;
         }
         
         table.main-table th,
@@ -230,53 +248,81 @@ if (!$h) {
         <div class="title">SALES ORDER</div>
         
         <table class="info-table">
-            <tr><td>Nomor SO</td><td>: <?= htmlspecialchars($no_so); ?></td></tr>
-            <tr><td>Tanggal</td><td>: <?= date('d/m/Y', strtotime($h['tgl_order'])); ?></td></tr>
-            <tr><td>Customer</td><td>: <?= htmlspecialchars($h['customer']); ?></td></tr>
-        </table>
-        
-        <table class="main-table">
+            <tr>
+                <td>Nomor SO</td>
+                <td>: <?= htmlspecialchars($no_so); ?></td>
+             </tr>
+             <tr>
+                <td>Tanggal</td>
+                <td>: <?= date('d/m/Y', strtotime($h['tgl_order'])); ?></td>
+             </tr>
+             <tr>
+                <td>Customer</td>
+                <td>: <?= htmlspecialchars($h['customer']); ?></td>
+             </tr>
+             <tr>
+                <td>PO Customer</td>
+                <td>: <?= htmlspecialchars($no_po); ?></td>
+             </tr>
+         </table>
+         
+         <table class="main-table">
             <thead>
                 <tr>
-                    <th width="5%">No</th>
-                    <th>Ukuran / Deskripsi</th>
-                    <th width="15%">Jml Order</th>
-                    <th width="20%">Harga</th>
-                    <th width="20%">Harga/Kg</th>
+                    <th width="3%">No</th>
+                    <th width="30%">Ukuran / Deskripsi</th>
+                    <th width="10%">Qty</th>
+                    <th width="10%">Qty Pack</th>
+                    <th width="10%">UoM Pack</th>
+                    <th width="15%">Harga</th>
+                    <th width="15%">Harga/Kg</th>
                 </tr>
             </thead>
             <tbody>
                 <?php 
                 $no = 1; 
                 $total_harga = 0;
-                while($row = mysqli_fetch_assoc($d)){ 
-                    $jml_order = floatval(preg_replace('/[^0-9]/', '', $row['jml_order']));
-                    $harga_item = floatval(preg_replace('/[^0-9]/', '', $row['harga']));
-                    $subtotal = $jml_order * $harga_item;
-                    $total_harga += $subtotal;
+                
+                // Loop berdasarkan jumlah data yang tersedia
+                for ($i = 0; $i < $total_rows; $i++) {
+                    $det_po = $det_po_array[$i];
+                    $detail_so = $detail_so_array[$i];
+                    
+                    $harga_item = floatval(preg_replace('/[^0-9]/', '', $det_po['harga']));
+                    
+                    // Data dari detail_sales_order
+                    $qty = isset($detail_so['quantity']) ? number_format($detail_so['quantity'], 2, ',', '.') : '-';
+                    $qty_pack = isset($detail_so['quantity_pack']) ? number_format($detail_so['quantity_pack'], 2, ',', '.') : '-';
+                    $uom_pack = isset($detail_so['uom_pack']) ? htmlspecialchars($detail_so['uom_pack']) : '-';
                 ?>
                 <tr>
                     <td class="text-center"><?= $no++ ?>.</td>
-                    <td><?= htmlspecialchars($row['ukuran']); ?></td>
-                    <td class="text-center"><?= htmlspecialchars($row['jml_order']); ?></td>
+                    <td><?= htmlspecialchars($det_po['ukuran']); ?></td>
+                    <td class="text-center"><?= $qty; ?></td>
+                    <td class="text-center"><?= $qty_pack; ?></td>
+                    <td class="text-center"><?= $uom_pack; ?></td>
                     <td class="text-right">Rp <?= number_format($harga_item, 0, ',', '.'); ?></td>
                     <td class="text-right">
                         <?php 
-                        if ($row['harga_kg'] > 0) {
-                            echo 'Rp ' . number_format($row['harga_kg'], 0, ',', '.');
+                        if ($det_po['harga_kg'] > 0) {
+                            echo 'Rp ' . number_format($det_po['harga_kg'], 0, ',', '.');
                         } else {
                             echo '-';
                         }
                         ?>
                     </td>
                 </tr>
-                <?php } ?>
-                <tr class="total-row">
-                    <td colspan="4" class="text-right"><strong>TOTAL HARGA</strong></td>
-                    <td class="text-right"><strong>Rp <?= number_format($total_harga, 0, ',', '.'); ?></strong></td>
+                <?php } 
+                
+                // Jika tidak ada data
+                if ($total_rows == 0) {
+                ?>
+                <tr>
+                    <td colspan="7" class="text-center">Tidak ada data</td>
                 </tr>
+                <?php } ?>
             </tbody>
-        </table>
+         </table>
         
         <div class="signature-container">
             <div class="sig-box">
@@ -293,7 +339,7 @@ if (!$h) {
     <!-- Tombol hanya muncul di layar, tidak ikut print -->
     <div class="action-buttons">
         <button class="btn-print" onclick="window.print(); return false;">🖨️ Cetak SO</button>
-        <a href="http://localhost/cahaya/index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
+        <a href="index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
     </div>
     
     <script>

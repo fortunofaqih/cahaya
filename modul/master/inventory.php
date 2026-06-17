@@ -1,18 +1,18 @@
 <?php
 // modul/master/inventory.php
 
-// Matikan semua error output ke browser
-error_reporting(0);
-ini_set('display_errors', 0);
-
-session_start();
-
 if (!isset($_SESSION['username'])) {
-    header("Location: ../../login.php");
+    // Jika session tidak ada, return JSON error, bukan redirect
+    if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
+        header('Content-Type: application/json');
+        echo json_encode(['status' => 'error', 'message' => 'Session expired']);
+        exit;
+    }
+    echo "<script>window.location.href='../../login.php';</script>";
     exit;
 }
 
-include __DIR__ . '/../../koneksi.php';
+include __DIR__ . '/../../koneksi.php';;
 
 // ====================================================================
 // AJAX HANDLER - Ditempatkan di PALING ATAS sebelum HTML apapun
@@ -25,6 +25,12 @@ if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQU
     if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_inventory_uom' && isset($_GET['id'])) {
         $id = mysqli_real_escape_string($conn, $_GET['id']);
         
+        // Cek koneksi database
+        if (!$conn) {
+            echo json_encode(['status' => 'error', 'message' => 'Database connection failed']);
+            exit;
+        }
+        
         $query = mysqli_query($conn, "SELECT * FROM m_inventory_uom WHERE inventory_id = '$id'");
         
         if (!$query) {
@@ -34,7 +40,15 @@ if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQU
         
         $data = [];
         while ($row = mysqli_fetch_assoc($query)) {
-            $data[] = $row;
+            // Gunakan nama kolom yang sesuai dengan struktur tabel
+            $data[] = [
+                'Uom' => $row['unit'] ?? $row['Uom'] ?? '',  // Sesuaikan dengan kolom yang ada
+                'unit' => $row['unit'] ?? $row['Uom'] ?? '',
+                'Default' => (int)($row['Default'] ?? 0),
+                'is_default' => ($row['Default'] ?? 0) == 1 ? 'Checked' : 'Unchecked',
+                'Value' => (float)($row['Value'] ?? 0),
+                'value_roll' => (float)($row['Value'] ?? 0)
+            ];
         }
         
         echo json_encode(['status' => 'success', 'data' => $data]);
@@ -43,14 +57,22 @@ if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQU
     
     // Handler untuk get_uom_list
     if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_uom_list') {
-        $query = mysqli_query($conn, "SELECT uom_id FROM m_uom WHERE is_active='Checked' ORDER BY uom_id ASC");
+        $query = mysqli_query($conn, "SELECT unit FROM m_uom WHERE is_active='Checked' ORDER BY unit ASC");
+        if (!$query) {
+            echo json_encode(['status' => 'error', 'message' => mysqli_error($conn)]);
+            exit;
+        }
         $list = [];
         while ($row = mysqli_fetch_assoc($query)) {
-            $list[] = ['unit' => $row['uom_id']];
+            $list[] = ['unit' => $row['unit']];
         }
         echo json_encode(['status' => 'success', 'data' => $list]);
         exit;
     }
+    
+    // Jika tidak ada handler yang cocok
+    echo json_encode(['status' => 'error', 'message' => 'Invalid AJAX request']);
+    exit;
 }
 
 // ====================================================================
@@ -216,7 +238,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action_form'])) {
                     $value = floatval($uom['value_roll'] ?? 0);
                     
                     if (!empty($unit)) {
-                        mysqli_query($conn, "INSERT INTO m_inventory_uom (inventory_id, Uom, `Default`, Value) 
+                        mysqli_query($conn, "INSERT INTO m_inventory_uom (inventory_id, unit, `Default`, Value) 
                                             VALUES ('$inventory_id', '$unit', '$is_default', '$value')");
                     }
                 }
@@ -258,7 +280,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action_form'])) {
                     $value = floatval($uom['value_roll'] ?? 0);
                     
                     if (!empty($unit)) {
-                        mysqli_query($conn, "INSERT INTO m_inventory_uom (inventory_id, Uom, `Default`, Value) 
+                        mysqli_query($conn, "INSERT INTO m_inventory_uom (inventory_id, unit, `Default`, Value) 
                                             VALUES ('$inventory_id', '$unit', '$is_default', '$value')");
                     }
                 }
@@ -276,10 +298,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action_form'])) {
 // Filter Pencarian
 $search_keyword = "";
 $where_clause = "";
-if (isset($_POST['btn_search'])) {
-    $search_keyword = mysqli_real_escape_string($conn, trim($_POST['search_keyword']));
+if (isset($_GET['btn_search']) || isset($_GET['search'])) {
+    $search_keyword = mysqli_real_escape_string($conn, trim($_GET['search'] ?? ''));
     if (!empty($search_keyword)) {
-        $where_clause = "WHERE i.inventory_id LIKE '%$search_keyword%' OR i.inventory_name LIKE '%$search_keyword%' OR i.category LIKE '%$search_keyword%' OR i.nama_customer LIKE '%$search_keyword%'";
+        $where_clause = "WHERE i.inventory_id LIKE '%$search_keyword%' 
+                        OR i.inventory_name LIKE '%$search_keyword%' 
+                        OR i.category LIKE '%$search_keyword%' 
+                        OR i.nama_customer LIKE '%$search_keyword%'";
     }
 }
 
@@ -343,13 +368,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
     return $pattern . str_pad($next_num, 6, '0', STR_PAD_LEFT);
 }
 ?>
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Master Data Inventory</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+
     <style>
         .loading {
             position: fixed;
@@ -626,9 +645,10 @@ function generateInventoryId($conn, $inventory_name, $type) {
 <!-- FORM PENCARIAN -->
 <div class="card shadow-sm mb-3 d-print-none">
     <div class="card-body py-2">
-        <form method="POST" action="index.php?page=inventory" class="row g-2 align-items-center">
+        <form method="GET" action="index.php" class="row g-2 align-items-center">
+            <input type="hidden" name="page" value="inventory">
             <div class="col-md-5">
-                <input type="text" name="search_keyword" class="form-control form-control-sm" placeholder="Cari ID, Nama Barang, Kategori, Customer..." value="<?= htmlspecialchars($search_keyword) ?>">
+                <input type="text" name="search" class="form-control form-control-sm" placeholder="Cari ID, Nama Barang, Kategori, Customer..." value="<?= htmlspecialchars($search_keyword) ?>">
             </div>
             <div class="col-auto">
                 <button type="submit" name="btn_search" class="btn btn-sm btn-dark"><i class="fa fa-search"></i> Cari Data</button>
@@ -651,7 +671,20 @@ function generateInventoryId($conn, $inventory_name, $type) {
         </thead>
         <tbody>
         <?php
-            $query_list = mysqli_query($conn, "SELECT i.*, c.name as category_name FROM m_inventory i LEFT JOIN m_category c ON i.category = c.categori_id ORDER BY i.inventory_id ASC");
+            // PERBAIKAN: Gunakan $where_clause di query
+            $sql = "SELECT i.*, c.name as category_name 
+                    FROM m_inventory i 
+                    LEFT JOIN m_category c ON i.category = c.categori_id";
+            
+            // Tambahkan WHERE clause jika ada pencarian
+            if (!empty($where_clause)) {
+                $sql .= " " . $where_clause;
+            }
+            
+            $sql .= " ORDER BY i.inventory_id ASC";
+            
+            $query_list = mysqli_query($conn, $sql);
+            
             if (!$query_list) {
                 echo "<tr><td colspan='9' class='text-danger'>Error: " . mysqli_error($conn) . "</td></tr>";
             } else if (mysqli_num_rows($query_list) == 0) {
@@ -699,7 +732,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
                                 <div class="col-md-5"><label class="form-label fw-bold small">Inventory Name <span class="text-danger">*</span></label><input type="text" name="inventory_name" id="form_inventory_name" class="form-control form-control-sm" required></div>
                                 <div class="col-md-2"><label class="form-label fw-bold small">Type<span class="required">*</span></label><select name="type" id="form_type" class="form-select form-select-sm" required><option value="">-- Pilih Type --</option><option value="AKTIVA MESIN (AKT2)">AKTIVA MESIN (AKT2)</option><option value="AKTIVA INVENTARIS (AKT)">AKTIVA INVENTARIS (AKT)</option><option value="ALAT PABRIK (ALTP)">ALAT PABRIK (ALTP)</option><option value="BIAYA (AC)">BIAYA (AC)</option><option value="Biaya Makloon (BM)">Biaya Makloon (BM)</option><option value="Finish Good (FG)">Finish Good (FG)</option><option value="Jasa (JS)">Jasa (JS)</option><option value="Raw Material (RAW)">Raw Material (RAW)</option></select></div>
                                 <div class="col-md-2"><label class="form-label fw-bold small">UOM Pack</label><input type="text" name="uom_pack" id="form_uom_pack" class="form-control form-control-sm" readonly style="background:#e9ecef;"></div>
-                                <div class="col-md-3"><label class="form-label fw-bold small">Category<span class="required">*</span></label><select name="category" id="form_category" class="form-select form-select-sm" required><option value="">-- Pilih Category --</option><?php $cat_list = mysqli_query($conn, "SELECT categori_id, name FROM m_category ORDER BY name ASC"); while($cat = mysqli_fetch_assoc($cat_list)): ?><option value="<?= htmlspecialchars($cat['categori_id']) ?>"><?= htmlspecialchars($cat['name']) ?></option><?php endwhile; ?></select></div>
+                                <div class="col-md-3"><label class="form-label fw-bold small">Category<span class="required">*</span></label><select name="category" id="form_category" class="form-select form-select-sm" required><option value="">-- Pilih Category --</option><?php $cat_list = mysqli_query($conn, "SELECT categori_id, name FROM m_category ORDER BY name ASC"); while($cat = mysqli_fetch_assoc($cat_list)): ?><option value="<?= $cat['categori_id'] ?>"><?= $cat['name'] ?></option><?php endwhile; ?></select></div>
                                 <div class="col-md-4"><label class="form-label fw-bold small">Remarks</label><input type="text" name="remarks" id="form_remarks" class="form-control form-control-sm"></div>
                                 <div class="col-md-3"><label class="form-label fw-bold small">Minimum Stock</label><input type="number" step="0.01" name="minimum_stock" id="form_minimum_stock" class="form-control form-control-sm" value="0.00"></div>
                                 <div class="col-md-3"><label class="form-label fw-bold small">Maximum Stock</label><input type="number" step="0.01" name="maximum_stock" id="form_maximum_stock" class="form-control form-control-sm" value="0.00"></div>
@@ -724,10 +757,11 @@ function generateInventoryId($conn, $inventory_name, $type) {
                     
                     <div id="detail" class="spec-content">
                         <table class="spec-table"><tr><td><b>Merk</b></td><td><input type="text" name="merk" id="form_merk"></td></tr>
-                        <tr><td><b>P (Panjang)</b></td><td><input type="number" step="0.01" name="p" id="form_p" value="0.00"></td></tr>
-                        <tr><td><b>L (Lebar)</b></td><td><input type="number" step="0.01" name="l" id="form_l" value="0.00"></td></tr>
-                        <tr><td><b>T (Tebal)</b></td><td><input type="number" step="0.01" name="t" id="form_t" value="0.00"></td></tr>
-                        <tr><td><b>P2</b></td><td><input type="number" step="0.01" name="p2" id="form_p2" value="0.00"></td></tr>
+                        <tr><td><b>P (Panjang)</b></td><td><input type="number" step="0.001" name="p" id="form_p" value="0.000"></td></tr>
+                        <tr><td><b>L (Lebar)</b></td><td><input type="number" step="0.001" name="l" id="form_l" value="0.000"></td></tr>
+                        <tr><td><b>T (Tebal)</b></td><td><input type="number" step="0.001" name="t" id="form_t" value="0.000"></td></tr>
+                        <tr><td><b>P2</b></td><td><input type="number" step="0.001" name="p2" id="form_p2" value="0.000"></td></tr>
+
                         <tr><td><b>Tebal</b></td><td><input type="number" step="0.0001" name="tebal" id="form_tebal" value="0.0000"></td></tr>
                         <tr><td><b>Ukuran</b></td><td><input type="text" name="ukuran" id="form_ukuran"></td></tr>
                         <tr><td><b>Density</b></td><td><input type="number" step="0.0001" name="density" id="form_density" value="0.0000"></td></tr>
@@ -770,10 +804,11 @@ var isModalOpen = false;
 
 var uomList = <?php 
     $uom_array = [];
-    $query_uom = mysqli_query($conn, "SELECT uom_id FROM m_uom WHERE is_active='Checked' ORDER BY uom_id ASC");
+    // Gunakan 'unit' karena di tabel m_uom kolomnya 'unit'
+    $query_uom = mysqli_query($conn, "SELECT unit FROM m_uom WHERE is_active='Checked' ORDER BY unit ASC");
     if ($query_uom) {
         while ($row_uom = mysqli_fetch_assoc($query_uom)) {
-            $uom_array[] = $row_uom['uom_id'];
+            $uom_array[] = $row_uom['unit'];
         }
     }
     echo json_encode($uom_array);
@@ -841,42 +876,143 @@ function showModalEdit(data) {
     if(isModalOpen) return;
     if(!data || !data.inventory_id) { alert("Data tidak valid"); return; }
     try {
-        var form = document.getElementById('formInventory'); if(form) form.reset();
+        var form = document.getElementById('formInventory'); 
+        if(form) form.reset();
         document.getElementById('action_form').value = 'update';
         document.getElementById('modalTitle').innerHTML = '<i class="fa fa-edit"></i> Edit Inventory: ' + (data.inventory_name || '');
         
-        var fields = ['inventory_id','inventory_name','type','category','remarks','cap','colour','quality','volume_default','uom_pack','tolerance','upper_tolerance','lower_tolerance','merk','p','l','t','p2','tebal','ukuran','density','strength','ket_las','re_order_point','internal_name','catalog','part_no','calculation','printing_type','status','origin','supp_code','description','nama_customer','type_rm','minimum_stock','maximum_stock'];
-        fields.forEach(function(field) {
-            var el = document.getElementById('form_' + field);
-            if(el && data[field] !== undefined && data[field] !== null) el.value = data[field];
-        });
+        // Isi form
+        populateForm(data);
         
+        // Checkbox
         document.getElementById('form_dont_show_at_w48').checked = data.dont_show_at_w48 === 'Checked';
         document.getElementById('form_stokan').checked = data.stokan === 'Checked';
         
         var invId = document.getElementById('form_inventory_id');
-        if(invId) { invId.setAttribute('readonly','readonly'); invId.style.background = '#e9ecef'; }
+        if(invId) { 
+            invId.setAttribute('readonly', 'readonly'); 
+            invId.style.background = '#e9ecef'; 
+        }
         
+        // LOAD UOM DATA
         if(data.inventory_id) {
             showLoading(true);
-            var url = window.location.pathname + '?page=inventory&ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
-            fetch(url, {method:'GET', headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}})
-            .then(function(response) { return response.json(); })
+            var url = 'modul/master/ajax_inventory.php?ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
+             console.log("Fetching URL:", url); // Debug
+            fetch(url, {
+                method: 'GET', 
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            })
+            .then(function(response) { 
+                console.log("Response status:", response.status); // Debug
+                console.log("Response headers:", response.headers.get('content-type')); // Debug
+                return response.text(); // Gunakan text() dulu untuk lihat response mentah
+            })
+              .then(function(text) {
+            console.log("Raw response:", text); // Debug - lihat apa yang dikembalikan
+            
+            // Coba parse JSON
+            try {
+                var result = JSON.parse(text);
+                console.log("Parsed result:", result);
+                return result;
+            } catch(e) {
+                console.error("JSON Parse error:", e);
+                throw new Error("Response bukan JSON: " + text.substring(0, 200));
+            }
+            })
             .then(function(result) {
                 showLoading(false);
+                console.log("UOM response:", result); // Debug
+                
                 if(result.status === 'success' && Array.isArray(result.data)) {
-                    selectedUOMs = result.data;
+                    // Konversi data dari database ke format yang diinginkan
+                    selectedUOMs = result.data.map(function(uom) {
+                        return {
+                            Uom: uom.Uom,
+                            unit: uom.Uom,  // Tambahkan alias unit
+                            Default: uom.Default,
+                            is_default: uom.Default == 1 ? 'Checked' : 'Unchecked',
+                            Value: uom.Value,
+                            value_roll: uom.Value
+                        };
+                    });
+                    
+                    console.log("Processed UOMs:", selectedUOMs); // Debug
+                    
                     var defaultUOM = selectedUOMs.find(function(u) { return u.Default == 1; });
-                    if(!defaultUOM && selectedUOMs.length > 0) defaultUOM = selectedUOMs[0];
-                    if(defaultUOM) document.getElementById('form_uom_pack').value = defaultUOM.Uom || defaultUOM.unit || '';
+                    if(defaultUOM) {
+                        document.getElementById('form_uom_pack').value = defaultUOM.Uom;
+                    } else if(selectedUOMs.length > 0) {
+                        document.getElementById('form_uom_pack').value = selectedUOMs[0].Uom;
+                    }
                     document.getElementById('uom_data').value = JSON.stringify(selectedUOMs);
-                } else { resetUOMData(); }
+                } else { 
+                    console.warn("No UOM data:", result);
+                    resetUOMData(); 
+                }
             })
-            .catch(function(error) { showLoading(false); resetUOMData(); console.error(error); });
-        } else { resetUOMData(); }
+            .catch(function(error) { 
+                showLoading(false); 
+                resetUOMData(); 
+                console.error("Error loading UOM:", error); 
+                alert("Gagal load data UOM: " + error.message);
+            });
+        } else { 
+            resetUOMData(); 
+        }
         
-        if(bootstrapModalInventory) { isModalOpen = true; bootstrapModalInventory.show(); setTimeout(function(){ isModalOpen = false; }, 500); }
-    } catch(e) { console.error(e); alert("Error: " + e.message); isModalOpen = false; }
+        if(bootstrapModalInventory) { 
+            isModalOpen = true; 
+            bootstrapModalInventory.show(); 
+            setTimeout(function(){ isModalOpen = false; }, 500); 
+        }
+    } catch(e) { 
+        console.error(e); 
+        alert("Error: " + e.message); 
+        isModalOpen = false; 
+    }
+}
+
+function populateForm(data) {
+    // Untuk semua input, textarea, select
+    for(var key in data) {
+        if(data.hasOwnProperty(key)) {
+            var el = document.getElementById('form_' + key);
+            if(el) {
+                console.log("Populating field:", key, "with value:", data[key]);
+                
+                if(el.tagName === 'SELECT') {
+                    // Untuk select, cari option dengan value yang cocok
+                    var optionExists = false;
+                    for(var i = 0; i < el.options.length; i++) {
+                        // Gunakan == (bukan ===) karena bisa beda tipe data (string vs number)
+                        if(el.options[i].value == data[key]) {
+                            el.selectedIndex = i;
+                            optionExists = true;
+                            console.log("Option found for", key, ":", el.options[i].value);
+                            break;
+                        }
+                    }
+                    if(!optionExists && el.options.length > 0) {
+                        console.warn('Value "' + data[key] + '" not found in select ' + key);
+                        console.log('Available options:', Array.from(el.options).map(o => o.value));
+                        // Optional: Set ke option pertama jika tidak ditemukan
+                        // el.selectedIndex = 0;
+                    }
+                } else if(el.type === 'checkbox') {
+                    el.checked = data[key] === 'Checked' || data[key] === true || data[key] === 1;
+                } else {
+                    el.value = data[key] !== null ? data[key] : '';
+                }
+            } else {
+                console.warn("Element form_" + key + " not found");
+            }
+        }
+    }
 }
 
 function resetUOMData() { selectedUOMs = []; document.getElementById('uom_data').value = '[]'; document.getElementById('form_uom_pack').value = ''; }
@@ -887,28 +1023,57 @@ function renderUOMTable() {
     var tbody = document.getElementById('uomSelectionBody');
     if(!tbody) return;
     tbody.innerHTML = '';
-    if(!selectedUOMs || selectedUOMs.length === 0) { addUOMRow(); return; }
+    
+    console.log("Selected UOMs:", selectedUOMs); // Debug
+    
+    if(!selectedUOMs || selectedUOMs.length === 0) { 
+        addUOMRow(); 
+        return; 
+    }
+    
     var fragment = document.createDocumentFragment();
-    selectedUOMs.forEach(function(uom, idx) { var row = createUOMRow(uom, idx); if(row) fragment.appendChild(row); });
+    selectedUOMs.forEach(function(uom, idx) { 
+        console.log("Processing UOM:", uom); // Debug
+        var row = createUOMRow(uom, idx); 
+        if(row) fragment.appendChild(row); 
+    });
     tbody.appendChild(fragment);
     syncUOMPack();
 }
 
 function createUOMRow(existingData, idx) {
     try {
+        // PERBAIKAN: Prioritas Uom (dari database) lalu unit
         var unit = existingData ? (existingData.Uom || existingData.unit || '') : '';
         var isDefault = existingData ? (existingData.Default == 1 || existingData.is_default === 'Checked') : false;
         var value = existingData ? (existingData.Value || existingData.value_roll || 0) : 0;
+        
+        console.log("Creating UOM row:", {unit, isDefault, value}); // Debug
+        
         var options = '<option value="">-- Pilih UOM --</option>';
-        for(var i = 0; i < uomList.length; i++) options += '<option value="' + uomList[i] + '"' + (unit === uomList[i] ? ' selected' : '') + '>' + uomList[i] + '</option>';
+        for(var i = 0; i < uomList.length; i++) {
+            var selected = (unit === uomList[i]) ? ' selected' : '';
+            options += '<option value="' + uomList[i] + '"' + selected + '>' + uomList[i] + '</option>';
+        }
+        
         var row = document.createElement('tr');
-        row.innerHTML = '<td class="text-center"><input type="radio" name="default_uom" value="' + (idx||Date.now()) + '"' + (isDefault ? ' checked' : '') + '></td><td><select class="form-select form-select-sm uom-unit" style="width:120px">' + options + '</select></td><td><input type="number" step="0.01" class="form-control form-control-sm uom-value" value="' + value + '" style="width:70px"></td><td class="text-center"><button type="button" class="btn btn-sm btn-danger" onclick="removeUOMRow(this)"><i class="fa fa-trash"></i></button></td>';
+        row.innerHTML = '<td class="text-center"><input type="radio" name="default_uom" value="' + (idx||Date.now()) + '"' + (isDefault ? ' checked' : '') + '></td>' +
+                       '<td><select class="form-select form-select-sm uom-unit" style="width:120px">' + options + '</select></td>' +
+                       '<td><input type="number" step="0.01" class="form-control form-control-sm uom-value" value="' + value + '" style="width:70px"></td>' +
+                       '<td class="text-center"><button type="button" class="btn btn-sm btn-danger" onclick="removeUOMRow(this)"><i class="fa fa-trash"></i></button></td>';
+        
         var radio = row.querySelector('input[type="radio"]');
         var unitSelect = row.querySelector('.uom-unit');
         if(radio) radio.addEventListener('change', function() { syncUOMPack(); });
-        if(unitSelect) unitSelect.addEventListener('change', function() { if(document.getElementById('uomSelectionBody').children.length === 1 && radio) radio.checked = true; syncUOMPack(); });
+        if(unitSelect) unitSelect.addEventListener('change', function() { 
+            if(document.getElementById('uomSelectionBody').children.length === 1 && radio) radio.checked = true; 
+            syncUOMPack(); 
+        });
         return row;
-    } catch(e) { console.error(e); return null; }
+    } catch(e) { 
+        console.error("Error in createUOMRow:", e); 
+        return null; 
+    }
 }
 
 function addUOMRow() { var tbody = document.getElementById('uomSelectionBody'); if(tbody) { var row = createUOMRow(null); if(row) { tbody.appendChild(row); if(tbody.children.length === 1) { var radio = row.querySelector('input[type="radio"]'); if(radio) radio.checked = true; } syncUOMPack(); } } }
@@ -920,21 +1085,38 @@ function syncUOMPack() { var rows = document.querySelectorAll('#uomSelectionBody
 function applyUOMSelection() {
     var rows = document.querySelectorAll('#uomSelectionBody tr');
     var uomData = [];
-    for(var i=0;i<rows.length;i++) {
+    for(var i = 0; i < rows.length; i++) {
         var unitSelect = rows[i].querySelector('.uom-unit');
         var unit = unitSelect ? unitSelect.value : '';
         if(unit !== '') {
             var isDefault = rows[i].querySelector('input[type="radio"]')?.checked || false;
             var valueInput = rows[i].querySelector('.uom-value');
             var value = valueInput ? parseFloat(valueInput.value) || 0 : 0;
-            uomData.push({Uom: unit, unit: unit, Default: isDefault ? 1 : 0, is_default: isDefault ? 'Checked' : 'Unchecked', Value: value, value_roll: value});
+            
+            // Format sesuai database (gunakan Uom, Default, Value)
+            uomData.push({
+                Uom: unit,           // untuk kolom di database
+                unit: unit,          // untuk internal JS
+                Default: isDefault ? 1 : 0,
+                is_default: isDefault ? 'Checked' : 'Unchecked',
+                Value: value,
+                value_roll: value
+            });
         }
     }
-    if(uomData.length > 0 && !uomData.some(function(u) { return u.Default === 1; })) { uomData[0].Default = 1; uomData[0].is_default = 'Checked'; }
+    
+    // Set default jika belum ada
+    if(uomData.length > 0 && !uomData.some(function(u) { return u.Default === 1; })) { 
+        uomData[0].Default = 1; 
+        uomData[0].is_default = 'Checked'; 
+    }
+    
     selectedUOMs = uomData;
     document.getElementById('uom_data').value = JSON.stringify(uomData);
+    
     var defaultUOM = uomData.find(function(u) { return u.Default === 1; });
     document.getElementById('form_uom_pack').value = defaultUOM ? defaultUOM.Uom : '';
+    
     if(bootstrapModalUOM) bootstrapModalUOM.hide();
 }
 
@@ -962,6 +1144,69 @@ function submitImportCSV() {
         document.getElementById('resultContainer').innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
     });
 }
+//khusus import uom
+/*function submitImportCSV() {
+    var fileInput = document.getElementById('csvFile');
+
+    if (!fileInput || !fileInput.files.length) {
+        alert('Pilih file terlebih dahulu!');
+        return;
+    }
+
+    var formData = new FormData();
+    formData.append('csv_file', fileInput.files[0]);
+
+    document.getElementById('progressContainer').style.display = 'block';
+    document.getElementById('resultContainer').style.display = 'none';
+
+    fetch('modul/master/import_uom_page.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(response) {
+        return response.json();
+    })
+    .then(function(data) {
+        document.getElementById('progressContainer').style.display = 'none';
+
+        var resultDiv = document.getElementById('resultContainer');
+        resultDiv.style.display = 'block';
+
+        var detailHtml = '';
+
+        if (data.errors && data.errors.length > 0) {
+            detailHtml += '<hr><b>Error:</b><ul>';
+            data.errors.forEach(function(err) {
+                detailHtml += '<li>' + err + '</li>';
+            });
+            detailHtml += '</ul>';
+        }
+
+        if (data.warnings && data.warnings.length > 0) {
+            detailHtml += '<hr><b>Warning:</b><ul>';
+            data.warnings.forEach(function(warn) {
+                detailHtml += '<li>' + warn + '</li>';
+            });
+            detailHtml += '</ul>';
+        }
+
+        resultDiv.innerHTML =
+            '<div class="alert alert-' + (data.success ? 'success' : 'danger') + '">' +
+            (data.message || (data.success ? 'Import Berhasil' : 'Import Gagal')) +
+            detailHtml +
+            '</div>';
+
+        if (data.success) {
+            setTimeout(function() {
+                location.reload();
+            }, 2000);
+        }
+    })
+    .catch(function(error) {
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('resultContainer').style.display = 'block';
+        document.getElementById('resultContainer').innerHTML =
+            '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+    });
+}*/
 </script>
-</body>
-</html>
