@@ -29,13 +29,13 @@ if (isset($_GET['action']) && $_GET['action'] == 'export_excel') {
     <table border="1">
         <thead>
             <tr style="background-color: #f2f2f2; font-weight: bold;">
-                <th>Marketing ID</th>
-                <th>Marketing Name</th>
-                <th>Is Active</th>
-                <th>Create User</th>
-                <th>Date Created</th>
-                <th>User Modified</th>
-                <th>Date Modified</th>
+                <th width="20%">Marketing ID</th>
+                <th width="20%">Marketing Name</th>
+                <th width="12%">Is Active</th>
+                <th width="12%">Create User</th>
+                <th width="12%">Date Created</th>
+                <th width="12%">User Modified</th>
+                <th width="12%">Date Modified</th>
              </tr>
         </thead>
         <tbody>
@@ -240,7 +240,6 @@ if (isset($_POST['btn_search'])) {
             <i class="fa fa-users text-info"></i> Master Data Marketing
         </h5>
         <div class="d-flex gap-2">
-            
             <button class="btn-vs btn-add" onclick="showModalTambah()">
                 <i class="fa fa-plus-circle"></i> Tambah Marketing
             </button>
@@ -249,7 +248,6 @@ if (isset($_POST['btn_search'])) {
     <?= $alert_message; ?>
 </div>
 
-<!-- Form Pencarian -->
 <div class="card shadow-sm mb-3 d-print-none">
     <div class="card-body py-2">
         <form method="POST" action="index.php?page=marketing" class="row g-2 align-items-center">
@@ -265,37 +263,34 @@ if (isset($_POST['btn_search'])) {
     </div>
 </div>
 
-<!-- Tabel Data Marketing -->
 <div class="table-responsive" style="max-height: 500px; overflow-y: auto; border: 1px solid #c0cddb;">
     <table class="table-crystal-report table-hover">
         <thead class="table-light">
             <tr class="text-center">
-                <!-- <th style="width: 50px;">No</th> -->
                 <th class="d-print-none sticky-col-aksi" style="min-width: 100px;">Aksi</th>
-                <th style="width: 250px;">Marketing ID</th>
+                <th style="width: 150px;">Marketing ID</th>
                 <th style="width: 250px;">Marketing Name</th>
-                <th style="width: 250px;">Status</th>
-                <th style="width: 250px;">Create User</th>
-                <th style="width: 250px;">Date Created</th>
-                
+                <th style="width: 100px;">Status</th>
+                <th style="width: 150px;">Create User</th>
+                <th style="width: 150px;">Date Created</th>
+                <th style="width: 150px;">User Modified</th>
+                <th style="width: 150px;">Date Modified</th>
             </tr>
         </thead>
         <tbody>
             <?php
-            $no = 1;
             $query_list = mysqli_query($conn, "SELECT * FROM m_marketing $where_clause ORDER BY marketing_id ASC");
             if (!$query_list) {
-                echo "<tr><td colspan='7' class='text-danger fw-bold p-3'>Error SQL: " . mysqli_error($conn) . "</td></tr>";
+                echo "<tr><td colspan='8' class='text-danger fw-bold p-3'>Error SQL: " . mysqli_error($conn) . "</td></tr>";
             } else if (mysqli_num_rows($query_list) == 0) {
-                echo "<tr><td colspan='7' class='text-center text-muted py-3'>Tidak ada data marketing ditemukan.</td></tr>";
+                echo "<tr><td colspan='8' class='text-center text-muted py-3'>Tidak ada data marketing ditemukan.</td></tr>";
             } else {
                 while ($d = mysqli_fetch_assoc($query_list)) {
                     $status_badge = ($d['is_active'] == 'Checked') ? 'success' : 'danger';
                     $status_text = ($d['is_active'] == 'Checked') ? 'Active' : 'Inactive';
             ?>
                 <tr>
-                    <!-- <td class="text-center"><?= $no++ ?></td> -->
-                      <td class="text-center">
+                    <td class="text-center">
                         <button class="btn btn-edit btn-sm" onclick='showModalEdit(<?= json_encode($d); ?>)'>
                             <i class="fa fa-edit"></i> Edit
                         </button>
@@ -310,9 +305,10 @@ if (isset($_POST['btn_search'])) {
                     <td class="text-center">
                         <span class="badge bg-<?= $status_badge ?>" style="font-size: 10px;"><?= $status_text ?></span>
                     </td>
-                    <td class="text-center"><?= htmlspecialchars($d['create_user']) ?></td>
-                    <td class="text-center small"><?= htmlspecialchars($d['date_created']) ?></td>
-                  
+                    <td class="text-center"><?= htmlspecialchars($d['create_user'] ?? '-') ?></td>
+                    <td class="text-center small"><?= htmlspecialchars($d['date_created'] ?? '-') ?></td>
+                    <td class="text-center"><?= htmlspecialchars($d['user_modified'] ?? '-') ?></td>
+                    <td class="text-center small"><?= htmlspecialchars($d['date_modified'] ?? '-') ?></td>
                 </tr>
             <?php 
                 }
@@ -322,7 +318,6 @@ if (isset($_POST['btn_search'])) {
     </table>
 </div>
 
-<!-- Modal Form Marketing -->
 <div class="modal fade d-print-none" id="modalMarketing" data-bs-backdrop="static" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">

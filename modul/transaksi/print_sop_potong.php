@@ -56,8 +56,8 @@ header("Content-Type: text/html; charset=UTF-8");
         }
         
         body {
-            font-family: 'Courier New', 'Segoe UI', monospace;
-            font-size: 8.5pt;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 10pt;
             background: white;
             color: #000;
             line-height: 1.15;
@@ -95,7 +95,7 @@ header("Content-Type: text/html; charset=UTF-8");
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 5px;
-            font-size: 8.5pt;
+            font-size: 10pt;
         }
         
         .info-box td {
@@ -148,7 +148,7 @@ header("Content-Type: text/html; charset=UTF-8");
         .ttd-section {
             margin-top: 12px;
             width: 100%;
-            font-size: 8.5pt;
+            font-size: 10pt;
         }
         
         .print-btn {

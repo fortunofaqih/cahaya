@@ -278,50 +278,103 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
                     <th width="15%">Harga/Kg</th>
                 </tr>
             </thead>
-            <tbody>
-                <?php 
-                $no = 1; 
-                $total_harga = 0;
+           <tbody>
+            <?php 
+            $no = 1; 
+            $total_harga = 0;
+            
+            // Loop berdasarkan jumlah data yang tersedia
+            for ($i = 0; $i < $total_rows; $i++) {
+                $det_po = $det_po_array[$i];
+                $detail_so = $detail_so_array[$i];
+
+                // ================================
+                // DATA DASAR DARI DETAIL SO
+                // ================================
+                $qty_raw = isset($detail_so['quantity']) ? (float)$detail_so['quantity'] : 0;
+                $qty_pack_raw = isset($detail_so['quantity_pack']) ? (float)$detail_so['quantity_pack'] : 0;
+                $uom_pack_raw = isset($detail_so['uom_pack']) ? trim($detail_so['uom_pack']) : '';
+
+                $price_unit_raw = isset($detail_so['price_unit']) ? (float)$detail_so['price_unit'] : 0;
+                $price_raw = isset($detail_so['price']) ? (float)$detail_so['price'] : 0;
+                $subtotal_raw = isset($detail_so['subtotal']) ? (float)$detail_so['subtotal'] : 0;
+
+                // ================================
+                // KOLOM HARGA
+                // Jika price_unit diisi, ambil dari price_unit
+                // Jika price_unit = 0, ambil dari price
+                // ================================
+                $harga = 0;
                 
-                // Loop berdasarkan jumlah data yang tersedia
-                for ($i = 0; $i < $total_rows; $i++) {
-                    $det_po = $det_po_array[$i];
-                    $detail_so = $detail_so_array[$i];
-                    
-                    $harga_item = floatval(preg_replace('/[^0-9]/', '', $det_po['harga']));
-                    
-                    // Data dari detail_sales_order
-                    $qty = isset($detail_so['quantity']) ? number_format($detail_so['quantity'], 2, ',', '.') : '-';
-                    $qty_pack = isset($detail_so['quantity_pack']) ? number_format($detail_so['quantity_pack'], 2, ',', '.') : '-';
-                    $uom_pack = isset($detail_so['uom_pack']) ? htmlspecialchars($detail_so['uom_pack']) : '-';
-                ?>
-                <tr>
-                    <td class="text-center"><?= $no++ ?>.</td>
-                    <td><?= htmlspecialchars($det_po['ukuran']); ?></td>
-                    <td class="text-center"><?= $qty; ?></td>
-                    <td class="text-center"><?= $qty_pack; ?></td>
-                    <td class="text-center"><?= $uom_pack; ?></td>
-                    <td class="text-right">Rp <?= number_format($harga_item, 0, ',', '.'); ?></td>
-                    <td class="text-right">
-                        <?php 
-                        if ($det_po['harga_kg'] > 0) {
-                            echo 'Rp ' . number_format($det_po['harga_kg'], 0, ',', '.');
-                        } else {
-                            echo '-';
-                        }
-                        ?>
-                    </td>
-                </tr>
-                <?php } 
+                if ($price_unit_raw > 0) {
+                    // Jika price_unit diisi, gunakan price_unit
+                    $harga = $price_unit_raw;
+                } elseif ($price_raw > 0) {
+                    // Jika price_unit 0, gunakan price
+                    $harga = $price_raw;
+                }
+
+                // ================================
+                // KOLOM HARGA/KG
+                // Rumus: Subtotal / Qty (jika Qty > 0)
+                // ================================
+                $harga_kg = 0;
                 
-                // Jika tidak ada data
-                if ($total_rows == 0) {
-                ?>
-                <tr>
-                    <td colspan="7" class="text-center">Tidak ada data</td>
-                </tr>
-                <?php } ?>
-            </tbody>
+                if ($qty_raw > 0 && $subtotal_raw > 0) {
+                    $harga_kg = $subtotal_raw / $qty_raw;
+                }
+
+                // ================================
+                // CEK APAKAH HARGA KOSONG
+                // Jika harga = 0, maka semua kolom dikosongkan
+                // ================================
+                if ($harga == 0) {
+                    $qty_raw = 0;
+                    $qty_pack_raw = 0;
+                    $uom_pack_raw = '';
+                }
+
+                // ================================
+                // FORMAT TAMPILAN
+                // ================================
+                $qty = $qty_raw > 0 ? number_format($qty_raw, 2, ',', '.') : '-';
+                $qty_pack = $qty_pack_raw > 0 ? number_format($qty_pack_raw, 2, ',', '.') : '-';
+                $uom_pack = $uom_pack_raw !== '' ? htmlspecialchars($uom_pack_raw) : '-';
+
+                $ukuran = isset($det_po['ukuran']) && $det_po['ukuran'] !== ''
+                    ? htmlspecialchars($det_po['ukuran'])
+                    : htmlspecialchars($detail_so['inventory_name'] ?? '-');
+                
+                $harga_display = $harga > 0 ? 'Rp ' . number_format($harga, 0, ',', '.') : '-';
+                $harga_kg_display = $harga_kg > 0 ? 'Rp ' . number_format($harga_kg, 0, ',', '.') : '-';
+                
+                // Akumulasi total harga
+                $total_harga += $harga;
+            ?>
+            <tr>
+                <td class="text-center"><?= $no++ ?>.</td>
+                <td><?= $ukuran; ?></td>
+                <td class="text-center"><?= $qty; ?></td>
+                <td class="text-center"><?= $qty_pack; ?></td>
+                <td class="text-center"><?= $uom_pack; ?></td>
+                <td class="text-right"><?= $harga_display; ?></td>
+                <td class="text-right"><?= $harga_kg_display; ?></td>
+            </tr>
+            <?php } ?>
+
+            <?php if ($total_rows == 0) { ?>
+            <tr>
+                <td colspan="7" class="text-center">Tidak ada data</td>
+            </tr>
+            <?php } else { ?>
+            <!-- Total Row -->
+            <tr class="total-row">
+                <td colspan="5" class="text-right">TOTAL</td>
+                <td class="text-right">Rp <?= number_format($total_harga, 0, ',', '.') ?></td>
+                <td></td>
+            </tr>
+            <?php } ?>
+        </tbody>
          </table>
         
         <div class="signature-container">
@@ -339,7 +392,7 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
     <!-- Tombol hanya muncul di layar, tidak ikut print -->
     <div class="action-buttons">
         <button class="btn-print" onclick="window.print(); return false;">🖨️ Cetak SO</button>
-        <a href="index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
+        <a href="http://localhost/cahaya/index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
     </div>
     
     <script>

@@ -58,6 +58,28 @@ function parseRupiah($value) {
     return floatval($value);
 }
 
+// ── FUNGSI CEK INVENTORY KHUSUS ──────────────────────────────────────────
+function isSpecialInventory($inventoryName) {
+    return strpos($inventoryName, "PE ROLL STOKAN SSB") !== false || 
+           strpos($inventoryName, "PP ROLL BOLA") !== false;
+}
+
+// ── FUNGSI GET PRICE FORMULA FACTOR ──────────────────────────────────────
+function getPriceFormulaFactor($inventoryName, $p, $l, $t) {
+    $divisor = 1;
+    
+    // Pengecualian untuk inventory_name tertentu
+    if (isSpecialInventory($inventoryName)) {
+        if ($p == 50) {
+            $divisor = 2;
+        } else if ($p == 25) {
+            $divisor = 4;
+        }
+    }
+    
+    return ($t * 10 * $l) / $divisor;
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo "<script>window.location.href='index.php?page=sales_order';</script>";
     exit;
@@ -69,7 +91,6 @@ $datetime_now = date('Y-m-d H:i:s');
 // ── Sanitize ──────────────────────────────────────────────────────────
 $order_no          = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
 $order_date        = mysqli_real_escape_string($conn, $_POST['order_date'] ?? '');
-$sop_date          = mysqli_real_escape_string($conn, $_POST['sop_date'] ?? '');
 $marketing_id      = mysqli_real_escape_string($conn, $_POST['marketing_id'] ?? '');
 $sales_id          = mysqli_real_escape_string($conn, $_POST['sales_id'] ?? '');
 $customer_id       = mysqli_real_escape_string($conn, $_POST['customer_id'] ?? '');
@@ -111,7 +132,6 @@ if (empty($customer_name) && !empty($customer_id)) {
 }
 
 $order_date            = $order_date ?: date('Y-m-d');
-$sop_date              = $sop_date ?: date('Y-m-d');
 $shipment_due_date_sql = $shipment_due_date ? "'$shipment_due_date'" : 'NULL';
 
 // ── Transaction: update head + replace detail ─────────────────────────
@@ -121,6 +141,18 @@ try {
     // Hapus detail lama
     if (!mysqli_query($conn, "DELETE FROM detail_sales_order WHERE order_no='$order_no'")) {
         throw new Exception('Hapus detail gagal: ' . mysqli_error($conn));
+    }
+
+    // Hapus detail PO lama
+    // Ambil no_po dari head_sales_order
+    $q_po = mysqli_query($conn, "SELECT po FROM head_sales_order WHERE order_no='$order_no' LIMIT 1");
+    if ($q_po && $r_po = mysqli_fetch_assoc($q_po)) {
+        $no_po = $r_po['po'];
+        if (!empty($no_po)) {
+            if (!mysqli_query($conn, "DELETE FROM det_po WHERE no_po='$no_po'")) {
+                throw new Exception('Hapus detail PO gagal: ' . mysqli_error($conn));
+            }
+        }
     }
 
     // Insert detail baru
@@ -150,10 +182,49 @@ try {
         $price_unit = parseRupiah($price_units[$i] ?? 0);
         $price      = parseRupiah($prices[$i] ?? 0);
 
-        // Subtotal = Qty Pack x Price Unit
-        // Jika Price Unit 0, pakai Price
-        $harga_dipakai = $price_unit > 0 ? $price_unit : $price;
-        $subtotal      = $qty_pack * $harga_dipakai;
+        // ============================================================
+        // LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL
+        // ============================================================
+        
+        // Cek apakah inventory khusus
+        $isSpecial = isSpecialInventory($inv_name);
+        
+        // Ambil data p, l, t dari database jika tersedia
+        $p = 0;
+        $l = 0; 
+        $t = 0;
+        
+        if (!empty($inv_id)) {
+            $q_inv = mysqli_query($conn, "SELECT p, l, t FROM m_inventory WHERE inventory_id='$inv_id' LIMIT 1");
+            if ($q_inv && $r_inv = mysqli_fetch_assoc($q_inv)) {
+                $p = floatval($r_inv['p'] ?? 0);
+                $l = floatval($r_inv['l'] ?? 0);
+                $t = floatval($r_inv['t'] ?? 0);
+            }
+        }
+        
+        // Untuk inventory khusus: Price Unit bisa diisi, Price dihitung dari rumus
+        // Untuk inventory non-khusus: Price Unit = 0, Price diisi manual
+        if ($isSpecial) {
+            // Hitung faktor rumus
+            $factor = getPriceFormulaFactor($inv_name, $p, $l, $t);
+            
+            // Jika Price Unit diisi, hitung Price dari Price Unit
+            if ($price_unit > 0 && $factor > 0) {
+                $price = $price_unit * $factor;
+            } 
+            // Jika Price diisi manual, hitung Price Unit dari Price
+            else if ($price > 0 && $factor > 0) {
+                $price_unit = $price / $factor;
+            }
+        } else {
+            // Inventory non-khusus: Price Unit harus 0, hanya Price yang bisa diisi
+            $price_unit = 0;
+            // Price tetap dari input user
+        }
+
+        // Subtotal = Price x Qty Pack (sesuai poin 8)
+        $subtotal = $qty_pack * $price;
 
         $grand_total += $subtotal;
 
@@ -180,13 +251,31 @@ try {
             throw new Exception('Insert detail gagal: ' . mysqli_error($conn));
         }
 
+        // Insert detail PO
+        if (!empty($no_po)) {
+            $harga_po = $price > 0 ? $price : $price_unit;
+            
+            $sql_det_po = "INSERT INTO det_po (
+                no_po, ukuran, jml_order, harga, harga_kg
+            ) VALUES (
+                '$no_po',
+                '" . mysqli_real_escape_string($conn, $inv_name) . "',
+                '$qty',
+                '$harga_po',
+                '$harga_po'
+            )";
+
+            if (!mysqli_query($conn, $sql_det_po)) {
+                throw new Exception('Insert detail PO gagal: ' . mysqli_error($conn));
+            }
+        }
+
         $detail_count++;
     }
 
     // Update head_sales_order setelah grand_total dihitung ulang
     $sql_head = "UPDATE head_sales_order SET
         order_date        = '$order_date',
-        sop_date          = '$sop_date',
         marketing_id      = '$marketing_id',
         sales_id          = '$sales_id',
         customer_id       = '$customer_id',
@@ -221,8 +310,11 @@ try {
 
     $_SESSION['alert'] = "
         <div class='alert alert-success p-2 small'>
-            <strong>✅ Sales Order <code>$order_no</code> berhasil diupdate!</strong>
-            &nbsp;|&nbsp; $detail_count item detail tersimpan.
+            <strong>✅ Sales Order <code>$order_no</code> berhasil diupdate!</strong><br>
+            • $detail_count item detail tersimpan<br>
+            • Grand Total: <strong>Rp " . number_format($grand_total, 0, ',', '.') . "</strong><br>
+            • Down Payment: Rp " . number_format($down_payment, 0, ',', '.') . "<br>
+            • Sisa Bayar: Rp " . number_format($grand_total - $down_payment, 0, ',', '.') . "
         </div>";
 
     echo "<script>window.location.href='index.php?page=sales_order';</script>";

@@ -11,28 +11,156 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+// ==========================================
+// HELPER DATE & REMARKS
+// ==========================================
+function formatDateIndonesian($date) {
+    if (empty($date) || $date == '0000-00-00') {
+        return '';
+    }
 
-// Filter pencarian
-$start_date = isset($_GET['start_date']) ? $_GET['start_date'] : date('Y-m-01');
-$end_date = isset($_GET['end_date']) ? $_GET['end_date'] : date('Y-m-t');
-$customer_name = isset($_GET['customer_name']) ? $_GET['customer_name'] : '';
-$sales_name = isset($_GET['sales_name']) ? $_GET['sales_name'] : '';
-$marketing_name = isset($_GET['marketing_name']) ? $_GET['marketing_name'] : '';
-$category = isset($_GET['category']) ? $_GET['category'] : '';
-$approval_status = isset($_GET['approval_status']) ? $_GET['approval_status'] : '';
+    $bulan = [
+        1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
+    ];
+
+    $timestamp = strtotime($date);
+
+    if (!$timestamp) {
+        return '';
+    }
+
+    return date('d', $timestamp) . '-' . $bulan[(int)date('m', $timestamp)] . '-' . date('Y', $timestamp);
+}
+
+function convertFilterDateToMysql($date) {
+    if ($date === null || trim($date) === '') {
+        return '';
+    }
+
+    $date = trim($date);
+
+    // Format database: 2026-06-18
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return $date;
+    }
+
+    $months = [
+        'Jan' => '01',
+        'Feb' => '02',
+        'Mar' => '03',
+        'Apr' => '04',
+        'May' => '05',
+        'Mei' => '05',
+        'Jun' => '06',
+        'Jul' => '07',
+        'Aug' => '08',
+        'Agu' => '08',
+        'Sep' => '09',
+        'Oct' => '10',
+        'Okt' => '10',
+        'Nov' => '11',
+        'Dec' => '12',
+        'Des' => '12'
+    ];
+
+    // Format datepicker: 18-Jun-2026
+    $parts = explode('-', $date);
+
+    if (count($parts) === 3) {
+        $day = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
+        $monthText = $parts[1];
+        $year = $parts[2];
+
+        if (isset($months[$monthText])) {
+            return $year . '-' . $months[$monthText] . '-' . $day;
+        }
+    }
+
+    return '';
+}
+
+function isStokanRemark($remark) {
+    return strtoupper(trim((string)$remark)) === 'STOKAN';
+}
+
+// ==========================================
+// FILTER PENCARIAN
+// ==========================================
+$start_date_raw = isset($_GET['start_date']) && trim($_GET['start_date']) !== ''
+    ? trim($_GET['start_date'])
+    : formatDateIndonesian(date('Y-m-01'));
+
+$end_date_raw = isset($_GET['end_date']) && trim($_GET['end_date']) !== ''
+    ? trim($_GET['end_date'])
+    : formatDateIndonesian(date('Y-m-t'));
+
+$start_date_sql = convertFilterDateToMysql($start_date_raw);
+$end_date_sql = convertFilterDateToMysql($end_date_raw);
+
+if ($start_date_sql === '') {
+    $start_date_sql = date('Y-m-01');
+    $start_date_raw = formatDateIndonesian($start_date_sql);
+}
+
+if ($end_date_sql === '') {
+    $end_date_sql = date('Y-m-t');
+    $end_date_raw = formatDateIndonesian($end_date_sql);
+}
+
+if ($start_date_sql > $end_date_sql) {
+    $tmp_sql = $start_date_sql;
+    $start_date_sql = $end_date_sql;
+    $end_date_sql = $tmp_sql;
+
+    $tmp_raw = $start_date_raw;
+    $start_date_raw = $end_date_raw;
+    $end_date_raw = $tmp_raw;
+}
+
+$start_date_safe = mysqli_real_escape_string($conn, $start_date_sql);
+$end_date_safe = mysqli_real_escape_string($conn, $end_date_sql);
+
+$customer_name = isset($_GET['customer_name']) ? trim($_GET['customer_name']) : '';
+$sales_name = isset($_GET['sales_name']) ? trim($_GET['sales_name']) : '';
+$marketing_name = isset($_GET['marketing_name']) ? trim($_GET['marketing_name']) : '';
+$category = isset($_GET['category']) ? trim($_GET['category']) : '';
+$approval_status = isset($_GET['approval_status']) ? trim($_GET['approval_status']) : '';
+
+$customer_name_safe = mysqli_real_escape_string($conn, $customer_name);
+$sales_name_safe = mysqli_real_escape_string($conn, $sales_name);
+$marketing_name_safe = mysqli_real_escape_string($conn, $marketing_name);
+$category_safe = mysqli_real_escape_string($conn, $category);
+$approval_status_safe = mysqli_real_escape_string($conn, $approval_status);
 
 // Build WHERE clause untuk header
+// Build WHERE clause untuk header
 $where = "WHERE 1=1";
-if ($start_date && $end_date) {
-    $where .= " AND h.order_date BETWEEN '$start_date' AND '$end_date'";
-}
-if ($customer_name) {
-    $where .= " AND h.customer_name LIKE '%$customer_name%'";
-}
-if ($approval_status) {
-    $where .= " AND h.approval_status = '$approval_status'";
+
+$where .= " AND DATE(h.order_date) BETWEEN '$start_date_safe' AND '$end_date_safe'";
+
+if ($customer_name_safe !== '') {
+    $where .= " AND h.customer_name LIKE '%$customer_name_safe%'";
 }
 
+if ($sales_name_safe !== '') {
+    $where .= " AND s.sales_name = '$sales_name_safe'";
+}
+
+if ($marketing_name_safe !== '') {
+    $where .= " AND m.marketing_name = '$marketing_name_safe'";
+}
+
+if ($category_safe !== '') {
+    $where .= " AND mi.category = '$category_safe'";
+}
+
+if ($approval_status_safe !== '') {
+    $where .= " AND h.approval_status = '$approval_status_safe'";
+}
+
+// Query untuk mendapatkan data sales order dengan detail
 // Query untuk mendapatkan data sales order dengan detail
 $query = mysqli_query($conn, "
     SELECT 
@@ -41,10 +169,12 @@ $query = mysqli_query($conn, "
         h.customer_name,
         h.customer_address,
         h.customer_city,
-        h.remarks,
+        h.remarks AS header_remarks,
         h.approval_status,
+
         m.marketing_name,
         s.sales_name,
+
         d.inventory_id,
         d.inventory_name,
         d.quantity,
@@ -54,14 +184,22 @@ $query = mysqli_query($conn, "
         d.uom_detail,
         d.price_unit,
         d.price,
-        d.subtotal
+        d.subtotal,
+        d.remarks AS detail_remarks,
+
+        mi.category
     FROM head_sales_order h
     LEFT JOIN m_marketing m ON h.marketing_id = m.marketing_id
     LEFT JOIN m_sales s ON h.sales_id = s.sales_id
     LEFT JOIN detail_sales_order d ON h.order_no = d.order_no
+    LEFT JOIN m_inventory mi ON d.inventory_id = mi.inventory_id
     $where
-    ORDER BY h.order_date DESC, h.customer_name ASC, h.order_no ASC
+    ORDER BY h.order_date DESC, h.customer_name ASC, h.order_no ASC, d.inventory_id ASC
 ");
+
+if (!$query) {
+    die('Query Rekap Sales Order Error: ' . mysqli_error($conn));
+}
 
 // Group data by customer
 $grouped_data = [];
@@ -83,7 +221,7 @@ while ($row = mysqli_fetch_assoc($query)) {
             'order_date' => $row['order_date'],
             'marketing_name' => $row['marketing_name'],
             'sales_name' => $row['sales_name'],
-            'remarks' => $row['remarks'],
+            'remarks' => $row['header_remarks'],
             'approval_status' => $row['approval_status'],
             'items' => []
         ];
@@ -95,11 +233,26 @@ while ($row = mysqli_fetch_assoc($query)) {
 }
 
 // Hitung total keseluruhan
-$grand_total = 0;
+$grand_total_qty = 0;
+$grand_total_bal = 0;
+$grand_total_subtotal = 0;
+
 foreach ($grouped_data as $customer) {
     foreach ($customer['orders'] as $order) {
         foreach ($order['items'] as $item) {
-            $grand_total += $item['subtotal'];
+            $quantity = (float)($item['quantity'] ?? 0);
+            $quantity_pack = (float)($item['quantity_pack'] ?? 0);
+            $subtotal = (float)($item['subtotal'] ?? 0);
+
+            $detail_remarks = trim((string)($item['detail_remarks'] ?? ''));
+            $header_remarks = trim((string)($order['remarks'] ?? ''));
+
+            $remark_for_check = $detail_remarks !== '' ? $detail_remarks : $header_remarks;
+            $is_stokan = isStokanRemark($remark_for_check);
+
+            $grand_total_qty += $is_stokan ? 0 : $quantity;
+            $grand_total_bal += $quantity_pack;
+            $grand_total_subtotal += $subtotal;
         }
     }
 }
@@ -265,11 +418,23 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             <input type="hidden" name="page" value="rekap_sales_order">
             <div class="col-md-2">
                 <label class="form-label fw-bold small">Start Date</label>
-                <input type="date" name="start_date" class="form-control form-control-sm" value="<?= $start_date ?>">
+                <input 
+                type="text" 
+                name="start_date" 
+                class="form-control form-control-sm datepicker" 
+                value="<?= htmlspecialchars($start_date_raw) ?>"
+                autocomplete="off"
+>
             </div>
             <div class="col-md-2">
                 <label class="form-label fw-bold small">End Date</label>
-                <input type="date" name="end_date" class="form-control form-control-sm" value="<?= $end_date ?>">
+               <input 
+                    type="text" 
+                    name="end_date" 
+                    class="form-control form-control-sm datepicker" 
+                    value="<?= htmlspecialchars($end_date_raw) ?>"
+                    autocomplete="off"
+                >
             </div>
             <div class="col-md-2">
                 <label class="form-label fw-bold small">Customer Name</label>
@@ -304,7 +469,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             </div>
             <div class="col-md-12 mt-2">
                 <button type="submit" class="btn btn-sm btn-primary"><i class="fa fa-search"></i> Tampilkan</button>
-                <a href="modul/transaksi/cetak_rekap_sales_order.php?start_date=<?= $start_date ?>&end_date=<?= $end_date ?>&customer_name=<?= urlencode($customer_name) ?>&sales_name=<?= urlencode($sales_name) ?>&marketing_name=<?= urlencode($marketing_name) ?>&approval_status=<?= $approval_status ?>" target="_blank" class="btn btn-sm btn-success">
+                       <a href="modul/transaksi/cetak_rekap_sales_order.php?start_date=<?= urlencode($start_date_raw) ?>&end_date=<?= urlencode($end_date_raw) ?>&customer_name=<?= urlencode($customer_name) ?>&sales_name=<?= urlencode($sales_name) ?>&marketing_name=<?= urlencode($marketing_name) ?>&category=<?= urlencode($category) ?>&approval_status=<?= urlencode($approval_status) ?>" target="_blank" class="btn btn-sm btn-success">
                     <i class="fa fa-print"></i> Cetak Rekap (A5)
                 </a>
                 <a href="index.php?page=sales_order" class="btn btn-sm btn-secondary"><i class="fa fa-arrow-left"></i> Kembali</a>
@@ -321,7 +486,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             <div style="text-align: center; margin-bottom: 20px; display: none;" class="print-title">
                 <h3>PT MUTIARA CAHAYA PLASTINDO</h3>
                 <h4>REKAP SALES ORDER</h4>
-                <p>Periode: <?= date('d/m/Y', strtotime($start_date)) ?> - <?= date('d/m/Y', strtotime($end_date)) ?></p>
+                <p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>
             </div>
             
             <?php foreach ($grouped_data as $customer): ?>
@@ -350,52 +515,141 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                     </div>
                                 </div>
                             </div>
-                            
                             <table class="rekap-table">
                                 <thead>
                                     <tr>
                                         <th>Inventory ID</th>
-                                        <th>Qty Order</th>
+                                        <th>Inventory Name</th>
+                                        <th>Remarks</th>
+                                        <th>Order Qty</th>
                                         <th>UoM</th>
-                                        <th>Qty Pack</th>
-                                        <th>UoM Pack</th>
                                         <th>Order Bal</th>
+                                        <th>UoM Pack</th>
                                         <th>Price Unit</th>
-                                        <th>Price Total</th>
+                                        <th>Price</th>
+                                        <th>Price KG</th>
                                         <th>Subtotal</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php 
-                                    $order_total = 0;
+                                    $order_total_qty = 0;
+                                    $order_total_bal = 0;
+                                    $order_total_subtotal = 0;
+
                                     foreach ($order['items'] as $item): 
-                                        $order_total += $item['subtotal'];
+                                        $quantity = (float)($item['quantity'] ?? 0);
+                                        $quantity_pack = (float)($item['quantity_pack'] ?? 0);
+                                        $price_unit = (float)($item['price_unit'] ?? 0);
+                                        $price = (float)($item['price'] ?? 0);
+                                        $subtotal = (float)($item['subtotal'] ?? 0);
+
+                                        $detail_remarks = trim((string)($item['detail_remarks'] ?? ''));
+                                        $header_remarks = trim((string)($order['remarks'] ?? ''));
+
+                                        // Prioritas remarks detail. Kalau kosong, pakai remarks header.
+                                        $remarks_display = $detail_remarks !== '' ? $detail_remarks : $header_remarks;
+                                        $is_stokan = isStokanRemark($remarks_display);
+
+                                        // Kalau STOKAN, Order Qty untuk total dianggap 0
+                                        $quantity_for_total = $is_stokan ? 0 : $quantity;
+
+                                        // Price KG = subtotal / quantity
+                                        $price_kg = 0;
+                                        if ($quantity > 0 && $subtotal > 0) {
+                                            $price_kg = $subtotal / $quantity;
+                                        }
+
+                                        $order_total_qty += $quantity_for_total;
+                                        $order_total_bal += $quantity_pack;
+                                        $order_total_subtotal += $subtotal;
                                     ?>
                                     <tr>
-                                        <td><?= htmlspecialchars($item['inventory_id']) . ' - ' . htmlspecialchars(substr($item['inventory_name'], 0, 30)) ?></td>
-                                        <td class="text-center"><?= number_format($item['quantity'], 2, ',', '.') ?></td>
-                                        <td class="text-center"><?= htmlspecialchars($item['uom']) ?></td>
-                                        <td class="text-center"><?= number_format($item['quantity_pack'], 2, ',', '.') ?></td>
-                                        <td class="text-center"><?= htmlspecialchars($item['uom_pack']) ?></td>
-                                        <td class="text-center">-</td>
-                                        <td class="text-right">Rp <?= number_format($item['price_unit'], 2, ',', '.') ?></td>
-                                        <td class="text-right">Rp <?= number_format($item['price'], 2, ',', '.') ?></td>
-                                        <td class="text-right">Rp <?= number_format($item['subtotal'], 2, ',', '.') ?></td>
+                                        <td><?= htmlspecialchars($item['inventory_id']) ?></td>
+
+                                        <td><?= htmlspecialchars(substr($item['inventory_name'], 0, 50)) ?></td>
+
+                                        <td class="text-center">
+                                            <?= htmlspecialchars($remarks_display) ?>
+                                        </td>
+
+                                        <td class="text-right">
+                                            <?= number_format($quantity, 2, ',', '.') ?>
+                                            
+                                        </td>
+
+                                        <td class="text-center">
+                                            <?= htmlspecialchars($item['uom']) ?>
+                                        </td>
+
+                                        <td class="text-right">
+                                            <?= number_format($quantity_pack, 2, ',', '.') ?>
+                                        </td>
+
+                                        <td class="text-center">
+                                            <?= htmlspecialchars($item['uom_pack']) ?>
+                                        </td>
+
+                                        <td class="text-right">
+                                            <?= $price_unit > 0 ? 'Rp ' . number_format($price_unit, 2, ',', '.') : '-' ?>
+                                        </td>
+
+                                        <td class="text-right">
+                                            <?= $price > 0 ? 'Rp ' . number_format($price, 2, ',', '.') : '-' ?>
+                                        </td>
+
+                                        <td class="text-right">
+                                            <?= $price_kg > 0 ? 'Rp ' . number_format($price_kg, 2, ',', '.') : '-' ?>
+                                        </td>
+
+                                        <td class="text-right">
+                                            Rp <?= number_format($subtotal, 2, ',', '.') ?>
+                                        </td>
                                     </tr>
                                     <?php endforeach; ?>
+
                                     <tr style="background: #f0f0f0; font-weight: bold;">
-                                        <td colspan="8" class="text-right">Total Order <?= htmlspecialchars($order['order_no']) ?>:</td>
-                                        <td class="text-right">Rp <?= number_format($order_total, 2, ',', '.') ?></td>
+                                       
+
+                                        <!-- Inventory Name + Remarks -->
+                                        <td colspan="2"></td>
+                                        <!-- Tulisan Total berada di bawah kolom Inventory ID -->
+                                        <td class="text-center">Total :</td>
+                                        <!-- Order Qty -->
+                                        <td class="text-right">
+                                            <?= number_format($order_total_qty, 2, ',', '.') ?>
+                                        </td>
+
+                                        <!-- UoM -->
+                                        <td></td>
+
+                                        <!-- Order Bal -->
+                                        <td class="text-right">
+                                            <?= number_format($order_total_bal, 2, ',', '.') ?>
+                                        </td>
+
+                                        <!-- UoM Pack + Price Unit + Price + Price KG -->
+                                        <td colspan="4"></td>
+
+                                        <!-- Subtotal -->
+                                        <td class="text-right">
+                                            Rp <?= number_format($order_total_subtotal, 2, ',', '.') ?>
+                                        </td>
                                     </tr>
                                 </tbody>
                             </table>
+                           
+                            
                         </div>
                     <?php endforeach; ?>
                 </div>
             <?php endforeach; ?>
             
             <div class="grand-total">
-                GRAND TOTAL KESELURUHAN: Rp <?= number_format($grand_total, 2, ',', '.') ?>
+                GRAND TOTAL KESELURUHAN:
+                &nbsp; Order Qty: <?= number_format($grand_total_qty, 2, ',', '.') ?>
+                &nbsp; | &nbsp; Order Bal: <?= number_format($grand_total_bal, 2, ',', '.') ?>
+                &nbsp; | &nbsp; Subtotal: Rp <?= number_format($grand_total_subtotal, 2, ',', '.') ?>
             </div>
         <?php endif; ?>
     </div>
@@ -408,7 +662,7 @@ $(document).ready(function() {
     var titleHtml = '<div class="print-title" style="text-align: center; margin-bottom: 20px;">' +
         '<h3>PT MUTIARA CAHAYA PLASTINDO</h3>' +
         '<h4>REKAP SALES ORDER</h4>' +
-        '<p>Periode: <?= date('d/m/Y', strtotime($start_date)) ?> - <?= date('d/m/Y', strtotime($end_date)) ?></p>' +
+      '<p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>' +
         '<hr>' +
         '</div>';
     
@@ -417,4 +671,29 @@ $(document).ready(function() {
     style.innerHTML = '@media print { .filter-box, .rekap-header, .no-print { display: none !important; } }';
     document.head.appendChild(style);
 });
+
 </script>
+<script>
+// Menambahkan judul saat print
+$(document).ready(function() {
+    flatpickr(".datepicker", {
+        dateFormat: "d-M-Y",
+        allowInput: true,
+        disableMobile: true
+    });
+
+    $('.print-title').remove();
+
+    var titleHtml = '<div class="print-title" style="text-align: center; margin-bottom: 20px;">' +
+        '<h3>PT MUTIARA CAHAYA PLASTINDO</h3>' +
+        '<h4>REKAP SALES ORDER</h4>' +
+        '<p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>' +
+        '<hr>' +
+        '</div>';
+
+    var style = document.createElement('style');
+    style.innerHTML = '@media print { .filter-box, .rekap-header, .no-print { display: none !important; } }';
+    document.head.appendChild(style);
+});
+</script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>

@@ -142,6 +142,32 @@ if ($cek_po && mysqli_num_rows($cek_po) > 0) {
 }
 
 // ════════════════════════════════════════════════════════════
+// FUNGSI CEK INVENTORY KHUSUS
+// ════════════════════════════════════════════════════════════
+function isSpecialInventory($inventoryName) {
+    return strpos($inventoryName, "PE ROLL STOKAN SSB") !== false || 
+           strpos($inventoryName, "PP ROLL BOLA") !== false;
+}
+
+// ════════════════════════════════════════════════════════════
+// FUNGSI GET PRICE FORMULA FACTOR
+// ════════════════════════════════════════════════════════════
+function getPriceFormulaFactor($inventoryName, $p, $l, $t) {
+    $divisor = 1;
+    
+    // Pengecualian untuk inventory_name tertentu
+    if (isSpecialInventory($inventoryName)) {
+        if ($p == 50) {
+            $divisor = 2;
+        } else if ($p == 25) {
+            $divisor = 4;
+        }
+    }
+    
+    return ($t * 10 * $l) / $divisor;
+}
+
+// ════════════════════════════════════════════════════════════
 // HITUNG ULANG DETAIL DI SERVER
 // ════════════════════════════════════════════════════════════
 $inventory_ids   = $_POST['inventory_id'] ?? [];
@@ -171,11 +197,49 @@ for ($i = 0; $i < count($inventory_ids); $i++) {
     $price_unit = parseRupiah($price_units[$i] ?? 0);
     $price      = parseRupiah($prices[$i] ?? 0);
 
-    // Logic utama:
-    // Subtotal = Quantity Pack x Price Unit
-    // Jika Price Unit = 0, maka pakai Price
-    $harga_dipakai = $price_unit > 0 ? $price_unit : $price;
-    $subtotal      = $qty_pack * $harga_dipakai;
+    // ============================================================
+    // LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL
+    // ============================================================
+    
+    // Cek apakah inventory khusus
+    $isSpecial = isSpecialInventory($inv_name);
+    
+    // Ambil data p, l, t dari database jika tersedia
+    $p = 0;
+    $l = 0; 
+    $t = 0;
+    
+    if (!empty($inv_id)) {
+        $q_inv = mysqli_query($conn, "SELECT p, l, t FROM m_inventory WHERE inventory_id='$inv_id' LIMIT 1");
+        if ($q_inv && $r_inv = mysqli_fetch_assoc($q_inv)) {
+            $p = floatval($r_inv['p'] ?? 0);
+            $l = floatval($r_inv['l'] ?? 0);
+            $t = floatval($r_inv['t'] ?? 0);
+        }
+    }
+    
+    // Untuk inventory khusus: Price Unit bisa diisi, Price dihitung dari rumus
+    // Untuk inventory non-khusus: Price Unit = 0, Price diisi manual
+    if ($isSpecial) {
+        // Hitung faktor rumus
+        $factor = getPriceFormulaFactor($inv_name, $p, $l, $t);
+        
+        // Jika Price Unit diisi, hitung Price dari Price Unit
+        if ($price_unit > 0 && $factor > 0) {
+            $price = $price_unit * $factor;
+        } 
+        // Jika Price diisi manual, hitung Price Unit dari Price
+        else if ($price > 0 && $factor > 0) {
+            $price_unit = $price / $factor;
+        }
+    } else {
+        // Inventory non-khusus: Price Unit harus 0, hanya Price yang bisa diisi
+        $price_unit = 0;
+        // Price tetap dari input user
+    }
+
+    // Subtotal = Price x Qty Pack (sesuai poin 8)
+    $subtotal = $qty_pack * $price;
 
     $calculated_grand_total += $subtotal;
 
@@ -190,7 +254,11 @@ for ($i = 0; $i < count($inventory_ids); $i++) {
         'price_unit'     => $price_unit,
         'price'          => $price,
         'subtotal'       => $subtotal,
-        'remarks'        => $remarks_details[$i] ?? ''
+        'remarks'        => $remarks_details[$i] ?? '',
+        'p'              => $p,
+        'l'              => $l,
+        't'              => $t,
+        'is_special'     => $isSpecial
     ];
 }
 
@@ -274,9 +342,8 @@ try {
             throw new Exception('Gagal simpan detail SO: ' . mysqli_error($conn));
         }
 
-        // Untuk det_po, harga pakai price_unit.
-        // Jika price_unit = 0, maka pakai price.
-        $harga_po = $det['price_unit'] > 0 ? $det['price_unit'] : $det['price'];
+        // Untuk det_po, harga pakai price (karena subtotal = qty_pack * price)
+        $harga_po = $det['price'] > 0 ? $det['price'] : $det['price_unit'];
 
         $sql_det_po = "INSERT INTO det_po (
             no_po, ukuran, jml_order, harga, harga_kg

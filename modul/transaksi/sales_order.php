@@ -569,9 +569,9 @@ if (!$query) {
     <td class="text-center"><span class="<?= $status_class ?>"><?= $row['status'] ?></span></td>
     <td class="text-center">
         <select class="approval-select" data-order="<?= $row['order_no'] ?>" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #ddd; font-size: 11px; cursor: pointer;">
-            <option value="Pending" <?= $row['approval_status'] == 'Pending' ? 'selected' : '' ?> style="background: #ffc107; color: #000;">Pending</option>
-            <option value="Approve" <?= $row['approval_status'] == 'Approve' ? 'selected' : '' ?> style="background: #28a745; color: #fff;">Approve</option>
             <option value="Reject" <?= $row['approval_status'] == 'Reject' ? 'selected' : '' ?> style="background: #dc3545; color: #fff;">Reject</option>
+            <option value="Approve" <?= $row['approval_status'] == 'Approve' ? 'selected' : '' ?> style="background: #28a745; color: #fff;">Approve</option>
+            
         </select>
     </td>
     <td style="max-width: 100px; overflow: hidden; text-overflow: ellipsis;"><?= $row['remarks'] ?></td>
