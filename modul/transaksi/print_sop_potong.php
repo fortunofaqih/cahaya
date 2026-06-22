@@ -1,6 +1,5 @@
 <?php
 // modul/transaksi/print_sop_gabungan.php
-// Print SURAT PERINTAH KERJA GABUNGAN (ROL & POTONG) - Format F4 Landscape (Bagi 2 Sisi)
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -29,9 +28,38 @@ if (!$head) {
 
 $detail_query = mysqli_query($conn, "SELECT * FROM det_sop WHERE sop_id = '$sop_id' LIMIT 1");
 $detail = mysqli_fetch_assoc($detail_query);
+if (!$detail) {
+    die("Detail SOP tidak ditemukan");
+}
 
 $tgl_order = date('d-M-Y', strtotime($head['sop_date']));
 $tgl_kirim = !empty($detail['shipment_due_date']) ? date('d-M-Y', strtotime($detail['shipment_due_date'])) : '-';
+
+function h($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function displayText($value, $fallback = '-') {
+    $value = trim((string)$value);
+    return $value !== '' ? h($value) : h($fallback);
+}
+
+function displayOrderPotong($value) {
+    $value = trim((string)$value);
+
+    if ($value === '') {
+        return '-';
+    }
+
+    // Kalau value sudah berisi satuan, contoh: "10 ROL", "500 LBR", "10 BAL", tampilkan apa adanya.
+    // number_format hanya dipakai untuk angka murni supaya tidak error saat value bertipe string.
+    $numeric = str_replace(',', '.', $value);
+    if (is_numeric($numeric)) {
+        return number_format((float)$numeric, 0) . ' PCS';
+    }
+
+    return h($value);
+}
 
 header("Content-Type: text/html; charset=UTF-8");
 ?>
@@ -189,7 +217,7 @@ header("Content-Type: text/html; charset=UTF-8");
                         <tr><td class="label">Berat Jenis</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['berat_jenis_potong'] ?: $detail['spec_potong'] ?: '-') ?></td></tr>
                         <tr><td class="label">Spec</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['spec_potong'] ?: '-') ?></td></tr>
                         <tr><td class="label">Ukuran</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['ukuran_potong'] ?: $detail['ukuran_rol'] ?: '-') ?></td></tr>
-                        <tr><td class="label">Jumlah Order</td><td class="titik">:</td><td class="val"><?= number_format($detail['jml_order_potong'] ?: 0, 0) ?> PCS</td></tr>
+                        <tr><td class="label">Jumlah Order</td><td class="titik">:</td><td class="val"><?= displayOrderPotong($detail['jml_order_potong'] ?? '') ?></td></tr>
                         <tr><td class="label">Isi per pak & Bal</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['isi_pakbal_potong'] ?: '-') ?></td></tr>
                         <tr><td class="label">Keterangan</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['keterangan_potong'] ?: $detail['keterangan_rol'] ?: '-') ?></td></tr>
                         <tr><td class="label">Kode</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['code_potong'] ?: $detail['code_rol'] ?: '-') ?></td></tr>
