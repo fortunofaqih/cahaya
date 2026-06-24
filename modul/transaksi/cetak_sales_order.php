@@ -76,22 +76,25 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
         
         body {
             font-family: 'Arial', sans-serif;
-            background: white;
+            background: #e0e0e0;
             padding: 20px;
         }
         
-        /* Container cetak */
+        /* Container cetak (Tampilan di Layar) */
         .print-container {
-            max-width: 900px;
-            margin: 0 auto;
+            width: 210mm; /* Lebar standar A4 */
+            min-height: 297mm; /* Tinggi standar A4 */
+            margin: 0 auto 50px auto;
             background: white;
+            padding: 20mm; /* Margin dalam kertas */
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
         
         .company-name {
             text-align: center;
             font-size: 14px;
             font-weight: bold;
-            margin-bottom: 10px;
+            margin-bottom: 5px;
         }
         
         .title {
@@ -99,7 +102,7 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
             font-size: 18px;
             font-weight: bold;
             text-decoration: underline;
-            margin-bottom: 20px;
+            margin-bottom: 25px;
             text-transform: uppercase;
         }
         
@@ -111,30 +114,32 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
         }
         
         .info-table td {
-            padding: 3px 0;
+            padding: 4px 0;
+            vertical-align: top;
         }
         
         .info-table td:first-child {
-            width: 100px;
+            width: 120px;
             font-weight: bold;
         }
         
         table.main-table {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 20px;
-            font-size: 10px;
+            margin-bottom: 30px;
+            font-size: 11px;
         }
         
         table.main-table th,
         table.main-table td {
             border: 1px solid black;
-            padding: 6px;
+            padding: 8px 6px;
         }
         
         table.main-table th {
             background: #e8e8e8;
             text-align: center;
+            font-weight: bold;
         }
         
         .text-right {
@@ -152,27 +157,27 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
         
         .signature-container {
             width: 100%;
-            margin-top: 40px;
-            overflow: hidden;
+            margin-top: 50px;
+            page-break-inside: avoid;
         }
         
         .sig-box {
-            width: 48%;
+            width: 45%;
             float: left;
             text-align: center;
-            font-size: 11px;
+            font-size: 12px;
         }
         
         .sig-box-right {
-            width: 48%;
+            width: 45%;
             float: right;
             text-align: center;
-            font-size: 11px;
+            font-size: 12px;
         }
         
         .sig-box p,
         .sig-box-right p {
-            margin-bottom: 50px;
+            margin-bottom: 65px;
         }
         
         /* Tombol - HANYA TAMPIL DI LAYAR, TIDAK DI PRINT */
@@ -181,9 +186,9 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
             margin-top: 30px;
             padding: 15px;
             background: #f8f9fa;
-            border-radius: 5px;
+            border-top: 1px solid #dee2e6;
             position: fixed;
-            bottom: 20px;
+            bottom: 0;
             left: 0;
             right: 0;
             z-index: 1000;
@@ -198,6 +203,7 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
             font-size: 14px;
             cursor: pointer;
             border: none;
+            font-weight: bold;
         }
         
         .btn-print {
@@ -218,59 +224,69 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
             background: #5c636a;
         }
         
-        /* SAAT PRINT - SEMUA TOMBOL HILANG, UKURAN A4 */
+        /* ========================================================
+           ATURAN CETAK (PRINT & SAVE PDF) - UKURAN A4 PORTRAIT
+           ======================================================== */
         @media print {
+            @page {
+                size: A4 portrait; /* Paksa browser menggunakan ukuran A4 Potret */
+                margin: 0; /* Margin ditangani oleh .print-container untuk konsistensi */
+            }
+            
             body {
                 padding: 0;
                 margin: 0;
+                background: white;
             }
             
             .print-container {
                 margin: 0;
-                padding: 10mm;
+                padding: 15mm; /* Margin fisik kertas saat dicetak */
                 width: 100%;
+                min-height: 100%;
+                box-shadow: none;
             }
             
             .action-buttons {
-                display: none !important;
+                display: none !important; /* Sembunyikan tombol saat cetak */
             }
             
-            @page {
-                size: A4;
-                margin: 15mm;
+            /* Hindari baris tabel terpotong di tengah baris */
+            table.main-table tr {
+                page-break-inside: avoid;
             }
         }
     </style>
 </head>
 <body>
     <div class="print-container">
-        <div class="company-name">PT MUTIARA CAHAYA PLASTINDO</div>
+        <div class="company-name">PT MUTIARACAHAYA PLASTINDO</div>
         <div class="title">SALES ORDER</div>
         
         <table class="info-table">
             <tr>
                 <td>Nomor SO</td>
                 <td>: <?= htmlspecialchars($no_so); ?></td>
-             </tr>
-             <tr>
+            </tr>
+            <tr>
                 <td>Tanggal</td>
                 <td>: <?= date('d/m/Y', strtotime($h['tgl_order'])); ?></td>
-             </tr>
-             <tr>
+            </tr>
+            <tr>
                 <td>Customer</td>
                 <td>: <?= htmlspecialchars($h['customer']); ?></td>
-             </tr>
-             <tr>
+            </tr>
+            <tr>
                 <td>PO Customer</td>
                 <td>: <?= htmlspecialchars($no_po); ?></td>
-             </tr>
-         </table>
+            </tr>
+        </table>
          
-         <table class="main-table">
+        <table class="main-table">
             <thead>
                 <tr>
-                    <th width="3%">No</th>
-                    <th width="30%">Ukuran / Deskripsi</th>
+                    <th width="4%">No</th>
+                    <th width="36%">Ukuran / Deskripsi</th>
                     <th width="10%">Qty</th>
                     <th width="10%">Qty Pack</th>
                     <th width="10%">UoM Pack</th>
@@ -278,19 +294,15 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
                     <th width="15%">Harga/Kg</th>
                 </tr>
             </thead>
-           <tbody>
+            <tbody>
             <?php 
             $no = 1; 
             $total_harga = 0;
             
-            // Loop berdasarkan jumlah data yang tersedia
             for ($i = 0; $i < $total_rows; $i++) {
                 $det_po = $det_po_array[$i];
                 $detail_so = $detail_so_array[$i];
 
-                // ================================
-                // DATA DASAR DARI DETAIL SO
-                // ================================
                 $qty_raw = isset($detail_so['quantity']) ? (float)$detail_so['quantity'] : 0;
                 $qty_pack_raw = isset($detail_so['quantity_pack']) ? (float)$detail_so['quantity_pack'] : 0;
                 $uom_pack_raw = isset($detail_so['uom_pack']) ? trim($detail_so['uom_pack']) : '';
@@ -299,44 +311,24 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
                 $price_raw = isset($detail_so['price']) ? (float)$detail_so['price'] : 0;
                 $subtotal_raw = isset($detail_so['subtotal']) ? (float)$detail_so['subtotal'] : 0;
 
-                // ================================
-                // KOLOM HARGA
-                // Jika price_unit diisi, ambil dari price_unit
-                // Jika price_unit = 0, ambil dari price
-                // ================================
                 $harga = 0;
-                
                 if ($price_unit_raw > 0) {
-                    // Jika price_unit diisi, gunakan price_unit
                     $harga = $price_unit_raw;
                 } elseif ($price_raw > 0) {
-                    // Jika price_unit 0, gunakan price
                     $harga = $price_raw;
                 }
 
-                // ================================
-                // KOLOM HARGA/KG
-                // Rumus: Subtotal / Qty (jika Qty > 0)
-                // ================================
                 $harga_kg = 0;
-                
                 if ($qty_raw > 0 && $subtotal_raw > 0) {
                     $harga_kg = $subtotal_raw / $qty_raw;
                 }
 
-                // ================================
-                // CEK APAKAH HARGA KOSONG
-                // Jika harga = 0, maka semua kolom dikosongkan
-                // ================================
                 if ($harga == 0) {
                     $qty_raw = 0;
                     $qty_pack_raw = 0;
                     $uom_pack_raw = '';
                 }
 
-                // ================================
-                // FORMAT TAMPILAN
-                // ================================
                 $qty = $qty_raw > 0 ? number_format($qty_raw, 2, ',', '.') : '-';
                 $qty_pack = $qty_pack_raw > 0 ? number_format($qty_pack_raw, 2, ',', '.') : '-';
                 $uom_pack = $uom_pack_raw !== '' ? htmlspecialchars($uom_pack_raw) : '-';
@@ -348,7 +340,6 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
                 $harga_display = $harga > 0 ? 'Rp ' . number_format($harga, 0, ',', '.') : '-';
                 $harga_kg_display = $harga_kg > 0 ? 'Rp ' . number_format($harga_kg, 0, ',', '.') : '-';
                 
-                // Akumulasi total harga
                 $total_harga += $harga;
             ?>
             <tr>
@@ -367,7 +358,6 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
                 <td colspan="7" class="text-center">Tidak ada data</td>
             </tr>
             <?php } else { ?>
-            <!-- Total Row -->
             <tr class="total-row">
                 <td colspan="5" class="text-right">TOTAL</td>
                 <td class="text-right">Rp <?= number_format($total_harga, 0, ',', '.') ?></td>
@@ -375,7 +365,7 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
             </tr>
             <?php } ?>
         </tbody>
-         </table>
+        </table>
         
         <div class="signature-container">
             <div class="sig-box">
@@ -389,15 +379,9 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
         </div>
     </div>
     
-    <!-- Tombol hanya muncul di layar, tidak ikut print -->
     <div class="action-buttons">
         <button class="btn-print" onclick="window.print(); return false;">🖨️ Cetak SO</button>
         <a href="http://localhost/cahaya/index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
     </div>
-    
-    <script>
-        // Otomatis membuka dialog print (opsional - hapus comment jika ingin auto print)
-        // window.print();
-    </script>
 </body>
 </html>

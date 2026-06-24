@@ -63,15 +63,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         
                         if ($update->execute()) {
                             $success_msg = "✅ Password berhasil diperbarui!";
-                            
-                            // 11. Log aktivitas (opsional, jika ada tabel log)
-                            // $logQuery = "INSERT INTO sys_activity_log (id_user, activity, timestamp) VALUES (?, 'Change Password', NOW())";
-                            // $logStmt = $conn->prepare($logQuery);
-                            // $logStmt->bind_param("i", $id_user);
-                            // $logStmt->execute();
-                            
-                            // 12. Reset form setelah sukses
-                            // Tidak perlu reset karena akan redirect atau reload
                         } else {
                             $error_msg = "Gagal memperbarui database! Silakan coba lagi.";
                         }
@@ -100,14 +91,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             </div>
             <div class="card-body p-3">
                 
-                <!-- 13. Pesan Sukses dengan Timer Auto Close -->
                 <?php if($success_msg): ?>
                     <div class="alert alert-success alert-dismissible fade show p-2 small" role="alert">
                         <i class="fa fa-check-circle me-1"></i> <?= $success_msg; ?>
                         <button type="button" class="btn-close p-2" data-bs-dismiss="alert"></button>
                     </div>
                     <script>
-                        // Auto close alert setelah 5 detik
                         setTimeout(function() {
                             document.querySelector('.alert-success')?.remove();
                         }, 5000);
@@ -121,16 +110,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     </div>
                 <?php endif; ?>
 
-                <!-- 14. Form dengan Validasi Client Side -->
                 <form method="POST" action="" id="formGantiPassword" onsubmit="return validatePasswordForm()">
+                    
                     <div class="mb-2">
                         <label class="form-label small fw-bold">
                             <i class="fa fa-key me-1"></i> Password Lama
                             <span class="text-danger">*</span>
                         </label>
-                        <input type="password" name="password_lama" id="password_lama" 
-                               class="form-control form-control-sm" required 
-                               placeholder="Masukkan password lama">
+                        <div class="input-group input-group-sm">
+                            <input type="password" name="password_lama" id="password_lama" 
+                                   class="form-control" required 
+                                   placeholder="Masukkan password lama">
+                            <button class="btn btn-outline-secondary toggle-password" type="button" data-target="password_lama">
+                                <i class="fa fa-eye"></i>
+                            </button>
+                        </div>
                     </div>
                     
                     <div class="mb-2">
@@ -138,16 +132,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             <i class="fa fa-lock me-1"></i> Password Baru
                             <span class="text-danger">*</span>
                         </label>
-                        <input type="password" name="password_baru" id="password_baru" 
-                               class="form-control form-control-sm" required minlength="6"
-                               placeholder="Minimal 6 karakter, huruf & angka">
+                        <div class="input-group input-group-sm">
+                            <input type="password" name="password_baru" id="password_baru" 
+                                   class="form-control" required minlength="6"
+                                   placeholder="Minimal 6 karakter, huruf & angka">
+                            <button class="btn btn-outline-secondary toggle-password" type="button" data-target="password_baru">
+                                <i class="fa fa-eye"></i>
+                            </button>
+                        </div>
                         <div id="passwordStrength" class="mt-1" style="display:none;">
                             <div class="progress" style="height:5px;">
                                 <div id="strengthBar" class="progress-bar" role="progressbar" style="width:0%;"></div>
                             </div>
                             <small id="strengthText" class="text-muted"></small>
                         </div>
-                        <small class="text-muted">
+                        <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">
                             <i class="fa fa-info-circle"></i> Minimal 6 karakter, mengandung huruf kapital, huruf kecil, dan angka
                         </small>
                     </div>
@@ -157,9 +156,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             <i class="fa fa-check-circle me-1"></i> Konfirmasi Password Baru
                             <span class="text-danger">*</span>
                         </label>
-                        <input type="password" name="konfirmasi_baru" id="konfirmasi_baru" 
-                               class="form-control form-control-sm" required
-                               placeholder="Ulangi password baru">
+                        <div class="input-group input-group-sm">
+                            <input type="password" name="konfirmasi_baru" id="konfirmasi_baru" 
+                                   class="form-control" required
+                                   placeholder="Ulangi password baru">
+                            <button class="btn btn-outline-secondary toggle-password" type="button" data-target="konfirmasi_baru">
+                                <i class="fa fa-eye"></i>
+                            </button>
+                        </div>
                         <small id="confirmMsg" class="text-danger" style="display:none;">Password tidak cocok!</small>
                     </div>
                     
@@ -176,7 +180,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             </div>
         </div>
         
-        <!-- 15. Tips Keamanan -->
         <div class="card mt-3 shadow-sm">
             <div class="card-body p-2">
                 <small class="text-muted">
@@ -194,74 +197,95 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     </div>
 </div>
 
-<!-- 16. JavaScript untuk Validasi Client Side dan Password Strength -->
 <script>
 function validatePasswordForm() {
     const passwordLama = document.getElementById('password_lama').value.trim();
     const passwordBaru = document.getElementById('password_baru').value;
     const konfirmasi = document.getElementById('konfirmasi_baru').value;
     
-    // Validasi password lama tidak boleh kosong
     if (passwordLama === '') {
         alert('Password lama harus diisi!');
         document.getElementById('password_lama').focus();
         return false;
     }
-    
-    // Validasi password baru minimal 6 karakter
     if (passwordBaru.length < 6) {
         alert('Password baru minimal 6 karakter!');
         document.getElementById('password_baru').focus();
         return false;
     }
-    
-    // Validasi password baru mengandung huruf kapital
     if (!/[A-Z]/.test(passwordBaru)) {
         alert('Password baru harus mengandung minimal 1 huruf kapital!');
         document.getElementById('password_baru').focus();
         return false;
     }
-    
-    // Validasi password baru mengandung huruf kecil
     if (!/[a-z]/.test(passwordBaru)) {
         alert('Password baru harus mengandung minimal 1 huruf kecil!');
         document.getElementById('password_baru').focus();
         return false;
     }
-    
-    // Validasi password baru mengandung angka
     if (!/[0-9]/.test(passwordBaru)) {
         alert('Password baru harus mengandung minimal 1 angka!');
         document.getElementById('password_baru').focus();
         return false;
     }
-    
-    // Validasi password baru tidak boleh ada spasi
     if (passwordBaru.includes(' ')) {
         alert('Password baru tidak boleh mengandung spasi!');
         document.getElementById('password_baru').focus();
         return false;
     }
-    
-    // Validasi konfirmasi password
     if (passwordBaru !== konfirmasi) {
         alert('Konfirmasi password baru tidak cocok!');
         document.getElementById('konfirmasi_baru').focus();
         return false;
     }
-    
-    // Validasi password baru tidak sama dengan lama
     if (passwordBaru === passwordLama) {
         alert('Password baru tidak boleh sama dengan password lama!');
         document.getElementById('password_baru').focus();
         return false;
     }
-    
     return true;
 }
 
-// 17. Password Strength Meter (Real-time)
 document.addEventListener('DOMContentLoaded', function() {
+    // --- FITUR SHOW / HIDE PASSWORD ---
+    const toggleButtons = document.querySelectorAll('.toggle-password');
+    
+    toggleButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            // Ambil ID target input dari atribut data-target
+            const targetId = this.getAttribute('data-target');
+            const inputTarget = document.getElementById(targetId);
+            const icon = this.querySelector('i');
+            
+            if (inputTarget.type === 'password') {
+                inputTarget.type = 'text';
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash'); // Berubah jadi mata dicoret
+            } else {
+                inputTarget.type = 'password';
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye'); // Kembali jadi mata normal
+            }
+        });
+    });
+
+    // --- Pemulihan Tipe Input Saat Form di-Reset ---
+    document.getElementById('formGantiPassword').addEventListener('reset', function() {
+        setTimeout(() => {
+            toggleButtons.forEach(button => {
+                const targetId = button.getAttribute('data-target');
+                document.getElementById(targetId).type = 'password';
+                const icon = button.querySelector('i');
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            });
+            document.getElementById('passwordStrength').style.display = 'none';
+            document.getElementById('confirmMsg').style.display = 'none';
+            document.getElementById('konfirmasi_baru').classList.remove('is-invalid', 'is-valid');
+        }, 10);
+    });
+
+    // 17. Password Strength Meter (Real-time)
     const passwordBaru = document.getElementById('password_baru');
     const strengthDiv = document.getElementById('passwordStrength');
     const strengthBar = document.getElementById('strengthBar');

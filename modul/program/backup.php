@@ -320,10 +320,10 @@ if (isset($_GET['error'])) {
     <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
         <h1 class="h4"><i class="fa fa-database text-success"></i> Backup Database</h1>
         <div>
-            <a href="http://localhost/cahaya/index.php?page=backup&debug=1&action=backup" class="btn btn-primary btn-sm" onclick="return confirm('Yakin ingin melakukan backup database? Proses ini mungkin memakan waktu.')">
+            <a href="http://192.168.31.200/cahaya/index.php?page=backup&debug=1&action=backup" class="btn btn-primary btn-sm" onclick="return confirm('Yakin ingin melakukan backup database? Proses ini mungkin memakan waktu.')">
                 <i class="fa fa-database"></i> Backup Sekarang
             </a>
-            <a href="http://localhost/cahaya/index.php?page=backup&debug=1" class="btn btn-warning btn-sm" title="Debug Mode">
+            <a href="http://192.168.31.200/cahaya/index.php?page=backup&debug=1" class="btn btn-warning btn-sm" title="Debug Mode">
                 <i class="fa fa-bug"></i> Debug
             </a>
             <button class="btn btn-info btn-sm" onclick="location.reload()">

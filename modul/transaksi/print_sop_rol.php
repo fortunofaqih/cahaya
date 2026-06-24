@@ -81,7 +81,7 @@ header("Content-Type: text/html; charset=UTF-8");
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <title>SPK GABUNGAN - <?= $sop_id ?></title>
+    <title>SOP ROLL - <?= $sop_id ?></title>
     <style>
         * {
             margin: 0;
