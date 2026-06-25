@@ -129,6 +129,24 @@ switch ($page) {
     case 'shipping':
         include 'modul/transaksi/shipping.php';
         break;
+    case 'add_shipping':
+        include 'modul/transaksi/add_shipping.php';
+        break;
+    case 'save_shipping':
+        include 'modul/transaksi/save_shipping.php';
+        break;
+    case 'edit_shipping':
+        include 'modul/transaksi/edit_shipping.php';
+        break;
+    case 'update_shipping':
+        include 'modul/transaksi/update_shipping.php';
+        break;
+    case 'delete_shipping':
+        include 'modul/transaksi/delete_shipping.php';
+        break;
+    case 'cetak_shipping':
+        include 'modul/transaksi/cetak_shipping.php';
+        break;
     case 'invoice':
         include 'modul/transaksi/invoice.php';
         break;
@@ -138,6 +156,7 @@ switch ($page) {
     case 'cetak_rekap_sales_order':
         include 'modul/transaksi/cetak_rekap_sales_order.php';
         break;
+    
         
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
