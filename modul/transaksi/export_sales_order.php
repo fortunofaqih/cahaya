@@ -293,6 +293,9 @@ $total_records = mysqli_num_rows($query);
             padding: 3px 8px;
             font-size: 10px;
         }
+		.money-text {
+			mso-number-format: "\@";
+		}
     </style>
 </head>
 
@@ -393,9 +396,9 @@ $total_records = mysqli_num_rows($query);
                         <td class="text-center"><?= e($row['payment_term'] ?? '') ?></td>
                         <td class="text-center"><?= e($row['currency'] ?? 'IDR') ?></td>
                         <td class="text-right"><?= number_format((float)($row['kurs'] ?? 1), 2, ',', '.') ?></td>
-                        <td class="text-right"><?= number_format($grand_total, 0, ',', '.') ?></td>
-                        <td class="text-right"><?= number_format($down_payment, 0, ',', '.') ?></td>
-                        <td class="text-right"><?= number_format($balance, 0, ',', '.') ?></td>
+                        <td class="text-right money-text"><?= number_format($grand_total, 0, ',', '.') ?></td>
+						<td class="text-right money-text"><?= number_format($down_payment, 0, ',', '.') ?></td>
+						<td class="text-right money-text"><?= number_format($balance, 0, ',', '.') ?></td>
                         <td><?= e($row['create_user'] ?? '') ?></td>
                         <td class="text-center"><?= formatDateTimeExcel($row['date_created'] ?? '') ?></td>
                         <td><?= e($row['user_modified'] ?? '') ?></td>
@@ -406,9 +409,9 @@ $total_records = mysqli_num_rows($query);
 
                 <tr class="grand-total">
                     <td colspan="21" class="text-right">TOTAL :</td>
-                    <td class="text-right"><?= number_format($total_grand, 0, ',', '.') ?></td>
-                    <td class="text-right"><?= number_format($total_downpayment, 0, ',', '.') ?></td>
-                    <td class="text-right"><?= number_format($total_balance, 0, ',', '.') ?></td>
+                    <td class="text-right money-text"><?= number_format($total_grand, 0, ',', '.') ?></td>
+					<td class="text-right money-text"><?= number_format($total_downpayment, 0, ',', '.') ?></td>
+					<td class="text-right money-text"><?= number_format($total_balance, 0, ',', '.') ?></td>
                     <td colspan="5"></td>
                 </tr>
             <?php endif; ?>
