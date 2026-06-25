@@ -8,7 +8,18 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+// =====================================================
+// FUNCTION: Rupiah
+// =====================================================
+function formatMoneyComma($value) {
+    if ($value === null || $value === '') {
+        return '0';
+    }
 
+    $number = (float)$value;
+
+    return number_format($number, 0, '.', ',');
+}
 // =====================================================
 // FUNCTION: Escape HTML
 // =====================================================
@@ -296,6 +307,7 @@ $total_records = mysqli_num_rows($query);
 		.money-text {
 			mso-number-format: "\@";
 		}
+		
     </style>
 </head>
 
@@ -326,7 +338,6 @@ $total_records = mysqli_num_rows($query);
                 <th>No</th>
                 <th>Order No</th>
                 <th>Order Date</th>
-                <th>PO Number</th>
                 <th>Marketing</th>
                 <th>Sales</th>
                 <th>Customer ID</th>
@@ -375,10 +386,10 @@ $total_records = mysqli_num_rows($query);
                     ?>
 
                     <tr>
-                        <td class="text-center"><?= $no++ ?></td>
+                        <td class="text-center><?= $no++ ?></td>
                         <td class="text-center"><strong><?= e($row['order_no'] ?? '') ?></strong></td>
                         <td class="text-center"><?= formatDateExcel($row['order_date'] ?? '') ?></td>
-                        <td class="text-center"><?= e($row['po'] ?? '') ?></td>
+                        <!--<td class="text-center"><?= e($row['po'] ?? '') ?></td>-->
                         <td><?= e($row['marketing_name'] ?? '') ?></td>
                         <td><?= e($row['sales_name'] ?? '') ?></td>
                         <td class="text-center"><?= e($row['customer_id'] ?? '') ?></td>
@@ -396,9 +407,9 @@ $total_records = mysqli_num_rows($query);
                         <td class="text-center"><?= e($row['payment_term'] ?? '') ?></td>
                         <td class="text-center"><?= e($row['currency'] ?? 'IDR') ?></td>
                         <td class="text-right"><?= number_format((float)($row['kurs'] ?? 1), 2, ',', '.') ?></td>
-                        <td class="text-right money-text"><?= number_format($grand_total, 0, ',', '.') ?></td>
-						<td class="text-right money-text"><?= number_format($down_payment, 0, ',', '.') ?></td>
-						<td class="text-right money-text"><?= number_format($balance, 0, ',', '.') ?></td>
+						<td class="text-right money-text"><?= formatMoneyComma($grand_total) ?></td>
+						<td class="text-right money-text"><?= formatMoneyComma($down_payment) ?></td>
+						<td class="text-right money-text"><?= formatMoneyComma($balance) ?></td>
                         <td><?= e($row['create_user'] ?? '') ?></td>
                         <td class="text-center"><?= formatDateTimeExcel($row['date_created'] ?? '') ?></td>
                         <td><?= e($row['user_modified'] ?? '') ?></td>
@@ -409,9 +420,9 @@ $total_records = mysqli_num_rows($query);
 
                 <tr class="grand-total">
                     <td colspan="21" class="text-right">TOTAL :</td>
-                    <td class="text-right money-text"><?= number_format($total_grand, 0, ',', '.') ?></td>
-					<td class="text-right money-text"><?= number_format($total_downpayment, 0, ',', '.') ?></td>
-					<td class="text-right money-text"><?= number_format($total_balance, 0, ',', '.') ?></td>
+					<td class="text-right money-text"><?= formatMoneyComma($total_grand) ?></td>
+					<td class="text-right money-text"><?= formatMoneyComma($total_downpayment) ?></td>
+					<td class="text-right money-text"><?= formatMoneyComma($total_balance) ?></td>
                     <td colspan="5"></td>
                 </tr>
             <?php endif; ?>
