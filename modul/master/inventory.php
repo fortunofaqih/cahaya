@@ -295,18 +295,76 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action_form'])) {
     }
 }
 
-// Filter Pencarian
-$search_keyword = "";
-$where_clause = "";
-if (isset($_GET['btn_search']) || isset($_GET['search'])) {
-    $search_keyword = mysqli_real_escape_string($conn, trim($_GET['search'] ?? ''));
-    if (!empty($search_keyword)) {
-        $where_clause = "WHERE i.inventory_id LIKE '%$search_keyword%' 
-                        OR i.inventory_name LIKE '%$search_keyword%' 
-                        OR i.category LIKE '%$search_keyword%' 
-                        OR i.nama_customer LIKE '%$search_keyword%'";
+// ====================================================================
+// FILTER PENCARIAN + FILTER TANGGAL
+// Default: tampilkan inventory yang dibuat hari ini agar load awal ringan.
+// ====================================================================
+$today = date('Y-m-d');
+$search_keyword = trim($_GET['search'] ?? '');
+
+function parseInventoryFilterDate($value, $fallback) {
+    $value = trim((string)$value);
+    if ($value === '') {
+        return $fallback;
     }
+
+    // Format dari datepicker: 26-Jun-2026
+    $dt = DateTime::createFromFormat('d-M-Y', $value);
+    if ($dt instanceof DateTime) {
+        return $dt->format('Y-m-d');
+    }
+
+    // Kompatibilitas jika browser/cache lama masih mengirim 2026-06-26
+    $dt = DateTime::createFromFormat('Y-m-d', $value);
+    if ($dt instanceof DateTime) {
+        return $dt->format('Y-m-d');
+    }
+
+    // Kompatibilitas alternatif: 26-06-2026
+    $dt = DateTime::createFromFormat('d-m-Y', $value);
+    if ($dt instanceof DateTime) {
+        return $dt->format('Y-m-d');
+    }
+
+    return $fallback;
 }
+
+$start_date = parseInventoryFilterDate($_GET['start_date'] ?? '', $today);
+$end_date = parseInventoryFilterDate($_GET['end_date'] ?? '', $today);
+
+// Nilai yang ditampilkan di input datepicker.
+$start_date_display = date('d-M-Y', strtotime($start_date));
+$end_date_display = date('d-M-Y', strtotime($end_date));
+
+// Jika user salah input start lebih besar dari end, tukar otomatis.
+if (strtotime($start_date) > strtotime($end_date)) {
+    $tmp_date = $start_date;
+    $start_date = $end_date;
+    $end_date = $tmp_date;
+
+    $tmp_display = $start_date_display;
+    $start_date_display = $end_date_display;
+    $end_date_display = $tmp_display;
+}
+
+$filter_conditions = [];
+$search_keyword_sql = mysqli_real_escape_string($conn, $search_keyword);
+$start_date_sql = mysqli_real_escape_string($conn, $start_date);
+$end_date_sql = mysqli_real_escape_string($conn, $end_date);
+
+// Filter tanggal menggunakan DATE(i.date_created), default hari ini.
+$filter_conditions[] = "DATE(i.date_created) BETWEEN '$start_date_sql' AND '$end_date_sql'";
+
+if ($search_keyword !== '') {
+    $filter_conditions[] = "(
+        i.inventory_id LIKE '%$search_keyword_sql%' OR
+        i.inventory_name LIKE '%$search_keyword_sql%' OR
+        i.category LIKE '%$search_keyword_sql%' OR
+        i.nama_customer LIKE '%$search_keyword_sql%'
+    )";
+}
+
+$where_clause = "WHERE " . implode(" AND ", $filter_conditions);
 
 function generateInventoryId($conn, $inventory_name, $type) {
     $inventory_name = strtoupper($inventory_name);
@@ -556,6 +614,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
         #modalUOMSelection { z-index: 1060; }
         .required { color: red; font-weight: bold; margin-left: 2px; }
     </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 </head>
 <body>
 
@@ -645,14 +704,28 @@ function generateInventoryId($conn, $inventory_name, $type) {
 <!-- FORM PENCARIAN -->
 <div class="card shadow-sm mb-3 d-print-none">
     <div class="card-body py-2">
-        <form method="GET" action="index.php" class="row g-2 align-items-center">
+        <form method="GET" action="index.php" class="row g-2 align-items-end">
             <input type="hidden" name="page" value="inventory">
-            <div class="col-md-5">
+            <div class="col-md-3">
+                <label class="form-label fw-bold small mb-1">Start Date</label>
+                <input type="text" name="start_date" id="start_date" class="form-control form-control-sm js-date-picker" value="<?= htmlspecialchars($start_date_display) ?>" placeholder="26-Jun-2026" autocomplete="off">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label fw-bold small mb-1">End Date</label>
+                <input type="text" name="end_date" id="end_date" class="form-control form-control-sm js-date-picker" value="<?= htmlspecialchars($end_date_display) ?>" placeholder="26-Jun-2026" autocomplete="off">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label fw-bold small mb-1">Pencarian</label>
                 <input type="text" name="search" class="form-control form-control-sm" placeholder="Cari ID, Nama Barang, Kategori, Customer..." value="<?= htmlspecialchars($search_keyword) ?>">
             </div>
-            <div class="col-auto">
-                <button type="submit" name="btn_search" class="btn btn-sm btn-dark"><i class="fa fa-search"></i> Cari Data</button>
-                <a href="index.php?page=inventory" class="btn btn-sm btn-outline-secondary"><i class="fa fa-sync"></i> Reset</a>
+            <div class="col-md-2 d-flex gap-1">
+                <button type="submit" name="btn_search" value="1" class="btn btn-sm btn-dark w-50"><i class="fa fa-search"></i> Cari</button>
+                <a href="index.php?page=inventory" class="btn btn-sm btn-outline-secondary w-50" title="Reset ke hari ini"><i class="fa fa-sync"></i> Reset</a>
+            </div>
+            <div class="col-12">
+                <small class="text-muted">
+                    Default menampilkan inventory yang dibuat hari ini. Ubah tanggal untuk melihat data lama.
+                </small>
             </div>
         </form>
     </div>
@@ -671,39 +744,48 @@ function generateInventoryId($conn, $inventory_name, $type) {
         </thead>
         <tbody>
         <?php
-            // PERBAIKAN: Gunakan $where_clause di query
             $sql = "SELECT i.*, c.name as category_name 
                     FROM m_inventory i 
-                    LEFT JOIN m_category c ON i.category = c.categori_id";
-            
-            // Tambahkan WHERE clause jika ada pencarian
-            if (!empty($where_clause)) {
-                $sql .= " " . $where_clause;
-            }
-            
-            $sql .= " ORDER BY i.inventory_id ASC";
+                    LEFT JOIN m_category c ON i.category = c.categori_id
+                    $where_clause
+                    ORDER BY i.date_created DESC, i.inventory_id DESC";
             
             $query_list = mysqli_query($conn, $sql);
+            $total_data = ($query_list) ? mysqli_num_rows($query_list) : 0;
             
             if (!$query_list) {
                 echo "<tr><td colspan='9' class='text-danger'>Error: " . mysqli_error($conn) . "</td></tr>";
-            } else if (mysqli_num_rows($query_list) == 0) {
-                echo "<tr><td colspan='9' class='text-center text-muted py-3'>Tidak ada data inventory ditemukan.</td></tr>";
+            } else if ($total_data == 0) {
+                echo "<tr><td colspan='9' class='text-center text-muted py-3'>Tidak ada data inventory pada rentang tanggal " . htmlspecialchars(date('d-m-Y', strtotime($start_date))) . " s/d " . htmlspecialchars(date('d-m-Y', strtotime($end_date))) . ".</td></tr>";
             } else {
+                echo "<tr class='d-print-none'><td colspan='9' class='small text-muted bg-light'>Menampilkan <b>" . number_format($total_data, 0, ',', '.') . "</b> data, urut dari inventory terbaru.</td></tr>";
                 while ($d = mysqli_fetch_assoc($query_list)) {
         ?>
             <tr>
                 <td class="sticky-col-aksi text-center">
-                    <button type="button" class="btn btn-micro btn-warning text-dark" onclick='showModalEdit(<?= json_encode($d, JSON_HEX_TAG) ?>)'><i class="fa fa-edit"></i></button>
-                    <a href="index.php?page=inventory&action=delete&id=<?= urlencode($d['inventory_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm('Hapus item <?= addslashes($d['inventory_name']) ?>?')"><i class="fa fa-trash"></i></a>
+                    <?php
+                        $jsonData = htmlspecialchars(
+                            json_encode($d, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP),
+                            ENT_QUOTES,
+                            'UTF-8'
+                        );
+                        $deleteConfirm = htmlspecialchars(
+                            json_encode('Hapus item ' . ($d['inventory_name'] ?? '') . '?'),
+                            ENT_QUOTES,
+                            'UTF-8'
+                        );
+                    ?>
+                    <button type="button" class="btn btn-micro btn-warning text-dark" onclick="showModalEdit(<?= $jsonData ?>)"><i class="fa fa-edit"></i></button>
+                    <a href="index.php?page=inventory&action=delete&id=<?= urlencode($d['inventory_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm(<?= $deleteConfirm ?>)"><i class="fa fa-trash"></i></a>
                 </td>
                 <td class="sticky-col-id fw-bold text-secondary"><?= htmlspecialchars($d['inventory_id']) ?></td>
                 <td class="sticky-col-name fw-bold text-dark"><?= htmlspecialchars($d['inventory_name']) ?></td>
                 <td><?= htmlspecialchars($d['type']) ?></td>
-                <td><?= htmlspecialchars($d['category_name'] ?? $d['category']) ?></td>
+                
+				<td><?= htmlspecialchars((string)($d['category_name'] ?? $d['category'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
                 <td><?= htmlspecialchars($d['uom_pack']) ?></td>
                 <td><span class="badge bg-<?= $d['status']=='Active' ? 'success' : 'danger' ?>"><?= $d['status'] ?></span></td>
-                <td class="small"><?= date('d-m-Y', strtotime($d['date_created'])) ?></td>
+                <td class="small"><?= !empty($d['date_created']) ? date('d-m-Y', strtotime($d['date_created'])) : '-' ?></td>
                 <td><?= htmlspecialchars($d['create_user']) ?></td>
             </tr>
         <?php } } ?>
@@ -731,7 +813,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
                                 <div class="col-md-3"><label class="form-label fw-bold small">Inventory ID</label><input type="text" name="inventory_id" id="form_inventory_id" class="form-control form-control-sm" placeholder="Auto"><small class="text-muted">Kosongkan untuk auto generate</small></div>
                                 <div class="col-md-5"><label class="form-label fw-bold small">Inventory Name <span class="text-danger">*</span></label><input type="text" name="inventory_name" id="form_inventory_name" class="form-control form-control-sm" required></div>
                                 <div class="col-md-2"><label class="form-label fw-bold small">Type<span class="required">*</span></label><select name="type" id="form_type" class="form-select form-select-sm" required><option value="">-- Pilih Type --</option><option value="AKTIVA MESIN (AKT2)">AKTIVA MESIN (AKT2)</option><option value="AKTIVA INVENTARIS (AKT)">AKTIVA INVENTARIS (AKT)</option><option value="ALAT PABRIK (ALTP)">ALAT PABRIK (ALTP)</option><option value="BIAYA (AC)">BIAYA (AC)</option><option value="Biaya Makloon (BM)">Biaya Makloon (BM)</option><option value="Finish Good (FG)">Finish Good (FG)</option><option value="Jasa (JS)">Jasa (JS)</option><option value="Raw Material (RAW)">Raw Material (RAW)</option></select></div>
-                                <div class="col-md-2"><label class="form-label fw-bold small">UOM Pack</label><input type="text" name="uom_pack" id="form_uom_pack" class="form-control form-control-sm" readonly style="background:#e9ecef;"></div>
+                                <div class="col-md-2"><label class="form-label fw-bold small">UOM Pack</label><input type="text" name="uom_pack" id="form_uom_pack" class="form-control form-control-sm" style="background:#e9ecef;"></div>
                                 <div class="col-md-3"><label class="form-label fw-bold small">Category<span class="required">*</span></label><select name="category" id="form_category" class="form-select form-select-sm" required><option value="">-- Pilih Category --</option><?php $cat_list = mysqli_query($conn, "SELECT categori_id, name FROM m_category ORDER BY name ASC"); while($cat = mysqli_fetch_assoc($cat_list)): ?><option value="<?= $cat['categori_id'] ?>"><?= $cat['name'] ?></option><?php endwhile; ?></select></div>
                                 <div class="col-md-4"><label class="form-label fw-bold small">Remarks</label><input type="text" name="remarks" id="form_remarks" class="form-control form-control-sm"></div>
                                 <div class="col-md-3"><label class="form-label fw-bold small">Minimum Stock</label><input type="number" step="0.01" name="minimum_stock" id="form_minimum_stock" class="form-control form-control-sm" value="0.00"></div>
@@ -796,6 +878,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
 <div id="loadingIndicator" class="loading"><i class="fa fa-spinner fa-spin"></i> Memproses...</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script>
 var bootstrapModalInventory = null;
 var bootstrapModalUOM = null;
@@ -811,7 +894,7 @@ var uomList = <?php
             $uom_array[] = $row_uom['unit'];
         }
     }
-    echo json_encode($uom_array);
+    echo json_encode($uom_array, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
 ?>;
 
 document.addEventListener("DOMContentLoaded", function() {
@@ -821,6 +904,13 @@ document.addEventListener("DOMContentLoaded", function() {
         var modalUOM = document.getElementById('modalUOMSelection');
         if (modalUOM) bootstrapModalUOM = new bootstrap.Modal(modalUOM, {backdrop: 'static', keyboard: true});
     } catch(e) { console.error("Error initializing modals:", e); }
+
+    if (typeof flatpickr !== 'undefined') {
+        flatpickr('.js-date-picker', {
+            dateFormat: 'd-M-Y',
+            allowInput: true
+        });
+    }
     
     document.querySelector('.spec-tabs')?.addEventListener('click', function(e) {
         var tab = e.target.closest('.spec-tab');
@@ -854,7 +944,28 @@ document.addEventListener("DOMContentLoaded", function() {
 function showLoading(show) { var loader = document.getElementById('loadingIndicator'); if(loader) loader.style.display = show ? 'flex' : 'none'; }
 function resetFormState() { selectedUOMs = []; var uomData = document.getElementById('uom_data'); if(uomData) uomData.value = '[]'; var uomPack = document.getElementById('form_uom_pack'); if(uomPack) uomPack.value = ''; }
 
+function ensureBootstrapModals() {
+    if (typeof bootstrap === 'undefined') {
+        console.error('Bootstrap JS belum ter-load. Pastikan bootstrap.bundle.min.js sudah dipanggil di index.php/header.');
+        return false;
+    }
+
+    var modalInventory = document.getElementById('modalInventory');
+    var modalUOM = document.getElementById('modalUOMSelection');
+
+    if (!bootstrapModalInventory && modalInventory) {
+        bootstrapModalInventory = new bootstrap.Modal(modalInventory, {backdrop: 'static', keyboard: true});
+    }
+
+    if (!bootstrapModalUOM && modalUOM) {
+        bootstrapModalUOM = new bootstrap.Modal(modalUOM, {backdrop: 'static', keyboard: true});
+    }
+
+    return true;
+}
+
 function showModalTambah() {
+    ensureBootstrapModals();
     if(isModalOpen) return;
     try {
         var form = document.getElementById('formInventory'); if(form) form.reset();
@@ -873,6 +984,7 @@ function showModalTambah() {
 }
 
 function showModalEdit(data) {
+    ensureBootstrapModals();
     if(isModalOpen) return;
     if(!data || !data.inventory_id) { alert("Data tidak valid"); return; }
     try {
@@ -897,7 +1009,7 @@ function showModalEdit(data) {
         // LOAD UOM DATA
         if(data.inventory_id) {
             showLoading(true);
-            var url = 'modul/master/ajax_inventory.php?ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
+            var url = 'index.php?page=inventory&ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
              console.log("Fetching URL:", url); // Debug
             fetch(url, {
                 method: 'GET', 
@@ -1017,7 +1129,15 @@ function populateForm(data) {
 
 function resetUOMData() { selectedUOMs = []; document.getElementById('uom_data').value = '[]'; document.getElementById('form_uom_pack').value = ''; }
 
-function showUOMSelector() { if(bootstrapModalUOM) { renderUOMTable(); bootstrapModalUOM.show(); } else alert("Modal UOM tidak tersedia"); }
+function showUOMSelector() { 
+    ensureBootstrapModals();
+    if(bootstrapModalUOM) { 
+        renderUOMTable(); 
+        bootstrapModalUOM.show(); 
+    } else {
+        alert("Modal UOM tidak tersedia. Bootstrap JS belum siap.");
+    }
+}
 
 function renderUOMTable() {
     var tbody = document.getElementById('uomSelectionBody');
@@ -1120,7 +1240,19 @@ function applyUOMSelection() {
     if(bootstrapModalUOM) bootstrapModalUOM.hide();
 }
 
-function showModalImportCSV() { var modal = new bootstrap.Modal(document.getElementById('modalImportCSV')); modal.show(); }
+function showModalImportCSV() { 
+    if (typeof bootstrap === 'undefined') {
+        alert('Bootstrap JS belum ter-load. Pastikan bootstrap.bundle.min.js sudah dipanggil.');
+        return;
+    }
+    var el = document.getElementById('modalImportCSV');
+    if (!el) {
+        alert('Modal Import CSV tidak ditemukan.');
+        return;
+    }
+    var modal = new bootstrap.Modal(el); 
+    modal.show(); 
+}
 function downloadTemplate() { var headers = ['inventory_id','inventory_name','type','category','remarks','status']; var csv = headers.join(','); var blob = new Blob([csv], {type:'text/csv'}); var link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'template_inventory.csv'; link.click(); URL.revokeObjectURL(link.href); }
 
 function submitImportCSV() {
@@ -1144,6 +1276,22 @@ function submitImportCSV() {
         document.getElementById('resultContainer').innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
     });
 }
+// ================================================================
+// PERBAIKAN PENTING:
+// Pastikan semua function yang dipanggil dari onclick="" tersedia
+// di global scope window. Ini mencegah error:
+// Uncaught ReferenceError: showModalTambah is not defined
+// ================================================================
+window.showModalTambah = showModalTambah;
+window.showModalEdit = showModalEdit;
+window.showUOMSelector = showUOMSelector;
+window.addUOMRow = addUOMRow;
+window.removeUOMRow = removeUOMRow;
+window.applyUOMSelection = applyUOMSelection;
+window.showModalImportCSV = showModalImportCSV;
+window.downloadTemplate = downloadTemplate;
+window.submitImportCSV = submitImportCSV;
+
 //khusus import uom
 /*function submitImportCSV() {
     var fileInput = document.getElementById('csvFile');
