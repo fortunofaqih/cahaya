@@ -17,6 +17,44 @@ if (isset($_SESSION['alert'])) {
     unset($_SESSION['alert']);
 }
 
+// ----------------------------------------------------
+// HELPER FORMAT / INPUT
+// ----------------------------------------------------
+function h($value) {
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
+
+function postText($conn, $key, $default = '') {
+    $value = trim((string)($_POST[$key] ?? ''));
+    if ($value === '') {
+        $value = $default;
+    }
+    return mysqli_real_escape_string($conn, $value);
+}
+
+function postTextDash($conn, $key) {
+    return postText($conn, $key, '-');
+}
+
+function postTextNullable($conn, $key) {
+    $value = trim((string)($_POST[$key] ?? ''));
+    if ($value === '') {
+        return null;
+    }
+    return mysqli_real_escape_string($conn, $value);
+}
+
+function currentMonthYearLabel() {
+    return date('M-Y'); // contoh: Jun-2026
+}
+
+function monthYearOrNullSql($value) {
+    if ($value === null || trim((string)$value) === '') {
+        return "NULL";
+    }
+    return "'" . $value . "'";
+}
+
 
 // ----------------------------------------------------
 // FUNGSI GET CUSTOMER OPTIONS (UNTUK PARENT)
@@ -26,8 +64,8 @@ function getCustomerOptions($conn, $selected_id = '') {
     $options = '<option value="">-- Pilih Parent Customer --</option>';
     while ($row = mysqli_fetch_assoc($query)) {
         $selected = ($selected_id == $row['customer_id']) ? 'selected' : '';
-        $options .= '<option value="' . htmlspecialchars($row['customer_id']) . '" data-name="' . htmlspecialchars($row['customer']) . '" ' . $selected . '>' 
-                    . htmlspecialchars($row['customer_id']) . ' - ' . htmlspecialchars($row['customer']) . '</option>';
+        $options .= '<option value="' . h($row['customer_id']) . '" data-name="' . h($row['customer']) . '" ' . $selected . '>' 
+                    . h($row['customer_id']) . ' - ' . h($row['customer']) . '</option>';
     }
     return $options;
 }
@@ -40,8 +78,8 @@ function getSalesOptions($conn, $selected_id = '') {
     $options = '<option value="">-- Pilih Sales Founder --</option>';
     while ($row = mysqli_fetch_assoc($query)) {
         $selected = ($selected_id == $row['sales_id']) ? 'selected' : '';
-        $options .= '<option value="' . htmlspecialchars($row['sales_id']) . '" data-name="' . htmlspecialchars($row['sales_name']) . '" ' . $selected . '>' 
-                    . htmlspecialchars($row['sales_id']) . ' - ' . htmlspecialchars($row['sales_name']) . '</option>';
+        $options .= '<option value="' . h($row['sales_id']) . '" data-name="' . h($row['sales_name']) . '" ' . $selected . '>' 
+                    . h($row['sales_id']) . ' - ' . h($row['sales_name']) . '</option>';
     }
     return $options;
 }
@@ -49,13 +87,20 @@ function getSalesOptions($conn, $selected_id = '') {
 // ----------------------------------------------------
 // FUNGSI GET AREA OPTIONS
 // ----------------------------------------------------
+// ----------------------------------------------------
 function getAreaOptions($conn, $selected_kode = '') {
     $query = mysqli_query($conn, "SELECT id, area, area_description, kode FROM m_area ORDER BY area ASC");
     $options = '<option value="">-- Pilih Area --</option>';
     while ($row = mysqli_fetch_assoc($query)) {
-        $selected = ($selected_kode == $row['kode']) ? 'selected' : '';
-        $options .= '<option value="' . htmlspecialchars($row['kode']) . '" data-area="' . htmlspecialchars($row['area']) . '" ' . $selected . '>' 
-                    . htmlspecialchars($row['kode']) . ' - ' . htmlspecialchars($row['area']) . ' (' . htmlspecialchars($row['area_description']) . ')</option>';
+        // Berikan fallback string kosong jika nilai kolom bernilai NULL
+        $kode = $row['kode'] ?? '';
+        $area = $row['area'] ?? '';
+        $desc = $row['area_description'] ?? '';
+
+        $selected = ($selected_kode == $kode) ? 'selected' : '';
+        
+        $options .= '<option value="' . h($kode) . '" data-area="' . h($area) . '" ' . $selected . '>' 
+                    . h($kode) . ' - ' . h($area) . ' (' . h($desc) . ')</option>';
     }
     return $options;
 }
@@ -81,30 +126,48 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
         $id = "C" . str_pad($next_num, 7, '0', STR_PAD_LEFT);
     }
 
-    $customer               = mysqli_real_escape_string($conn, trim($_POST['customer']));
-    $city                   = mysqli_real_escape_string($conn, trim($_POST['city']));
-    $address                = mysqli_real_escape_string($conn, trim($_POST['address']));
-    $contact_person         = mysqli_real_escape_string($conn, trim($_POST['contact_person']));
-    $contact_person_phone   = mysqli_real_escape_string($conn, trim($_POST['contact_person_phone']));
-    $id_number              = mysqli_real_escape_string($conn, trim($_POST['id_number']));
+    $customer               = postText($conn, 'customer');
+    $city                   = postText($conn, 'city');
+
+    // City wajib diisi
+    if ($city === '') {
+        $_SESSION['alert'] = "<div class='alert alert-danger p-1 mb-1 small style-crystal'>City wajib diisi!</div>";
+        echo "<script>window.location.href='index.php?page=customer';</script>";
+        exit;
+    }
+
+    // Field berikut otomatis disimpan '-' jika tidak diisi
+    $address                = postTextDash($conn, 'address');
+    $contact_person         = postTextDash($conn, 'contact_person');
+    $contact_person_phone   = postTextDash($conn, 'contact_person_phone');
+    $id_number              = postTextDash($conn, 'id_number');
     $id_name                = $customer; 
-    $phone                  = mysqli_real_escape_string($conn, trim($_POST['phone']));
-    $credit_limit           = floatval($_POST['credit_limit']);
-    $email                  = mysqli_real_escape_string($conn, trim($_POST['email']));
-    $old_code               = mysqli_real_escape_string($conn, trim($_POST['old_code']));
-    $area_code              = mysqli_real_escape_string($conn, trim($_POST['area_code']));
-    $effective_date_area    = !empty($_POST['effective_date_area']) ? mysqli_real_escape_string($conn, trim($_POST['effective_date_area'])) : NULL;
-    $remark_area            = mysqli_real_escape_string($conn, trim($_POST['remark_area']));
-    $sales_id               = mysqli_real_escape_string($conn, trim($_POST['sales_id']));
-    $sales_name             = mysqli_real_escape_string($conn, trim($_POST['sales_name']));
-    $effective_date_sales   = !empty($_POST['effective_date_sales']) ? mysqli_real_escape_string($conn, trim($_POST['effective_date_sales'])) : NULL;
-    $remark_sales           = mysqli_real_escape_string($conn, trim($_POST['remark_sales']));
-    $remarks                = mysqli_real_escape_string($conn, trim($_POST['remarks']));
-    $type                   = mysqli_real_escape_string($conn, trim($_POST['type']));
-    $parent_id              = mysqli_real_escape_string($conn, trim($_POST['parent_id']));
-    $parent_customer        = mysqli_real_escape_string($conn, trim($_POST['parent_customer']));
-    $bagian                 = mysqli_real_escape_string($conn, trim($_POST['bagian']));
+    $phone                  = postTextDash($conn, 'phone');
+    $credit_limit           = floatval($_POST['credit_limit'] ?? 0);
+    $email                  = postTextDash($conn, 'email');
+
+    $old_code               = postText($conn, 'old_code');
+    $area_code              = postText($conn, 'area_code');
+    $effective_date_area    = postTextNullable($conn, 'effective_date_area');
+    $remark_area            = postText($conn, 'remark_area');
+    $sales_id               = postText($conn, 'sales_id');
+    $sales_name             = postText($conn, 'sales_name');
+    $effective_date_sales   = postTextNullable($conn, 'effective_date_sales');
+    $remark_sales           = postText($conn, 'remark_sales');
+    $remarks                = postText($conn, 'remarks');
+    $type                   = postText($conn, 'type', 'Lokal');
+    $parent_id              = postText($conn, 'parent_id');
+    $parent_customer        = postText($conn, 'parent_customer');
+    $bagian                 = postText($conn, 'bagian');
     $is_active              = isset($_POST['is_active']) ? 'Checked' : 'Unchecked';
+
+    // Jika area/sales dipilih tetapi tanggal efektif kosong, isi otomatis bulan-tahun saat input
+    if ($area_code !== '' && $effective_date_area === null) {
+        $effective_date_area = mysqli_real_escape_string($conn, currentMonthYearLabel());
+    }
+    if ($sales_id !== '' && $effective_date_sales === null) {
+        $effective_date_sales = mysqli_real_escape_string($conn, currentMonthYearLabel());
+    }
     
     $user_now               = $_SESSION['username'];
     $datetime_now           = date('Y-m-d H:i:s');
@@ -123,9 +186,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
             ) VALUES (
                 '$id', '$customer', '$city', '$address', '$contact_person', '$contact_person_phone', 
                 '$id_number', '$id_name', '$phone', '$credit_limit', '$email', '$old_code', '$area_code', 
-                " . ($effective_date_area ? "'$effective_date_area'" : "NULL") . ", 
+                " . monthYearOrNullSql($effective_date_area) . ", 
                 '$remark_area', '$sales_id', '$sales_name', 
-                " . ($effective_date_sales ? "'$effective_date_sales'" : "NULL") . ", 
+                " . monthYearOrNullSql($effective_date_sales) . ", 
                 '$remark_sales', '$remarks', '$type', '$parent_id', '$parent_customer', '$bagian', 
                 '$is_active', '$user_now', '$datetime_now'
             )";
@@ -145,10 +208,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
                         contact_person='$contact_person', contact_person_phone='$contact_person_phone',
                         id_number='$id_number', id_name='$id_name', phone='$phone', credit_limit='$credit_limit', 
                         email='$email', old_code='$old_code', area_code='$area_code', 
-                        effective_date_area = " . ($effective_date_area ? "'$effective_date_area'" : "NULL") . ",
+                        effective_date_area = " . monthYearOrNullSql($effective_date_area) . ",
                         remark_area='$remark_area',
                         sales_id='$sales_id', sales_name='$sales_name',
-                        effective_date_sales = " . ($effective_date_sales ? "'$effective_date_sales'" : "NULL") . ",
+                        effective_date_sales = " . monthYearOrNullSql($effective_date_sales) . ",
                         remark_sales='$remark_sales',
                         remarks='$remarks', type='$type', 
                         parent_id='$parent_id', parent_customer='$parent_customer', bagian='$bagian', 
@@ -261,6 +324,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
+<!-- Month-Year Datepicker -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/monthSelect/style.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/monthSelect/index.js"></script>
+
 <div class="style-crystal d-print-none">
     <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-0 pb-1 mb-1 border-bottom">
         <h5 class="fw-bold text-dark m-0"><i class="fa fa-users text-primary"></i> Master Data Customer</h5>
@@ -290,7 +359,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
     <div class="card-body p-1 bg-light">
         <form method="POST" action="index.php?page=customer" class="row g-2 align-items-center m-0">
             <div class="col-auto col-md-3 p-1">
-                <input type="text" name="search_keyword" class="form-control form-control-sm style-crystal" style="padding: 1px 4px; height: 22px;" placeholder="Cari ID, Nama, atau Kota..." value="<?= htmlspecialchars($search_keyword) ?>">
+                <input type="text" name="search_keyword" class="form-control form-control-sm style-crystal" style="padding: 1px 4px; height: 22px;" placeholder="Cari ID, Nama, atau Kota..." value="<?= h($search_keyword) ?>">
             </div>
             <div class="col-auto p-1">
                 <button type="submit" name="btn_search" class="btn btn-xs btn-dark style-crystal" style="padding: 1px 6px; height: 22px;"><i class="fa fa-search"></i> Cari Data</button>
@@ -337,24 +406,28 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                 ?>
                 <tr>
                     <td class="text-center d-print-none" style="position: sticky; left: 0; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08);">
-                        <button class="btn btn-micro btn-warning text-dark" onclick='showModalEdit(<?= json_encode($d); ?>)'><i class="fa fa-edit"></i></button>
-                        <a href="index.php?page=customer&action=delete&id=<?= urlencode($d['customer_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm('Hapus data <?= $d['customer'] ?>?')"><i class="fa fa-trash"></i></a>
+                        <?php
+                            $jsonData = h(json_encode($d, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP));
+                            $confirmDelete = h(json_encode('Hapus data ' . ($d['customer'] ?? '') . '?', JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP));
+                        ?>
+                        <button type="button" class="btn btn-micro btn-warning text-dark" onclick="showModalEdit(<?= $jsonData ?>)"><i class="fa fa-edit"></i></button>
+                        <a href="index.php?page=customer&action=delete&id=<?= urlencode((string)($d['customer_id'] ?? '')) ?>" class="btn btn-micro btn-danger" onclick="return confirm(<?= $confirmDelete ?>)"><i class="fa fa-trash"></i></a>
                     </td>
-                    <td class="fw-bold text-secondary text-center" style="position: sticky; left: 40px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); font-family:Consolas, monospace;"><?= htmlspecialchars($d['customer_id']) ?></td>
-                    <td class="fw-bold text-primary text-uppercase-crystal" style="position: sticky; left: 90px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); max-width: 150px; overflow: hidden; text-overflow: ellipsis;"><?= htmlspecialchars($d['customer']) ?></td>
-                    <td class="text-uppercase-crystal col-cut-address" style="position: sticky; left: 150px; background: #fff; z-index: 2; box-shadow: 2px 0 3px rgba(0,0,0,0.1); color:#555;"><?= htmlspecialchars($d['address']) ?></td>
+                    <td class="fw-bold text-secondary text-center" style="position: sticky; left: 40px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); font-family:Consolas, monospace;"><?= h($d['customer_id'] ?? '') ?></td>
+                    <td class="fw-bold text-primary text-uppercase-crystal" style="position: sticky; left: 90px; background: #fff; z-index: 2; box-shadow: 1px 0 2px rgba(0,0,0,0.08); max-width: 150px; overflow: hidden; text-overflow: ellipsis;"><?= h($d['customer'] ?? '') ?></td>
+                    <td class="text-uppercase-crystal col-cut-address" style="position: sticky; left: 150px; background: #fff; z-index: 2; box-shadow: 2px 0 3px rgba(0,0,0,0.1); color:#555;"><?= h($d['address'] ?? '') ?></td>
                     
-                    <td class="text-uppercase-crystal"><?= htmlspecialchars($d['city']) ?></td>
-                    <td class="text-uppercase-crystal"><?= htmlspecialchars($d['contact_person']) ?></td>
-                    <td><?= htmlspecialchars($d['contact_person_phone']) ?></td>
-                    <td><?= htmlspecialchars($d['id_number']) ?></td>
-                    <td><?= htmlspecialchars($d['phone']) ?></td>
-                    <td class="text-end fw-bold text-success"><?= number_format($d['credit_limit'], 2) ?></td>
-                    <td><?= htmlspecialchars($d['email']) ?></td>
+                    <td class="text-uppercase-crystal"><?= h($d['city'] ?? '') ?></td>
+                    <td class="text-uppercase-crystal"><?= h($d['contact_person'] ?? '') ?></td>
+                    <td><?= h($d['contact_person_phone'] ?? '') ?></td>
+                    <td><?= h($d['id_number'] ?? '') ?></td>
+                    <td><?= h($d['phone'] ?? '') ?></td>
+                    <td class="text-end fw-bold text-success"><?= number_format((float)($d['credit_limit'] ?? 0), 2) ?></td>
+                    <td><?= h($d['email'] ?? '') ?></td>
                     <td class="text-center">
                         <?php 
                         if (!empty($d['area_code'])) {
-                            echo '<span class="badge bg-info">' . htmlspecialchars($d['area_code']) . '</span>';
+                            echo '<span class="badge bg-info">' . h($d['area_code'] ?? '') . '</span>';
                         } else {
                             echo '-';
                         }
@@ -363,18 +436,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                     <td class="text-center">
                         <?php 
                         if (!empty($d['sales_name'])) {
-                            echo '<span class="badge bg-success">' . htmlspecialchars($d['sales_name']) . '</span>';
+                            echo '<span class="badge bg-success">' . h($d['sales_name'] ?? '') . '</span>';
                         } else {
                             echo '-';
                         }
                         ?>
                     </td>
-                    <td class="text-center"><?= htmlspecialchars($d['type']) ?></td>
-                    <td class="text-uppercase-crystal"><?= htmlspecialchars($d['parent_customer']) ?></td>
-                    <td><?= htmlspecialchars($d['bagian']) ?></td>
-                    <td class="text-center fw-bold text-secondary"><?= htmlspecialchars($d['is_active']) ?></td>
-                    <td><?= htmlspecialchars($d['user_created']) ?></td>
-                    <td class="text-muted" style="font-size:10px;"><?= $d['date_created'] ?></td>
+                    <td class="text-center"><?= h($d['type'] ?? '') ?></td>
+                    <td class="text-uppercase-crystal"><?= h($d['parent_customer'] ?? '') ?></td>
+                    <td><?= h($d['bagian'] ?? '') ?></td>
+                    <td class="text-center fw-bold text-secondary"><?= h($d['is_active'] ?? '') ?></td>
+                    <td><?= h($d['user_created'] ?? '') ?></td>
+                    <td class="text-muted" style="font-size:10px;"><?= h($d['date_created'] ?? '') ?></td>
                 </tr>
                 <?php } 
             } ?>
@@ -412,19 +485,19 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">ID Number (NIK / KTP)</label>
-                                <input type="text" name="id_number" id="form_id_number" class="form-control form-control-sm">
+                                <input type="text" name="id_number" id="form_id_number" class="form-control form-control-sm" value="-">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Address</label>
-                                <textarea name="address" id="form_address" class="form-control form-control-sm" rows="3" placeholder="Alamat Pengiriman/Operasional..."></textarea>
+                                <textarea name="address" id="form_address" class="form-control form-control-sm" rows="3" placeholder="Alamat Pengiriman..."></textarea>
                             </div>
                             <div class="mb-2">
-                                <label class="form-label fw-bold mb-0 text-secondary">City</label>
-                                <input type="text" name="city" id="form_city" class="form-control form-control-sm" placeholder="Surabaya, Sidoarjo, dsb">
+                                <label class="form-label fw-bold mb-0 text-secondary">City <span class="text-danger">*</span></label>
+                                <input type="text" name="city" id="form_city" class="form-control form-control-sm" placeholder="Surabaya, Sidoarjo, dsb" required>
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Phone</label>
-                                <input type="text" name="phone" id="form_phone" class="form-control form-control-sm">
+                                <input type="text" name="phone" id="form_phone" class="form-control form-control-sm" value="-">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Credit Limit (Rp)</label>
@@ -432,7 +505,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Email</label>
-                                <input type="text" name="email" id="form_email" class="form-control form-control-sm">
+                                <input type="text" name="email" id="form_email" class="form-control form-control-sm" value="-">
                             </div>
                         </div>
 
@@ -440,11 +513,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                         <div class="col-md-4 border-end border-2 border-light bg-white p-3 rounded">
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Contact Person</label>
-                                <input type="text" name="contact_person" id="form_contact_person" class="form-control form-control-sm">
+                                <input type="text" name="contact_person" id="form_contact_person" class="form-control form-control-sm" value="-">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Contact Person Phone</label>
-                                <input type="text" name="contact_person_phone" id="form_contact_person_phone" class="form-control form-control-sm">
+                                <input type="text" name="contact_person_phone" id="form_contact_person_phone" class="form-control form-control-sm" value="-">
                             </div>
                             
                             <!-- AREA MANAGEMENT SECTION -->
@@ -458,7 +531,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-label fw-bold mb-0 text-secondary">Tanggal Efektif Area</label>
-                                    <input type="date" name="effective_date_area" id="form_effective_date_area" class="form-control form-control-sm">
+                                    <input type="text" name="effective_date_area" id="form_effective_date_area" class="form-control form-control-sm month-year-picker" placeholder="Jun-2026" autocomplete="off">
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-label fw-bold mb-0 text-secondary">Remark Area</label>
@@ -514,7 +587,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-label fw-bold mb-0 text-secondary">Tanggal Efektif Sales</label>
-                                    <input type="date" name="effective_date_sales" id="form_effective_date_sales" class="form-control form-control-sm">
+                                    <input type="text" name="effective_date_sales" id="form_effective_date_sales" class="form-control form-control-sm month-year-picker" placeholder="Jun-2026" autocomplete="off">
                                 </div>
                                 <div class="mb-2">
                                     <label class="form-label fw-bold mb-0 text-secondary">Remark Sales</label>
@@ -547,8 +620,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                                         $query_parent = mysqli_query($conn, "SELECT customer_id, customer FROM m_customer ORDER BY customer ASC");
                                         while ($row_parent = mysqli_fetch_assoc($query_parent)) {
                                             // Tampilkan hanya nama customer saja di dropdown
-                                            echo '<option value="' . htmlspecialchars($row_parent['customer_id']) . '" data-code="' . htmlspecialchars($row_parent['customer_id']) . '">' 
-                                                . htmlspecialchars($row_parent['customer']) . '</option>';
+                                            echo '<option value="' . h($row_parent['customer_id']) . '" data-code="' . h($row_parent['customer_id']) . '">' 
+                                                . h($row_parent['customer']) . '</option>';
                                         }
                                         ?>
                                     </select>
@@ -619,6 +692,30 @@ document.addEventListener("DOMContentLoaded", function() {
         $('#form_sales_name').val(salesName || '');
     });
     
+    // Validasi dan default '-' sebelum submit
+    $('#formCustomer').on('submit', function(e) {
+        if (!String($('#form_city').val() || '').trim()) {
+            e.preventDefault();
+            alert('City wajib diisi!');
+            $('#form_city').focus();
+            return false;
+        }
+
+        setDashIfEmpty('form_id_number');
+        setDashIfEmpty('form_address');
+        setDashIfEmpty('form_phone');
+        setDashIfEmpty('form_email');
+        setDashIfEmpty('form_contact_person');
+        setDashIfEmpty('form_contact_person_phone');
+
+        if ($('#form_area_code').val() && !$('#form_effective_date_area').val()) {
+            $('#form_effective_date_area').val(getCurrentMonthYear());
+        }
+        if ($('#form_sales_id').val() && !$('#form_effective_date_sales').val()) {
+            $('#form_effective_date_sales').val(getCurrentMonthYear());
+        }
+    });
+
     // Event handler untuk parent select - Update code berdasarkan pilihan
     $('#form_parent_id').on('change', function() {
         var selectedOption = $(this).find('option:selected');
@@ -634,6 +731,39 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     });
 });
+
+function getCurrentMonthYear() {
+    var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var now = new Date();
+    return monthNames[now.getMonth()] + '-' + now.getFullYear();
+}
+
+function formatMonthYear(value) {
+    if (!value) return '';
+    value = String(value);
+
+    // Jika sudah format Jun-2026, langsung pakai
+    if (/^[A-Za-z]{3}-\d{4}$/.test(value)) {
+        return value;
+    }
+
+    // Jika format lama dari database DATE: 2026-06-01 / 2026-06-26
+    var match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+        var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        var monthIndex = parseInt(match[2], 10) - 1;
+        return monthNames[monthIndex] + '-' + match[1];
+    }
+
+    return value;
+}
+
+function setDashIfEmpty(fieldId) {
+    var el = document.getElementById(fieldId);
+    if (el && !String(el.value || '').trim()) {
+        el.value = '-';
+    }
+}
 
 function toggleAutoId(checkboxElement) {
     var idInput = document.getElementById('form_id');
@@ -698,13 +828,13 @@ function showModalEdit(dataObj) {
     
     // Area fields
     $('#form_area_code').val(dataObj.area_code || '').trigger('change');
-    document.getElementById('form_effective_date_area').value = dataObj.effective_date_area || '';
+    document.getElementById('form_effective_date_area').value = formatMonthYear(dataObj.effective_date_area || '');
     document.getElementById('form_remark_area').value = dataObj.remark_area || '';
     
     // Sales fields
     $('#form_sales_id').val(dataObj.sales_id || '').trigger('change');
     document.getElementById('form_sales_name').value = dataObj.sales_name || '';
-    document.getElementById('form_effective_date_sales').value = dataObj.effective_date_sales || '';
+    document.getElementById('form_effective_date_sales').value = formatMonthYear(dataObj.effective_date_sales || '');
     document.getElementById('form_remark_sales').value = dataObj.remark_sales || '';
     
     document.getElementById('form_type').value = dataObj.type || 'Lokal';
@@ -720,4 +850,8 @@ function showModalEdit(dataObj) {
 
     bootstrapModal.show();
 }
+
+window.showModalTambah = showModalTambah;
+window.showModalEdit = showModalEdit;
+window.toggleAutoId = toggleAutoId;
 </script>
