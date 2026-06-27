@@ -156,8 +156,16 @@ switch ($page) {
     case 'cetak_rekap_sales_order':
         include 'modul/transaksi/cetak_rekap_sales_order.php';
         break;
-    
-        
+    case 'kartu_stok_order_customer':
+        include 'modul/transaksi/kartu_stok_order_customer.php';
+        break;
+    case 'cetak_kartu_stok_order_customer':
+        include 'modul/transaksi/cetak_kartu_stok_order_customer.php';
+        break;
+    case 'ajax_kartu_stok_order_customer_detail':
+        include 'modul/transaksi/ajax_kartu_stok_order_customer_detail.php';
+        break;
+
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';

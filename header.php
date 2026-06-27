@@ -413,8 +413,8 @@ $groupLabels = [
                         
                         <?php if (canAccessMenu('kartu-stok', $allowedMenus)): ?>
                         <li class="nav-item">
-                            <a class="nav-link" href="index.php?page=kartu-stok">
-                                <i class="fa fa-book me-2"></i> Kartu Stok
+                            <a class="nav-link" href="index.php?page=kartu_stok_order_customer">
+                                <i class="fa fa-book me-2"></i> Kartu Stok Order Customer
                             </a>
                         </li>
                         <?php endif; ?>

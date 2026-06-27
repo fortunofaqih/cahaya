@@ -12,44 +12,144 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
-// Ambil shipping_no dari URL
-$shipping_no = isset($_GET['id']) ? mysqli_real_escape_string($conn, trim($_GET['id'])) : '';
-
-if (empty($shipping_no)) {
-    $_SESSION['alert'] = '<div class="alert alert-danger">Shipping No tidak ditemukan!</div>';
-    echo "<script>window.location.href='index.php?page=shipping';</script>";
+function redirectWithAlert($type, $message, $url = 'index.php?page=shipping') {
+    $_SESSION['alert'] = '<div class="alert alert-' . htmlspecialchars($type, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . '</div>';
+    echo "<script>window.location.href='" . addslashes($url) . "';</script>";
     exit;
 }
 
-// Cek apakah shipping_no ada di database
-$check_query = mysqli_query($conn, "SELECT shipping_no, status FROM hed_shipping WHERE shipping_no = '$shipping_no'");
-if (mysqli_num_rows($check_query) == 0) {
-    $_SESSION['alert'] = '<div class="alert alert-danger">Data shipping tidak ditemukan!</div>';
-    echo "<script>window.location.href='index.php?page=shipping';</script>";
-    exit;
+function fetchShippingHeader(mysqli $conn, string $shipping_no): ?array {
+    $stmt = mysqli_prepare($conn, "
+        SELECT
+            shipping_no,
+            order_no,
+            shipping_date,
+            customer_id,
+            customer_name,
+            status,
+            approval_status
+        FROM hed_shipping
+        WHERE shipping_no = ?
+        LIMIT 1
+    ");
+
+    if (!$stmt) {
+        throw new Exception('Gagal prepare cek shipping: ' . mysqli_error($conn));
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $shipping_no);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+
+    return $row ?: null;
 }
 
-$shipping_data = mysqli_fetch_assoc($check_query);
+function countShippingDetails(mysqli $conn, string $shipping_no): int {
+    $stmt = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM det_shipping WHERE shipping_no = ?");
 
-// Cek apakah shipping sudah memiliki status Close (tidak bisa dihapus)
-if ($shipping_data['status'] == 'Close') {
-    $_SESSION['alert'] = '<div class="alert alert-warning">Shipping ' . $shipping_no . ' sudah memiliki status Close dan tidak dapat dihapus!</div>';
+    if (!$stmt) {
+        return 0;
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $shipping_no);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+
+    return (int)($row['total'] ?? 0);
+}
+
+function deleteByShippingNo(mysqli $conn, string $table, string $shipping_no): void {
+    // Nama tabel sengaja whitelist supaya tidak bisa diinjeksi lewat parameter.
+    $allowedTables = [
+        'det_shipping_uom_detail',
+        'det_shipping',
+        'hed_shipping'
+    ];
+
+    if (!in_array($table, $allowedTables, true)) {
+        throw new Exception('Nama tabel delete tidak valid.');
+    }
+
+    $stmt = mysqli_prepare($conn, "DELETE FROM {$table} WHERE shipping_no = ?");
+
+    if (!$stmt) {
+        throw new Exception("Gagal prepare hapus {$table}: " . mysqli_error($conn));
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $shipping_no);
+
+    if (!mysqli_stmt_execute($stmt)) {
+        $error = mysqli_stmt_error($stmt);
+        mysqli_stmt_close($stmt);
+        throw new Exception("Gagal menghapus {$table}: " . $error);
+    }
+
+    mysqli_stmt_close($stmt);
+}
+
+$shipping_no = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
+$confirm = isset($_GET['confirm']) ? trim((string)$_GET['confirm']) : '';
+
+if ($shipping_no === '') {
+    redirectWithAlert('danger', 'Shipping No tidak ditemukan!');
+}
+
+try {
+    $shipping_data = fetchShippingHeader($conn, $shipping_no);
+} catch (Exception $e) {
+    redirectWithAlert('danger', 'Error: ' . $e->getMessage());
+}
+
+if (!$shipping_data) {
+    redirectWithAlert('danger', 'Data shipping tidak ditemukan!');
+}
+
+$status = $shipping_data['status'] ?? 'Open';
+$approval_status = $shipping_data['approval_status'] ?? 'Pending';
+
+// Status Close tidak boleh dihapus.
+if (strcasecmp($status, 'Close') === 0 || strcasecmp($status, 'Closed') === 0) {
+    $msg = 'Shipping ' . $shipping_no . ' sudah memiliki status Close dan tidak dapat dihapus!';
+    $_SESSION['alert'] = '<div class="alert alert-warning">' . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . '</div>';
     echo "<script>
-        alert('Shipping " . addslashes($shipping_no) . " sudah memiliki status Close dan tidak dapat dihapus!');
+        alert('" . addslashes($msg) . "');
         window.location.href='index.php?page=shipping';
     </script>";
     exit;
 }
 
-// Konfirmasi via GET parameter (untuk keamanan double confirmation)
-$confirm = isset($_GET['confirm']) ? $_GET['confirm'] : '';
+// Opsional: jika nanti approval sudah dipakai ketat, aktifkan blok ini.
+// if (strcasecmp($approval_status, 'Approved') === 0) {
+//     $msg = 'Shipping ' . $shipping_no . ' sudah Approved dan tidak dapat dihapus!';
+//     $_SESSION['alert'] = '<div class="alert alert-warning">' . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . '</div>';
+//     echo "<script>
+//         alert('" . addslashes($msg) . "');
+//         window.location.href='index.php?page=shipping';
+//     </script>";
+//     exit;
+// }
+
+$detail_count = countShippingDetails($conn, $shipping_no);
 
 if ($confirm !== 'yes') {
-    // Tampilkan halaman konfirmasi
+    $safe_shipping_no = htmlspecialchars($shipping_no, ENT_QUOTES, 'UTF-8');
+    $safe_order_no = htmlspecialchars($shipping_data['order_no'] ?? '-', ENT_QUOTES, 'UTF-8');
+    $safe_customer_name = htmlspecialchars($shipping_data['customer_name'] ?? '-', ENT_QUOTES, 'UTF-8');
+    $safe_shipping_date = htmlspecialchars($shipping_data['shipping_date'] ?? '-', ENT_QUOTES, 'UTF-8');
+    $safe_status = htmlspecialchars($status, ENT_QUOTES, 'UTF-8');
+    $safe_approval_status = htmlspecialchars($approval_status, ENT_QUOTES, 'UTF-8');
+    $safe_detail_count = htmlspecialchars((string)$detail_count, ENT_QUOTES, 'UTF-8');
+    $confirm_url = 'index.php?page=delete_shipping&id=' . urlencode($shipping_no) . '&confirm=yes';
     ?>
     <!DOCTYPE html>
-    <html>
+    <html lang="id">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Konfirmasi Hapus Shipping</title>
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
         <style>
@@ -68,51 +168,67 @@ if ($confirm !== 'yes') {
                 border-radius: 8px;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.15);
                 padding: 30px;
-                max-width: 500px;
+                max-width: 540px;
                 width: 100%;
                 text-align: center;
             }
             .confirm-box .icon {
-                font-size: 60px;
+                font-size: 58px;
                 color: #dc3545;
-                margin-bottom: 20px;
+                margin-bottom: 18px;
             }
             .confirm-box h3 {
                 color: #333;
-                margin-bottom: 10px;
+                margin: 0 0 10px;
             }
             .confirm-box p {
                 color: #666;
                 margin-bottom: 5px;
                 font-size: 14px;
             }
-            .confirm-box .shipping-info {
+            .shipping-info {
                 background: #f8f9fa;
                 padding: 15px;
                 border-radius: 5px;
                 margin: 15px 0;
                 text-align: left;
+                border: 1px solid #e9ecef;
             }
-            .confirm-box .shipping-info table {
+            .shipping-info table {
                 width: 100%;
                 font-size: 13px;
+                border-collapse: collapse;
             }
-            .confirm-box .shipping-info td {
-                padding: 4px 8px;
+            .shipping-info td {
+                padding: 6px 8px;
+                vertical-align: top;
+                border-bottom: 1px solid #eee;
             }
-            .confirm-box .shipping-info td:first-child {
+            .shipping-info tr:last-child td {
+                border-bottom: none;
+            }
+            .shipping-info td:first-child {
                 font-weight: bold;
                 color: #555;
-                width: 40%;
+                width: 38%;
+            }
+            .badge {
+                display: inline-block;
+                padding: 3px 10px;
+                border-radius: 10px;
+                font-size: 12px;
+                background: #ffc107;
+                color: #333;
             }
             .btn-group {
                 display: flex;
                 gap: 10px;
                 justify-content: center;
                 margin-top: 20px;
+                flex-wrap: wrap;
             }
             .btn {
-                padding: 10px 25px;
+                padding: 10px 24px;
                 border: none;
                 border-radius: 4px;
                 font-size: 14px;
@@ -123,73 +239,67 @@ if ($confirm !== 'yes') {
                 align-items: center;
                 gap: 8px;
             }
-            .btn-danger {
-                background: #dc3545;
-                color: #fff;
-            }
-            .btn-danger:hover {
-                background: #c82333;
-            }
-            .btn-secondary {
-                background: #6c757d;
-                color: #fff;
-            }
-            .btn-secondary:hover {
-                background: #5a6268;
-            }
-            .btn-success {
-                background: #28a745;
-                color: #fff;
-            }
-            .btn-success:hover {
-                background: #218838;
-            }
+            .btn-danger { background: #dc3545; color: #fff; }
+            .btn-danger:hover { background: #c82333; }
+            .btn-secondary { background: #6c757d; color: #fff; }
+            .btn-secondary:hover { background: #5a6268; }
             .warning-text {
                 color: #dc3545;
                 font-size: 12px;
                 margin-top: 10px;
+                line-height: 1.5;
             }
         </style>
     </head>
     <body>
         <div class="confirm-box">
-            <div class="icon">
-                <i class="fa fa-exclamation-triangle"></i>
-            </div>
+            <div class="icon"><i class="fa fa-exclamation-triangle"></i></div>
             <h3>Konfirmasi Hapus Data</h3>
             <p>Anda yakin ingin menghapus data shipping berikut?</p>
-            
+
             <div class="shipping-info">
                 <table>
                     <tr>
                         <td>Shipping No</td>
-                        <td><strong><?= htmlspecialchars($shipping_no) ?></strong></td>
+                        <td><strong><?= $safe_shipping_no ?></strong></td>
+                    </tr>
+                    <tr>
+                        <td>Shipping Date</td>
+                        <td><?= $safe_shipping_date ?></td>
                     </tr>
                     <tr>
                         <td>Order No</td>
-                        <td><?= htmlspecialchars($shipping_data['order_no'] ?? '-') ?></td>
+                        <td><?= $safe_order_no ?></td>
+                    </tr>
+                    <tr>
+                        <td>Customer</td>
+                        <td><?= $safe_customer_name ?></td>
+                    </tr>
+                    <tr>
+                        <td>Jumlah Detail</td>
+                        <td><?= $safe_detail_count ?> item</td>
                     </tr>
                     <tr>
                         <td>Status</td>
-                        <td>
-                            <span style="background: #ffc107; padding: 2px 10px; border-radius: 10px; font-size: 12px;">
-                                <?= htmlspecialchars($shipping_data['status'] ?? 'Open') ?>
-                            </span>
-                        </td>
+                        <td><span class="badge"><?= $safe_status ?></span></td>
+                    </tr>
+                    <tr>
+                        <td>Approval</td>
+                        <td><span class="badge"><?= $safe_approval_status ?></span></td>
                     </tr>
                 </table>
             </div>
-            
+
             <p class="warning-text">
-                <i class="fa fa-info-circle"></i> 
-                Data yang dihapus akan hilang secara permanen!
+                <i class="fa fa-info-circle"></i>
+                Data header, detail shipping, dan detail multi UOM akan dihapus permanen.
             </p>
-            
+
             <div class="btn-group">
                 <a href="index.php?page=shipping" class="btn btn-secondary">
                     <i class="fa fa-times"></i> Batal
                 </a>
-                <a href="index.php?page=delete_shipping&id=<?= urlencode($shipping_no) ?>&confirm=yes" 
+                <a href="<?= htmlspecialchars($confirm_url, ENT_QUOTES, 'UTF-8') ?>"
                    class="btn btn-danger"
                    onclick="return confirm('Hapus shipping <?= addslashes($shipping_no) ?> secara permanen?')">
                     <i class="fa fa-trash"></i> Hapus Permanen
@@ -202,45 +312,44 @@ if ($confirm !== 'yes') {
     exit;
 }
 
-// =============================================
-// PROSES DELETE (setelah konfirmasi)
-// =============================================
-
-// Mulai transaksi
 mysqli_begin_transaction($conn);
 
 try {
-    // 1. Hapus detail shipping (karena foreign key cascade, sebenarnya otomatis)
-    // Tapi kita hapus manual untuk memastikan
-    $query_delete_detail = "DELETE FROM det_shipping WHERE shipping_no = '$shipping_no'";
-    if (!mysqli_query($conn, $query_delete_detail)) {
-        throw new Exception("Gagal menghapus detail shipping: " . mysqli_error($conn));
+    // Re-check di dalam transaksi supaya data/status terbaru tetap aman.
+    $shipping_data = fetchShippingHeader($conn, $shipping_no);
+
+    if (!$shipping_data) {
+        throw new Exception('Data shipping tidak ditemukan atau sudah dihapus.');
     }
 
-    // 2. Hapus header shipping
-    $query_delete_header = "DELETE FROM hed_shipping WHERE shipping_no = '$shipping_no'";
-    if (!mysqli_query($conn, $query_delete_header)) {
-        throw new Exception("Gagal menghapus header shipping: " . mysqli_error($conn));
+    $current_status = $shipping_data['status'] ?? 'Open';
+
+    if (strcasecmp($current_status, 'Close') === 0 || strcasecmp($current_status, 'Closed') === 0) {
+        throw new Exception('Shipping ' . $shipping_no . ' sudah memiliki status Close dan tidak dapat dihapus.');
     }
 
-    // Commit transaksi
+    // Urutan delete wajib: child paling bawah -> detail -> header.
+    deleteByShippingNo($conn, 'det_shipping_uom_detail', $shipping_no);
+    deleteByShippingNo($conn, 'det_shipping', $shipping_no);
+    deleteByShippingNo($conn, 'hed_shipping', $shipping_no);
+
     mysqli_commit($conn);
 
-    $_SESSION['alert'] = '<div class="alert alert-success">Shipping ' . $shipping_no . ' berhasil dihapus!</div>';
-    
+    $msg = 'Shipping ' . $shipping_no . ' berhasil dihapus!';
+    $_SESSION['alert'] = '<div class="alert alert-success">' . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . '</div>';
+
     echo "<script>
-        alert('Shipping " . addslashes($shipping_no) . " berhasil dihapus!');
+        alert('" . addslashes($msg) . "');
         window.location.href='index.php?page=shipping';
     </script>";
     exit;
 
 } catch (Exception $e) {
-    // Rollback jika ada error
     mysqli_rollback($conn);
-    
+
     $error_message = $e->getMessage();
-    $_SESSION['alert'] = '<div class="alert alert-danger">Error: ' . $error_message . '</div>';
-    
+    $_SESSION['alert'] = '<div class="alert alert-danger">Error: ' . htmlspecialchars($error_message, ENT_QUOTES, 'UTF-8') . '</div>';
+
     echo "<script>
         alert('Error: " . addslashes($error_message) . "');
         window.location.href='index.php?page=shipping';

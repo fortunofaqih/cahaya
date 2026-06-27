@@ -48,54 +48,6 @@ function fmtMoney($number) {
     return number_format($number, 0, ',', '.');
 }
 
-
-
-function getPrintableUnitPrice($row) {
-    // Prioritas:
-    // 1. Harga yang sudah tersimpan di det_shipping.price_unit
-    // 2. Harga per unit jual dari detail_sales_order.price
-    // 3. Fallback harga/kg dari detail_sales_order.price_unit
-    $shipPriceUnit = (float)($row['price_unit'] ?? 0);
-    if ($shipPriceUnit > 0) {
-        return $shipPriceUnit;
-    }
-
-    $soPrice = (float)($row['so_price'] ?? 0);
-    if ($soPrice > 0) {
-        return $soPrice;
-    }
-
-    $soPriceUnit = (float)($row['so_price_unit'] ?? 0);
-    if ($soPriceUnit > 0) {
-        return $soPriceUnit;
-    }
-
-    return 0;
-}
-
-function getPrintableSubtotal($row, $unitPrice) {
-    // Prioritas:
-    // 1. Subtotal yang sudah tersimpan di det_shipping.subtotal
-    // 2. Harga satuan x qty_pack_shipping
-    // 3. Harga satuan x qty_shipping
-    $shipSubtotal = (float)($row['subtotal'] ?? 0);
-    if ($shipSubtotal > 0) {
-        return $shipSubtotal;
-    }
-
-    $qtyPack = (float)($row['qty_pack_shipping'] ?? 0);
-    if ($unitPrice > 0 && $qtyPack > 0) {
-        return $unitPrice * $qtyPack;
-    }
-
-    $qtyBase = (float)($row['qty_shipping'] ?? 0);
-    if ($unitPrice > 0 && $qtyBase > 0) {
-        return $unitPrice * $qtyBase;
-    }
-
-    return 0;
-}
-
 function formatDateForBlank($date) {
     if (empty($date) || $date === '0000-00-00') {
         return '';
@@ -245,30 +197,6 @@ $stmtDetail = mysqli_prepare($conn, "
         ds.*,
         mi.catalog AS inventory_catalog,
         (
-            SELECT dso.price_unit
-            FROM detail_sales_order dso
-            WHERE dso.order_no = hs.order_no
-              AND dso.inventory_id = ds.inventory_id
-            ORDER BY dso.id ASC
-            LIMIT 1
-        ) AS so_price_unit,
-        (
-            SELECT dso.price
-            FROM detail_sales_order dso
-            WHERE dso.order_no = hs.order_no
-              AND dso.inventory_id = ds.inventory_id
-            ORDER BY dso.id ASC
-            LIMIT 1
-        ) AS so_price,
-        (
-            SELECT dso.subtotal
-            FROM detail_sales_order dso
-            WHERE dso.order_no = hs.order_no
-              AND dso.inventory_id = ds.inventory_id
-            ORDER BY dso.id ASC
-            LIMIT 1
-        ) AS so_subtotal,
-        (
             SELECT GROUP_CONCAT(
                 CONCAT(
                     TRIM(TRAILING '.00' FROM TRIM(TRAILING '0' FROM CAST(dud.qty_detail AS CHAR))),
@@ -283,7 +211,6 @@ $stmtDetail = mysqli_prepare($conn, "
               AND dud.det_shipping_id = ds.id
         ) AS uom_detail_text
     FROM det_shipping ds
-    LEFT JOIN hed_shipping hs ON hs.shipping_no = ds.shipping_no
     LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
     WHERE ds.shipping_no = ?
     ORDER BY ds.id ASC
@@ -607,11 +534,8 @@ $hasMoreRows = count($details) > $maxRows;
             $itemName .= ' ' . $uomDetailText;
         }
 
-        $rawUnitPrice = getPrintableUnitPrice($detail);
-        $rawSubtotal = getPrintableSubtotal($detail, $rawUnitPrice);
-
-        $priceUnit = fmtMoney($rawUnitPrice);
-        $subtotal = fmtMoney($rawSubtotal);
+        $priceUnit = fmtMoney($detail['price_unit'] ?? 0);
+        $subtotal = fmtMoney($detail['subtotal'] ?? 0);
     ?>
         <div class="field row-field qty-col-1" style="top: <?= $top ?>mm;"><?= e($qtyCol1) ?></div>
         <div class="field row-field qty-col-2" style="top: <?= $top ?>mm;"><?= e($qtyCol2) ?></div>

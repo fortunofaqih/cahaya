@@ -25,9 +25,11 @@ if (empty($shipping_no)) {
 $query_header = mysqli_query($conn, "
     SELECT 
         hs.*,
-        mg.name AS gudang_name
+        mg.name AS gudang_name,
+        COALESCE(hso.tolerance, 10.00) AS order_tolerance
     FROM hed_shipping hs
     LEFT JOIN m_gudang mg ON hs.gudang_id = mg.gudang_id
+    LEFT JOIN head_sales_order hso ON hso.order_no = hs.order_no
     WHERE hs.shipping_no = '$shipping_no'
 ");
 
@@ -39,16 +41,61 @@ if (!$query_header || mysqli_num_rows($query_header) == 0) {
 
 $header = mysqli_fetch_assoc($query_header);
 
-// Ambil data detail shipping
+// Ambil data detail shipping + batas order untuk validasi tolerance di halaman edit
+$detail_order_no = mysqli_real_escape_string($conn, (string)($header['order_no'] ?? ''));
 $query_detail = mysqli_query($conn, "
-    SELECT *
-    FROM det_shipping
-    WHERE shipping_no = '$shipping_no'
-    ORDER BY id ASC
+    SELECT 
+        ds.*,
+        COALESCE(dso.quantity, 0) AS order_qty,
+        COALESCE(dso.quantity_pack, 0) AS order_qty_pack
+    FROM det_shipping ds
+    LEFT JOIN detail_sales_order dso 
+        ON dso.order_no = '$detail_order_no'
+       AND dso.inventory_id = ds.inventory_id
+    WHERE ds.shipping_no = '$shipping_no'
+    ORDER BY ds.id ASC
 ");
 
 $details = [];
 while ($row = mysqli_fetch_assoc($query_detail)) {
+    // Ambil multi UoM Detail dari tabel baru. Jika belum ada data, fallback ke kolom lama det_shipping.
+    $detail_id_int = (int)($row['id'] ?? 0);
+    $uom_detail_arr = [];
+
+    if ($detail_id_int > 0) {
+        $uom_rs = mysqli_query($conn, "
+            SELECT uom_detail, qty_detail
+            FROM det_shipping_uom_detail
+            WHERE det_shipping_id = $detail_id_int
+            ORDER BY id ASC
+        ");
+
+        if ($uom_rs) {
+            while ($uom_row = mysqli_fetch_assoc($uom_rs)) {
+                $uom = trim((string)($uom_row['uom_detail'] ?? ''));
+                $qty = (float)($uom_row['qty_detail'] ?? 0);
+                if ($uom !== '' && $qty > 0) {
+                    $uom_detail_arr[] = [
+                        'uom' => $uom,
+                        'qty' => $qty
+                    ];
+                }
+            }
+        }
+    }
+
+    if (empty($uom_detail_arr)) {
+        $legacy_uom = trim((string)($row['uom_detail_shipping'] ?? ''));
+        $legacy_qty = (float)($row['qty_detail_shipping'] ?? 0);
+        if ($legacy_uom !== '' && $legacy_qty > 0) {
+            $uom_detail_arr[] = [
+                'uom' => $legacy_uom,
+                'qty' => $legacy_qty
+            ];
+        }
+    }
+
+    $row['uom_detail_json'] = json_encode($uom_detail_arr, JSON_UNESCAPED_UNICODE);
     $details[] = $row;
 }
 
@@ -62,6 +109,7 @@ $order_rs = mysqli_query($conn, "
         h.customer_address,
         h.customer_city,
         h.shipment_location,
+        h.tolerance,
         h.status,
         h.approval_status
     FROM head_sales_order h
@@ -297,6 +345,95 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
     color: #6c757d;
     margin-top: 2px;
 }
+
+/* Modal */
+.shipping-modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.45);
+    z-index: 9998;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.shipping-modal {
+    width: min(1150px, 96vw);
+    max-height: 88vh;
+    background: #fff;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 12px 35px rgba(0,0,0,.25);
+    display: flex;
+    flex-direction: column;
+}
+.shipping-modal-header {
+    background: #e9ecef;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    font-weight: bold;
+}
+.shipping-modal-body {
+    padding: 12px;
+    overflow: auto;
+}
+.shipping-modal-footer {
+    padding: 10px 12px;
+    background: #f8f9fa;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.modal-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+.modal-table th, .modal-table td {
+    border: 1px solid var(--border);
+    padding: 6px;
+}
+.modal-table th {
+    background: #f1f3f5;
+    text-align: center;
+    text-transform: uppercase;
+    font-size: 10px;
+}
+.modal-table td input[type="number"] {
+    width: 100%;
+    font-size: 11px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    text-align: right;
+}
+.modal-muted {
+    color: #777;
+    font-size: 10px;
+}
+.uom-detail-btn {
+    width: 100%;
+    min-height: 26px;
+    border: 1px solid var(--border);
+    background: #fff;
+    border-radius: 3px;
+    font-size: 11px;
+    text-align: left;
+    padding: 4px 6px;
+    cursor: pointer;
+}
+.uom-detail-btn.empty {
+    color: #777;
+}
+.tolerance-warning-row td {
+    background: #fff3cd !important;
+}
+
 </style>
 
 <div class="shipping-wrap">
@@ -311,6 +448,11 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
     <form method="POST" action="index.php?page=update_shipping" id="formShipping">
         <input type="hidden" name="shipping_no" value="<?= htmlspecialchars($shipping_no) ?>">
         <input type="hidden" name="old_order_no" value="<?= htmlspecialchars($header['order_no']) ?>">
+        <!-- Field lama tetap dikirim agar update_shipping.php tidak mengosongkan data existing saat panel transporter/shipment location disembunyikan -->
+        <input type="hidden" name="transporter" value="<?= htmlspecialchars($header['transporter'] ?? '') ?>">
+        <input type="hidden" name="driver_name" value="<?= htmlspecialchars($header['driver_name'] ?? '') ?>">
+        <input type="hidden" name="truck_no" value="<?= htmlspecialchars($header['truck_no'] ?? '') ?>">
+        <input type="hidden" name="shipment_location" id="shipment_location" value="<?= htmlspecialchars($header['shipment_location'] ?? '') ?>">
         
         <!-- PANEL 1: Shipping Information -->
         <div class="panel-row">
@@ -352,7 +494,8 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                         data-customer-name="<?= htmlspecialchars($o['customer_name']) ?>"
                                         data-customer-address="<?= htmlspecialchars($o['customer_address']) ?>"
                                         data-customer-city="<?= htmlspecialchars($o['customer_city']) ?>"
-                                        data-shipment-location="<?= htmlspecialchars($o['shipment_location']) ?>">
+                                        data-shipment-location="<?= htmlspecialchars($o['shipment_location']) ?>"
+                                        data-tolerance="<?= htmlspecialchars($o['tolerance'] ?? '10.00') ?>">
                                     <?= htmlspecialchars($o['order_no']) ?> - <?= htmlspecialchars($o['customer_name']) ?>
                                 </option>
                             <?php endwhile; ?>
@@ -364,7 +507,8 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                     data-customer-name="<?= htmlspecialchars($header['customer_name']) ?>"
                                     data-customer-address="<?= htmlspecialchars($header['customer_address']) ?>"
                                     data-customer-city="<?= htmlspecialchars($header['customer_city']) ?>"
-                                    data-shipment-location="<?= htmlspecialchars($header['shipment_location']) ?>">
+                                    data-shipment-location="<?= htmlspecialchars($header['shipment_location']) ?>"
+                                    data-tolerance="<?= htmlspecialchars($header['order_tolerance'] ?? '10.00') ?>">
                                 <?= htmlspecialchars($header['order_no']) ?> - <?= htmlspecialchars($header['customer_name']) ?> (Current)
                             </option>
                             <?php endif; ?>
@@ -373,6 +517,29 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                     <div class="ff">
                         <label>Order Date</label>
                         <input type="text" name="order_date" id="order_date" value="<?= $order_date_display ?>" readonly>
+                    </div>
+                    <div class="ff">
+                        <label>Gudang <span class="required">*</span></label>
+                        <select name="gudang_id" id="gudang_id" required>
+                            <option value="">-- Pilih Gudang --</option>
+                            <?php 
+                            mysqli_data_seek($gudang_rs, 0);
+                            while ($g = mysqli_fetch_assoc($gudang_rs)): 
+                                if (!empty($header['gudang_id'])) {
+                                    $selected = ($g['gudang_id'] == $header['gudang_id']) ? 'selected' : '';
+                                } else {
+                                    $selected = ($g['gudang_id'] == $default_gudang_id) ? 'selected' : '';
+                                }
+                            ?>
+                                <option value="<?= htmlspecialchars($g['gudang_id']) ?>" <?= $selected ?>>
+                                    <?= htmlspecialchars($g['name']) ?>
+                                </option>
+                            <?php endwhile; ?>
+                        </select>
+                    </div>
+                    <div class="ff">
+                        <label>Remarks Shipping</label>
+                        <textarea name="remarks_shipping" rows="2" placeholder="Catatan pengiriman..."><?= htmlspecialchars($header['remarks_shipping']) ?></textarea>
                     </div>
                 </div>
             </div>
@@ -401,61 +568,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
             </div>
         </div>
 
-      <!-- PANEL 4: Transporter & Shipping Location -->
-<div class="panel-row">
-    <div class="shipping-panel">
-        <div class="shipping-panel-header"><i class="fa-solid fa-truck-fast"></i> Transporter Information</div>
-        <div class="shipping-panel-body">
-            <div class="ff">
-                <label>Transporter</label>
-                <input type="text" name="transporter" value="<?= htmlspecialchars($header['transporter']) ?>" placeholder="Nama Transporter...">
-            </div>
-            <div class="ff">
-                <label>Driver Name</label>
-                <input type="text" name="driver_name" value="<?= htmlspecialchars($header['driver_name']) ?>" placeholder="Nama Supir...">
-            </div>
-            <div class="ff">
-                <label>Truck No</label>
-                <input type="text" name="truck_no" value="<?= htmlspecialchars($header['truck_no']) ?>" placeholder="Nomor Truk...">
-            </div>
-        </div>
-    </div>
-
-    <div class="shipping-panel">
-        <div class="shipping-panel-header"><i class="fa-solid fa-warehouse"></i> Shipping Location</div>
-        <div class="shipping-panel-body">
-            <div class="ff">
-                <label>Shipment Location</label>
-                <textarea name="shipment_location" id="shipment_location" rows="2" placeholder="Alamat pengiriman..."><?= htmlspecialchars($header['shipment_location']) ?></textarea>
-            </div>
-            <div class="ff">
-                <label>Gudang <span class="required">*</span></label>
-                <select name="gudang_id" id="gudang_id" required>
-                    <option value="">-- Pilih Gudang --</option>
-                    <?php 
-                    mysqli_data_seek($gudang_rs, 0);
-                    while ($g = mysqli_fetch_assoc($gudang_rs)): 
-                        // Jika ada nilai di database, gunakan nilai tersebut
-                        // Jika tidak ada (NULL/kosong), gunakan default FC-02
-                        if (!empty($header['gudang_id'])) {
-                            $selected = ($g['gudang_id'] == $header['gudang_id']) ? 'selected' : '';
-                        } else {
-                            $selected = ($g['gudang_id'] == $default_gudang_id) ? 'selected' : '';
-                        }
-                    ?>
-                        <option value="<?= htmlspecialchars($g['gudang_id']) ?>" <?= $selected ?>>
-                            <?= htmlspecialchars($g['name']) ?>
-                        </option>
-                    <?php endwhile; ?>
-                </select>
-            </div>
-            <div class="ff">
-                <label>Remarks Shipping</label>
-                <textarea name="remarks_shipping" rows="1" placeholder="Catatan pengiriman..."><?= htmlspecialchars($header['remarks_shipping']) ?></textarea>
-            </div>
-        </div>
-    </div>
-</div>
+        <!-- PANEL 4 dihapus: Gudang dan Remarks Shipping dipindah ke Order Information -->
         <!-- PANEL 5: Inventory Details -->
         <div class="shipping-panel-full">
             <div class="shipping-panel-header">
@@ -466,7 +579,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
             <div class="detail-toolbar">
                 <button type="button" class="btn-vs btn-primary" onclick="addRow()"><i class="fa fa-plus"></i> Tambah Item</button>
                 <button type="button" class="btn-vs btn-secondary" onclick="deleteSelected()"><i class="fa fa-trash"></i> Hapus Terpilih</button>
-                <button type="button" class="btn-vs btn-warning" onclick="loadInventoryFromOrder()"><i class="fa fa-sync"></i> Load dari Order</button>
+                <button type="button" class="btn-vs btn-warning" onclick="openLoadInventoryModal()"><i class="fa fa-sync"></i> Load dari Order</button>
                 <span style="font-size:10px; color:#888; margin-left:10px;">
                     <i class="fa fa-info-circle"></i> Klik "Load dari Order" untuk mengambil inventory dari Sales Order
                 </span>
@@ -479,57 +592,53 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                             <th style="width:30px;"><input type="checkbox" id="selectAll"></th>
                             <th style="width:35px;">#</th>
                             <th style="width:130px;">Inventory ID</th>
-                            <th style="width:180px;">Inventory Name</th>
-                            <th style="width:60px;">UoM</th>
-                            <th style="width:70px;">Qty</th>
-                            <th style="width:70px;">Qty Pack</th>
-                            <th style="width:90px;">UoM Pack</th>
-                            <th style="width:130px;">UoM Detail</th>
-                            <th style="width:80px;">Adjustment</th>
-                            <th style="width:120px;">Remarks</th>
+                            <th style="width:220px;">Inventory Name</th>
+                            <th style="width:90px;">Qty</th>
+                            <th style="width:80px;">UoM</th>
+                            <th style="width:90px;">Qty Pack</th>
+                            <th style="width:95px;">UoM Pack</th>
+                            <th style="width:190px;">UoM Detail</th>
+                            <th style="width:150px;">Remarks</th>
                             <th style="width:45px;">Aksi</th>
                         </tr>
                     </thead>
                     <tbody id="detailBody">
                         <?php foreach ($details as $index => $detail): ?>
-                        <tr class="detail-row" data-idx="<?= $index ?>">
-                            <td style="text-align:center;">
-                                <input type="checkbox" class="rowCheckbox">
-                            </td>
+                        <?php
+                            $uom_detail_json = $detail['uom_detail_json'] ?? '[]';
+                            $uom_detail_arr = json_decode($uom_detail_json, true);
+                            if (!is_array($uom_detail_arr)) $uom_detail_arr = [];
+                            $uom_detail_summary = '-- Pilih UoM Detail --';
+                            if (!empty($uom_detail_arr)) {
+                                $summary_parts = [];
+                                foreach ($uom_detail_arr as $ud) {
+                                    $summary_parts[] = number_format((float)($ud['qty'] ?? 0), 4, '.', '') . ' ' . ($ud['uom'] ?? '');
+                                }
+                                $uom_detail_summary = implode(', ', $summary_parts);
+                            }
+                        ?>
+                        <tr class="detail-row" data-idx="<?= $index ?>" data-order-qty="<?= htmlspecialchars($detail['order_qty'] ?? 0) ?>" data-order-qty-pack="<?= htmlspecialchars($detail['order_qty_pack'] ?? 0) ?>">
+                            <td style="text-align:center;"><input type="checkbox" class="rowCheckbox"></td>
                             <td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"><?= $index + 1 ?></td>
                             <td>
                                 <input type="text" name="inventory_id[]" class="inv-id" value="<?= htmlspecialchars($detail['inventory_id']) ?>" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">
                                 <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="<?= htmlspecialchars($detail['inventory_name']) ?>">
-                                <input type="hidden" name="detail_id[]" value="<?= $detail['id'] ?>">
+                                <input type="hidden" name="detail_id[]" value="<?= htmlspecialchars($detail['id']) ?>">
                             </td>
+                            <td><input type="text" class="inv-name-display" value="<?= htmlspecialchars($detail['inventory_name']) ?>" readonly style="background:#f1f3f5;"></td>
+                            <td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="<?= htmlspecialchars(number_format((float)$detail['qty_shipping'], 4, '.', '')) ?>" style="text-align:right;"></td>
+                            <td><select name="uom_shipping[]" class="inv-uom-select" data-selected="<?= htmlspecialchars($detail['uom_shipping']) ?>" style="width:100%;"></select></td>
+                            <td><input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="<?= htmlspecialchars(number_format((float)$detail['qty_pack_shipping'], 4, '.', '')) ?>" style="text-align:right;"></td>
+                            <td><select name="uom_pack_shipping[]" class="inv-uom-pack-select" data-selected="<?= htmlspecialchars($detail['uom_pack_shipping']) ?>" style="width:100%;"></select></td>
                             <td>
-                                <input type="text" class="inv-name-display" value="<?= htmlspecialchars($detail['inventory_name']) ?>" readonly style="background:#f1f3f5;">
+                                <button type="button" class="uom-detail-btn <?= empty($uom_detail_arr) ? 'empty' : '' ?>" onclick="openUomDetailModal(this)"><?= htmlspecialchars($uom_detail_summary) ?></button>
+                                <input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="<?= htmlspecialchars($detail['uom_detail_shipping']) ?>">
+                                <input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="<?= htmlspecialchars(number_format((float)($detail['qty_detail_shipping'] ?? 0), 4, '.', '')) ?>">
+                                <input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="<?= htmlspecialchars($uom_detail_json) ?>">
                             </td>
-                            <td>
-                                <input type="text" name="uom_shipping[]" class="inv-uom" value="<?= htmlspecialchars($detail['uom_shipping']) ?>" readonly style="background:#f1f3f5; text-align:center;">
-                            </td>
-                            <td>
-                                <input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="<?= $detail['qty_shipping'] ?>" style="text-align:center;">
-                            </td>
-                            <td>
-                                <input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="<?= $detail['qty_pack_shipping'] ?>" style="text-align:center;">
-                            </td>
-                            <td>
-                                <input type="text" name="uom_pack_shipping[]" class="inv-uom-pack" value="<?= htmlspecialchars($detail['uom_pack_shipping']) ?>" style="text-align:center;">
-                            </td>
-                            <td>
-                                <input type="text" name="uom_detail_shipping[]" class="inv-uom-detail" value="<?= htmlspecialchars($detail['uom_detail_shipping']) ?>" style="text-align:center;">
-                            </td>
-                            <td>
-                                <input type="number" step="0.0001" name="adjustment_shipping[]" class="adjustment-shipping" value="<?= $detail['adjustment_shipping'] ?>" style="text-align:center;">
-                            </td>
-                            <td>
-                                <input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="<?= htmlspecialchars($detail['remarks_inventory_shipping']) ?>" placeholder="Catatan...">
-                            </td>
+                            <td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="<?= htmlspecialchars($detail['remarks_inventory_shipping']) ?>" placeholder="Catatan..."></td>
                             <td style="text-align:center;">
-                                <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)">
-                                    <i class="fa fa-trash"></i>
-                                </button>
+                                <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button>
                             </td>
                         </tr>
                         <?php endforeach; ?>
@@ -556,21 +665,166 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
     </form>
 </div>
 
+
+<!-- MODAL: Pilih inventory dari order -->
+<div class="shipping-modal-backdrop" id="orderInventoryModal">
+    <div class="shipping-modal">
+        <div class="shipping-modal-header">
+            <span><i class="fa fa-boxes-stacked"></i> Pilih Inventory dari Order <span id="modal_order_no"></span></span>
+            <button type="button" class="btn-vs btn-secondary" onclick="closeLoadInventoryModal()"><i class="fa fa-times"></i></button>
+        </div>
+        <div class="shipping-modal-body">
+            <div class="modal-muted" style="margin-bottom:8px;">
+                Centang inventory yang ingin dimasukkan ke daftar shipping. Setelah ditambahkan, Qty diketik manual di tabel shipping.
+            </div>
+            <table class="modal-table">
+                <thead>
+                    <tr>
+                        <th style="width:35px;"><input type="checkbox" id="modalSelectAll"></th>
+                        <th style="width:125px;">Inventory ID</th>
+                        <th>Inventory Name</th>
+                        <th style="width:70px;">UoM SO</th>
+                        <th style="width:90px;">Qty SO</th>
+                        <th style="width:100px;">Qty Pack SO</th>
+                        <th style="width:95px;">UoM Pack SO</th>
+                        <th style="width:120px;">Tolerance</th>
+                    </tr>
+                </thead>
+                <tbody id="modalInventoryBody">
+                    <tr><td colspan="8" style="text-align:center; color:#777;">Belum ada data.</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="shipping-modal-footer">
+            <button type="button" class="btn-vs btn-secondary" onclick="closeLoadInventoryModal()"><i class="fa fa-times"></i> Tutup</button>
+            <button type="button" class="btn-vs btn-success" onclick="addSelectedInventoryFromModal()"><i class="fa fa-plus"></i> Tambahkan Terpilih</button>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Pilih multi UoM detail per inventory -->
+<div class="shipping-modal-backdrop" id="uomDetailModal">
+    <div class="shipping-modal" style="max-width:520px;">
+        <div class="shipping-modal-header">
+            <span><i class="fa fa-list-check"></i> UoM Detail <span id="uom_detail_modal_inventory"></span></span>
+            <button type="button" class="btn-vs btn-secondary" onclick="closeUomDetailModal()"><i class="fa fa-times"></i></button>
+        </div>
+        <div class="shipping-modal-body">
+            <div class="modal-muted" style="margin-bottom:8px;">
+                Centang satu atau lebih UoM, lalu isi Qty untuk masing-masing UoM.
+            </div>
+            <table class="modal-table">
+                <thead>
+                    <tr>
+                        <th style="width:45px;">Pilih</th>
+                        <th>UoM</th>
+                        <th style="width:140px;">Qty</th>
+                    </tr>
+                </thead>
+                <tbody id="uomDetailModalBody">
+                    <tr><td colspan="3" style="text-align:center; color:#777;">Belum ada data.</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="shipping-modal-footer">
+            <button type="button" class="btn-vs btn-secondary" onclick="closeUomDetailModal()"><i class="fa fa-times"></i> Tutup</button>
+            <button type="button" class="btn-vs btn-success" onclick="saveUomDetailModal()"><i class="fa fa-check"></i> Simpan UoM Detail</button>
+        </div>
+    </div>
+</div>
+
 <script>
+var inventoryUomData = {};
 var rowCounter = <?= count($details) ?>;
-var currentOrderNo = '<?= $header['order_no'] ?>';
+var currentOrderNo = '<?= htmlspecialchars($header['order_no'], ENT_QUOTES) ?>';
+
+// Ambil data UoM dari database via AJAX
+$.ajax({
+    url: 'modul/transaksi/get_inventory_uom.php',
+    type: 'GET',
+    dataType: 'json',
+    async: false,
+    success: function(response) {
+        if (response.success) {
+            inventoryUomData = response.data;
+        }
+    }
+});
 
 function escHtml(s) {
     if (s === null || s === undefined) return '';
     return String(s).replace(/[&<>"']/g, function(m) {
-        return {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#39;'
-        }[m];
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[m];
     });
+}
+
+function escAttr(s) {
+    return escHtml(s).replace(/`/g, '&#96;');
+}
+
+function formatDecimal(num) {
+    var n = parseFloat(num || 0);
+    if (isNaN(n)) n = 0;
+    return n.toFixed(4);
+}
+
+function getUomOptions(inventoryId, selectedValue, selectDefault) {
+    var html = '<option value="">-- Pilih UoM --</option>';
+    selectedValue = selectedValue || '';
+    selectDefault = (selectDefault === true);
+
+    if (inventoryId && inventoryUomData[inventoryId]) {
+        var uomList = inventoryUomData[inventoryId];
+        for (var i = 0; i < uomList.length; i++) {
+            var unit = uomList[i].unit || '';
+            var isDefault = parseInt(uomList[i].default) === 1;
+            var selected = '';
+
+            if (selectedValue !== '') {
+                selected = (unit === selectedValue) ? 'selected' : '';
+            } else if (selectDefault && isDefault) {
+                selected = 'selected';
+            }
+
+            html += '<option value="' + escAttr(unit) + '" ' + selected + '>' + escHtml(unit) + '</option>';
+        }
+    }
+
+    return html;
+}
+
+function parseUomDetailJson(value) {
+    if (!value) return [];
+    try {
+        var parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function getUomDetailSummary(value) {
+    var arr = parseUomDetailJson(value);
+    if (!arr.length) return '-- Pilih UoM Detail --';
+    return arr.map(function(item) {
+        return formatDecimal(item.qty || 0) + ' ' + (item.uom || '');
+    }).join(', ');
+}
+
+function syncUomDetailLegacyFields($row, jsonValue) {
+    var arr = parseUomDetailJson(jsonValue);
+    var firstUom = '';
+    var totalQty = 0;
+
+    if (arr.length > 0) {
+        firstUom = arr[0].uom || '';
+        arr.forEach(function(item) {
+            totalQty += parseFloat(item.qty) || 0;
+        });
+    }
+
+    $row.find('.uom-detail-legacy-uom').val(firstUom);
+    $row.find('.qty-detail-legacy-qty').val(formatDecimal(totalQty));
 }
 
 function updateRowNumbers() {
@@ -583,55 +837,64 @@ function updateRowNumbers() {
     document.getElementById('total_items_label').textContent = rows.length;
 }
 
+function initExistingRows() {
+    $('#detailBody .detail-row').each(function() {
+        var $row = $(this);
+        var inventoryId = $row.find('.inv-id').val();
+        var selectedUom = $row.find('.inv-uom-select').data('selected') || '';
+        var selectedUomPack = $row.find('.inv-uom-pack-select').data('selected') || '';
+        var uomJson = $row.find('.uom-detail-json').val() || '[]';
+
+        $row.find('.inv-uom-select').html(getUomOptions(inventoryId, selectedUom, false));
+        $row.find('.inv-uom-pack-select').html(getUomOptions(inventoryId, selectedUomPack, false));
+        syncUomDetailLegacyFields($row, uomJson);
+
+        var summary = getUomDetailSummary(uomJson);
+        $row.find('.uom-detail-btn')
+            .text(summary)
+            .toggleClass('empty', parseUomDetailJson(uomJson).length === 0);
+    });
+}
+
 function buildRow(data) {
     var idx = rowCounter++;
     data = data || {};
-    
-    return `<tr class="detail-row" data-idx="${idx}">
-        <td style="text-align:center;">
-            <input type="checkbox" class="rowCheckbox">
-        </td>
-        <td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"></td>
-        <td>
-            <input type="text" name="inventory_id[]" class="inv-id" value="${escHtml(data.inventory_id || '')}" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">
-            <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="${escHtml(data.inventory_name || '')}">
-            <input type="hidden" name="detail_id[]" value="new">
-        </td>
-        <td>
-            <input type="text" class="inv-name-display" value="${escHtml(data.inventory_name || '')}" readonly style="background:#f1f3f5;">
-        </td>
-        <td>
-            <input type="text" name="uom_shipping[]" class="inv-uom" value="${escHtml(data.uom || '')}" readonly style="background:#f1f3f5; text-align:center;">
-        </td>
-        <td>
-            <input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="${data.qty || 0}" style="text-align:center;">
-        </td>
-        <td>
-            <input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="${data.qty_pack || 0}" style="text-align:center;">
-        </td>
-        <td>
-            <input type="text" name="uom_pack_shipping[]" class="inv-uom-pack" value="${escHtml(data.uom_pack || '')}" style="text-align:center;">
-        </td>
-        <td>
-            <input type="text" name="uom_detail_shipping[]" class="inv-uom-detail" value="${escHtml(data.uom_detail || '')}" style="text-align:center;">
-        </td>
-        <td>
-            <input type="number" step="0.0001" name="adjustment_shipping[]" class="adjustment-shipping" value="${data.adjustment || 0}" style="text-align:center;">
-        </td>
-        <td>
-            <input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="${escHtml(data.remarks || '')}" placeholder="Catatan...">
-        </td>
-        <td style="text-align:center;">
-            <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)">
-                <i class="fa fa-trash"></i>
-            </button>
-        </td>
-    </tr>`;
+
+    var inventoryId = data.inventory_id || '';
+    var uomOptions = getUomOptions(inventoryId, data.uom || '', false);
+    var uomPackOptions = getUomOptions(inventoryId, data.uom_pack || '', false);
+    var uomDetailJson = data.uom_detail_json || data.uom_detail || '';
+    var uomDetailSummary = getUomDetailSummary(uomDetailJson);
+    var isUomDetailEmpty = parseUomDetailJson(uomDetailJson).length === 0;
+
+    return '<tr class="detail-row" data-idx="' + idx + '" data-order-qty="' + escAttr(data.order_qty || 0) + '" data-order-qty-pack="' + escAttr(data.order_qty_pack || 0) + '">' +
+        '<td style="text-align:center;"><input type="checkbox" class="rowCheckbox"></td>' +
+        '<td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"></td>' +
+        '<td>' +
+            '<input type="text" name="inventory_id[]" class="inv-id" value="' + escAttr(data.inventory_id || '') + '" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">' +
+            '<input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="' + escAttr(data.inventory_name || '') + '">' +
+            '<input type="hidden" name="detail_id[]" value="new">' +
+        '</td>' +
+        '<td><input type="text" class="inv-name-display" value="' + escAttr(data.inventory_name || '') + '" readonly style="background:#f1f3f5;"></td>' +
+        '<td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="' + formatDecimal(data.qty || 0) + '" style="text-align:right;"></td>' +
+        '<td><select name="uom_shipping[]" class="inv-uom-select" style="width:100%;">' + uomOptions + '</select></td>' +
+        '<td><input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="' + formatDecimal(data.qty_pack || 0) + '" style="text-align:right;"></td>' +
+        '<td><select name="uom_pack_shipping[]" class="inv-uom-pack-select" style="width:100%;">' + uomPackOptions + '</select></td>' +
+        '<td>' +
+            '<button type="button" class="uom-detail-btn ' + (isUomDetailEmpty ? 'empty' : '') + '" onclick="openUomDetailModal(this)">' + escHtml(uomDetailSummary) + '</button>' +
+            '<input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="">' +
+            '<input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="0">' +
+            '<input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="' + escAttr(uomDetailJson) + '">' +
+        '</td>' +
+        '<td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="' + escAttr(data.remarks || '') + '" placeholder="Catatan..."></td>' +
+        '<td style="text-align:center;"><button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button></td>' +
+    '</tr>';
 }
 
 function addRow(data) {
     var $newRow = $(buildRow(data || {}));
     $('#detailBody').append($newRow);
+    syncUomDetailLegacyFields($newRow, $newRow.find('.uom-detail-json').val());
     updateRowNumbers();
 }
 
@@ -649,28 +912,30 @@ function deleteSelected() {
         return;
     }
     if (confirm('Hapus baris terpilih?')) {
-        $checked.each(function() {
-            $(this).closest('tr').remove();
-        });
+        $checked.each(function() { $(this).closest('tr').remove(); });
+        $('#selectAll').prop('checked', false);
         updateRowNumbers();
     }
 }
 
-// Load inventory dari order yang dipilih
-function loadInventoryFromOrder() {
+function getSelectedOrderTolerance() {
+    var opt = document.getElementById('order_no').selectedOptions[0];
+    var tolerance = opt ? parseFloat(opt.getAttribute('data-tolerance')) : 10;
+    if (isNaN(tolerance)) tolerance = 10;
+    return tolerance;
+}
+
+function openLoadInventoryModal() {
     var orderNo = $('#order_no').val();
     if (!orderNo) {
         alert('Pilih Order No terlebih dahulu!');
         return;
     }
 
-    // Konfirmasi: akan mengganti semua item yang ada
-    var currentItems = $('#detailBody .detail-row').length;
-    if (currentItems > 0) {
-        if (!confirm('Load dari order akan mengganti semua item yang ada. Lanjutkan?')) {
-            return;
-        }
-    }
+    $('#modal_order_no').text(' - ' + orderNo);
+    $('#modalInventoryBody').html('<tr><td colspan="8" style="text-align:center; color:#777;">Loading data inventory...</td></tr>');
+    $('#modalSelectAll').prop('checked', false);
+    $('#orderInventoryModal').css('display', 'flex');
 
     $.ajax({
         url: 'modul/transaksi/get_order_inventory.php',
@@ -679,39 +944,217 @@ function loadInventoryFromOrder() {
         dataType: 'json',
         success: function(response) {
             if (response.success && response.data.length > 0) {
-                $('#detailBody').empty();
-                rowCounter = 0;
-                
-                response.data.forEach(function(item) {
-                    addRow({
-                        inventory_id: item.inventory_id,
-                        inventory_name: item.inventory_name,
-                        uom: item.uom,
-                        qty: parseFloat(item.quantity) || 0,
-                        qty_pack: parseFloat(item.quantity_pack) || 0,
-                        adjustment: 0,
-                        remarks: item.remarks || '',
-                        uom_pack: item.uom_pack || item.uom,
-                        uom_detail: item.uom_detail || item.uom
-                    });
-                });
-                
-                updateRowNumbers();
-                showNotification('Berhasil load ' + response.data.length + ' item dari order', 'success');
+                renderModalInventoryRows(response.data);
             } else {
-                alert('Tidak ada inventory ditemukan untuk order ini.');
+                $('#modalInventoryBody').html('<tr><td colspan="8" style="text-align:center; color:#777;">Tidak ada inventory ditemukan untuk order ini.</td></tr>');
             }
         },
         error: function() {
-            alert('Gagal mengambil data inventory. Silakan coba lagi.');
+            $('#modalInventoryBody').html('<tr><td colspan="8" style="text-align:center; color:#dc3545;">Gagal mengambil data inventory. Silakan coba lagi.</td></tr>');
         }
     });
 }
 
+function closeLoadInventoryModal() {
+    $('#orderInventoryModal').hide();
+}
+
+function renderModalInventoryRows(items) {
+    var html = '';
+    var tolerance = getSelectedOrderTolerance();
+
+    items.forEach(function(item) {
+        var inventoryId = item.inventory_id || '';
+        var qty = parseFloat(item.quantity) || 0;
+        var qtyPack = parseFloat(item.quantity_pack) || 0;
+        var uomPack = item.uom_pack || '';
+
+        html += '<tr class="modal-inventory-row" ' +
+            'data-inventory-id="' + escAttr(inventoryId) + '" ' +
+            'data-inventory-name="' + escAttr(item.inventory_name || '') + '" ' +
+            'data-order-qty="' + escAttr(qty) + '" ' +
+            'data-order-qty-pack="' + escAttr(qtyPack) + '" ' +
+            'data-remarks="' + escAttr(item.remarks || '') + '">' +
+            '<td style="text-align:center;"><input type="checkbox" class="modalRowCheckbox"></td>' +
+            '<td style="font-weight:bold; text-align:center;">' + escHtml(inventoryId) + '</td>' +
+            '<td>' + escHtml(item.inventory_name || '') + '</td>' +
+            '<td style="text-align:center;">' + escHtml(item.uom || '') + '</td>' +
+            '<td style="text-align:right; background:#f8f9fa;">' + formatDecimal(qty) + '</td>' +
+            '<td style="text-align:right; background:#f8f9fa;">' + formatDecimal(qtyPack) + '</td>' +
+            '<td style="text-align:center; background:#f8f9fa;">' + escHtml(uomPack) + '</td>' +
+            '<td style="text-align:center; background:#fff3cd;">' + formatDecimal(tolerance) + '%</td>' +
+        '</tr>';
+    });
+
+    $('#modalInventoryBody').html(html);
+}
+
+function addSelectedInventoryFromModal() {
+    var $checked = $('#modalInventoryBody .modalRowCheckbox:checked');
+
+    if (!$checked.length) {
+        alert('Pilih minimal 1 inventory terlebih dahulu!');
+        return;
+    }
+
+    $checked.each(function() {
+        var $r = $(this).closest('.modal-inventory-row');
+        addRow({
+            inventory_id: $r.data('inventory-id') || '',
+            inventory_name: $r.data('inventory-name') || '',
+            qty: 0,
+            uom: '',
+            qty_pack: 0,
+            uom_pack: '',
+            uom_detail_json: '',
+            order_qty: parseFloat($r.attr('data-order-qty')) || 0,
+            order_qty_pack: parseFloat($r.attr('data-order-qty-pack')) || 0,
+            remarks: $r.data('remarks') || ''
+        });
+    });
+
+    showNotification('Berhasil menambahkan ' + $checked.length + ' item. Qty silakan diisi manual.', 'success');
+    closeLoadInventoryModal();
+}
+
+var activeUomDetailRow = null;
+
+function openUomDetailModal(btn) {
+    activeUomDetailRow = $(btn).closest('.detail-row');
+    var inventoryId = activeUomDetailRow.find('.inv-id').val();
+    var current = parseUomDetailJson(activeUomDetailRow.find('.uom-detail-json').val());
+    var currentMap = {};
+
+    current.forEach(function(item) {
+        if (item.uom) currentMap[item.uom] = parseFloat(item.qty) || 0;
+    });
+
+    $('#uom_detail_modal_inventory').text(' - ' + inventoryId);
+
+    if (!inventoryId || !inventoryUomData[inventoryId] || inventoryUomData[inventoryId].length === 0) {
+        $('#uomDetailModalBody').html('<tr><td colspan="3" style="text-align:center; color:#777;">UoM inventory tidak ditemukan.</td></tr>');
+    } else {
+        var html = '';
+        inventoryUomData[inventoryId].forEach(function(item) {
+            var unit = item.unit || '';
+            var checked = Object.prototype.hasOwnProperty.call(currentMap, unit);
+            var qty = checked ? currentMap[unit] : 0;
+
+            html += '<tr>' +
+                '<td style="text-align:center;"><input type="checkbox" class="uom-detail-check" value="' + escAttr(unit) + '" ' + (checked ? 'checked' : '') + '></td>' +
+                '<td style="font-weight:bold;">' + escHtml(unit) + '</td>' +
+                '<td><input type="number" step="0.0001" class="uom-detail-qty" value="' + formatDecimal(qty) + '" style="text-align:right;"></td>' +
+            '</tr>';
+        });
+        $('#uomDetailModalBody').html(html);
+    }
+
+    $('#uomDetailModal').css('display', 'flex');
+}
+
+function closeUomDetailModal() {
+    $('#uomDetailModal').hide();
+    activeUomDetailRow = null;
+}
+
+function saveUomDetailModal() {
+    if (!activeUomDetailRow) {
+        closeUomDetailModal();
+        return;
+    }
+
+    var details = [];
+    var invalid = false;
+
+    $('#uomDetailModalBody tr').each(function() {
+        var $check = $(this).find('.uom-detail-check');
+        if (!$check.length || !$check.is(':checked')) return;
+
+        var uom = $check.val();
+        var qty = parseFloat($(this).find('.uom-detail-qty').val()) || 0;
+
+        if (qty <= 0) {
+            alert('Qty UoM Detail untuk ' + uom + ' harus lebih dari 0.');
+            invalid = true;
+            return false;
+        }
+
+        details.push({ uom: uom, qty: qty });
+    });
+
+    if (invalid) return;
+
+    var json = JSON.stringify(details);
+    activeUomDetailRow.find('.uom-detail-json').val(json);
+    syncUomDetailLegacyFields(activeUomDetailRow, json);
+
+    var summary = getUomDetailSummary(json);
+    activeUomDetailRow.find('.uom-detail-btn')
+        .text(summary)
+        .toggleClass('empty', details.length === 0);
+
+    closeUomDetailModal();
+}
+
+function validateToleranceBeforeSubmit() {
+    var tolerance = getSelectedOrderTolerance();
+    var factor = 1 + (tolerance / 100);
+    var totals = {};
+    var names = {};
+    var valid = true;
+    var message = '';
+
+    $('#detailBody .detail-row').removeClass('tolerance-warning-row');
+
+    $('#detailBody .detail-row').each(function() {
+        var $row = $(this);
+        var invId = $.trim($row.find('.inv-id').val());
+        if (!invId) return;
+
+        if (!totals[invId]) {
+            totals[invId] = {
+                qty: 0,
+                qtyPack: 0,
+                orderQty: parseFloat($row.attr('data-order-qty')) || 0,
+                orderQtyPack: parseFloat($row.attr('data-order-qty-pack')) || 0,
+                row: $row
+            };
+            names[invId] = $row.find('.inv-name-display').val() || '';
+        }
+
+        totals[invId].qty += parseFloat($row.find('.qty-shipping').val()) || 0;
+        totals[invId].qtyPack += parseFloat($row.find('.qty-pack-shipping').val()) || 0;
+    });
+
+    Object.keys(totals).forEach(function(invId) {
+        var t = totals[invId];
+        var maxQty = t.orderQty * factor;
+        var maxQtyPack = t.orderQtyPack * factor;
+
+        if (t.orderQty > 0 && t.qty > maxQty + 0.00001) {
+            valid = false;
+            t.row.addClass('tolerance-warning-row');
+            message += invId + ' - ' + names[invId] + ': Qty kirim ' + formatDecimal(t.qty) + ' melebihi batas ' + formatDecimal(maxQty) + ' (Order ' + formatDecimal(t.orderQty) + ' + tolerance ' + formatDecimal(tolerance) + '%).\n';
+        }
+
+        if (t.orderQtyPack > 0 && t.qtyPack > maxQtyPack + 0.00001) {
+            valid = false;
+            t.row.addClass('tolerance-warning-row');
+            message += invId + ' - ' + names[invId] + ': Qty Pack kirim ' + formatDecimal(t.qtyPack) + ' melebihi batas ' + formatDecimal(maxQtyPack) + ' (Order ' + formatDecimal(t.orderQtyPack) + ' + tolerance ' + formatDecimal(tolerance) + '%).\n';
+        }
+    });
+
+    if (!valid) {
+        alert('Gagal Update: jumlah kirim melebihi tolerance order.\n\n' + message);
+    }
+
+    return valid;
+}
+
 function showNotification(message, type) {
-    var notification = $('<div class="notification">' + message + '</div>');
+    var notification = $('<div class="notification">' + escHtml(message) + '</div>');
     var bgColor = type === 'success' ? '#28a745' : '#dc3545';
-    
+
     notification.css({
         position: 'fixed',
         top: '20px',
@@ -724,15 +1167,32 @@ function showNotification(message, type) {
         fontSize: '12px',
         boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
     });
-    
+
     $('body').append(notification);
-    
     setTimeout(function() {
         notification.fadeOut(500, function() { $(this).remove(); });
     }, 3000);
 }
 
-// Event handler untuk order_no change
+function convertIndoDateToSql($el) {
+    var dateValue = $el.val();
+    if (!dateValue) return;
+
+    var dateParts = dateValue.split('-');
+    if (dateParts.length === 3) {
+        var months = {
+            'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+            'Mei': '05', 'May': '05', 'Jun': '06', 'Jul': '07',
+            'Agu': '08', 'Aug': '08', 'Sep': '09', 'Okt': '10',
+            'Oct': '10', 'Nov': '11', 'Des': '12', 'Dec': '12'
+        };
+        var monthNum = months[dateParts[1]];
+        if (monthNum) {
+            $el.val(dateParts[2] + '-' + monthNum + '-' + dateParts[0]);
+        }
+    }
+}
+
 $(document).on('change', '#order_no', function() {
     var opt = this.options[this.selectedIndex];
     if (!opt || this.value === '') {
@@ -748,11 +1208,10 @@ $(document).on('change', '#order_no', function() {
     $('#shipment_location').val(opt.getAttribute('data-shipment-location') || '');
 });
 
-// Select2 initialization
 $(document).ready(function() {
-    flatpickr(".datepicker", {
-        dateFormat: "d-M-Y",
-        altFormat: "d-M-Y",
+    flatpickr('.datepicker', {
+        dateFormat: 'd-M-Y',
+        altFormat: 'd-M-Y',
         allowInput: true,
         disableMobile: true
     });
@@ -763,11 +1222,25 @@ $(document).ready(function() {
         allowClear: true
     });
 
+    initExistingRows();
+    updateRowNumbers();
+
     $('#selectAll').on('change', function() {
         $('.rowCheckbox').prop('checked', this.checked);
     });
 
-    // Form submit validation
+    $('#modalSelectAll').on('change', function() {
+        $('#modalInventoryBody .modalRowCheckbox').prop('checked', this.checked);
+    });
+
+    $('#orderInventoryModal').on('click', function(e) {
+        if (e.target === this) closeLoadInventoryModal();
+    });
+
+    $('#uomDetailModal').on('click', function(e) {
+        if (e.target === this) closeUomDetailModal();
+    });
+
     $('#formShipping').on('submit', function(e) {
         if ($('#detailBody .detail-row').length === 0) {
             e.preventDefault();
@@ -775,24 +1248,54 @@ $(document).ready(function() {
             return false;
         }
 
-        // Konversi tanggal ke format YYYY-MM-DD
-        $('input[name="shipping_date"], input[name="nota_date"]').each(function() {
-            var dateValue = $(this).val();
-            if (dateValue) {
-                var dateParts = dateValue.split('-');
-                if (dateParts.length === 3) {
-                    var months = {
-                        'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-                        'Mei': '05', 'May': '05', 'Jun': '06', 'Jul': '07',
-                        'Agu': '08', 'Aug': '08', 'Sep': '09', 'Okt': '10',
-                        'Oct': '10', 'Nov': '11', 'Des': '12', 'Dec': '12'
-                    };
-                    var monthNum = months[dateParts[1]];
-                    if (monthNum) {
-                        $(this).val(dateParts[2] + '-' + monthNum + '-' + dateParts[0]);
-                    }
-                }
+        var validRows = true;
+        $('#detailBody .detail-row').each(function(i) {
+            var invId = $.trim($(this).find('.inv-id').val());
+            var qty = parseFloat($(this).find('.qty-shipping').val()) || 0;
+            var qtyPack = parseFloat($(this).find('.qty-pack-shipping').val()) || 0;
+            var uom = $(this).find('.inv-uom-select').val();
+            var uomPack = $(this).find('.inv-uom-pack-select').val();
+            var uomDetailArr = parseUomDetailJson($(this).find('.uom-detail-json').val());
+
+            if (invId === '') {
+                alert('Baris ' + (i + 1) + ': Inventory ID kosong.');
+                validRows = false;
+                return false;
             }
+            if (qty <= 0 && qtyPack <= 0) {
+                alert('Baris ' + (i + 1) + ': Qty atau Qty Pack harus lebih dari 0.');
+                validRows = false;
+                return false;
+            }
+            if (uom === '') {
+                alert('Baris ' + (i + 1) + ': UoM wajib dipilih.');
+                validRows = false;
+                return false;
+            }
+            if (uomPack === '') {
+                alert('Baris ' + (i + 1) + ': UoM Pack wajib dipilih.');
+                validRows = false;
+                return false;
+            }
+            if (uomDetailArr.length === 0) {
+                alert('Baris ' + (i + 1) + ': UoM Detail wajib dipilih minimal 1.');
+                validRows = false;
+                return false;
+            }
+        });
+
+        if (!validRows) {
+            e.preventDefault();
+            return false;
+        }
+
+        if (!validateToleranceBeforeSubmit()) {
+            e.preventDefault();
+            return false;
+        }
+
+        $('input[name="shipping_date"], input[name="nota_date"]').each(function() {
+            convertIndoDateToSql($(this));
         });
 
         $('#btnSave').prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Updating...');
