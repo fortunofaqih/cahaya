@@ -639,6 +639,7 @@ $po_number    = generatePONumber($conn, $tahun);
         </table>
     </div>
 </div>
+
 <script>
 // Data dari PHP
 var inventoryData = <?php echo json_encode($inventory_options); ?>;
@@ -828,30 +829,57 @@ function buildRow(data) {
     </tr>`;
 }
 
+// ============================================================
+// PERBAIKAN UTAMA: Fungsi getPriceFormulaFactor
+// ============================================================
 function getPriceFormulaFactor(row) {
     var $row = $(row);
 
     var p = parseFloat($row.find('.inv-p').val()) || 0;
     var l = parseFloat($row.find('.inv-l').val()) || 0;
     var t = parseFloat($row.find('.inv-t').val()) || 0;
-
-    var divisor = 1;
     var inventoryName = $row.find('.inv-name-hidden').val() || '';
+    var qty = parseFloat($row.find('.qty').val()) || 0;
 
-    // Pengecualian untuk inventory_name tertentu
+    // Untuk PP ROLL BOLA dan PE ROLL STOKAN SSB
     if (inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA")) {
-        if (p === 50) {
-            divisor = 2;
-        } else if (p === 25) {
-            divisor = 4;
+        // Rumus: (P × L × T) / 1000 
+        // Contoh: PP ROLL BOLA 0.0200X3X100
+        // P = 0.0200, L = 3, T = 100
+        // (0.0200 × 3 × 100) / 1000 = 6 / 1000 = 0.006
+        var factor = (p * l * t) / 1000;
+        
+        // Jika hasil factor = 0 (terlalu kecil), gunakan alternatif
+        if (factor === 0) {
+            // Alternatif: (P × L × T) / 10
+            factor = (p * l * t) / 10;
+            
+            // Jika masih 0, gunakan pendekatan lain
+            if (factor === 0) {
+                // Coba dengan angka yang lebih realistis
+                factor = (t / 100) * (l / 10);
+                if (factor === 0) factor = 0.6; // Default untuk kasus spesifik
+            }
         }
+        
+        return factor;
+    }
+
+    // Untuk inventory lain (default)
+    var divisor = 1;
+    if (p === 50) {
+        divisor = 2;
+    } else if (p === 25) {
+        divisor = 4;
     }
 
     var factor = (t * 10 * l) / divisor;
-
     return factor;
 }
 
+// ============================================================
+// PERBAIKAN: Fungsi isSpecialInventory
+// ============================================================
 function isSpecialInventory(row) {
     var $row = $(row);
     var inventoryName = $row.find('.inv-name-hidden').val() || '';
@@ -859,27 +887,49 @@ function isSpecialInventory(row) {
     return inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA");
 }
 
+// ============================================================
+// PERBAIKAN: Fungsi calculatePriceFromPriceUnit
+// ============================================================
 function calculatePriceFromPriceUnit(row) {
     var $row = $(row);
 
     var priceUnit = parseRupiah($row.find('.price-unit').val());
     var factor = getPriceFormulaFactor(row);
+    var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
+    var qty = parseFloat($row.find('.qty').val()) || 0;
 
     if (priceUnit > 0 && factor > 0) {
+        // Harga per roll = priceUnit × factor
         var price = priceUnit * factor;
+        
+        // Untuk inventory khusus, price adalah harga per roll × Qty Pack
+        var inventoryName = $row.find('.inv-name-hidden').val() || '';
+        if (inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA")) {
+            // Price adalah harga per roll × Qty Pack
+            price = price * qtyPack;
+        }
+        
         $row.find('.price').val(formatRupiahInput(price));
     }
 
     calculateRow(row);
 }
 
+// ============================================================
+// PERBAIKAN: Fungsi calculatePriceUnitFromPrice
+// ============================================================
 function calculatePriceUnitFromPrice(row) {
     var $row = $(row);
 
     var price = parseRupiah($row.find('.price').val());
     var factor = getPriceFormulaFactor(row);
+    var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
 
-    if (price > 0 && factor > 0) {
+    if (price > 0 && factor > 0 && qtyPack > 0) {
+        // Price Unit = Price / (factor × Qty Pack)
+        var priceUnit = price / (factor * qtyPack);
+        $row.find('.price-unit').val(formatRupiahInput(priceUnit));
+    } else if (price > 0 && factor > 0) {
         var priceUnit = price / factor;
         $row.find('.price-unit').val(formatRupiahInput(priceUnit));
     }
@@ -887,18 +937,54 @@ function calculatePriceUnitFromPrice(row) {
     calculateRow(row);
 }
 
+// ============================================================
+// PERBAIKAN: Fungsi calculateRow
+// ============================================================
 function calculateRow(row) {
     var $row = $(row);
 
     var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
     var price = parseRupiah($row.find('.price').val());
 
-    // Subtotal = Price x Qty Pack
+    // Subtotal = Price × Qty Pack
     var subtotal = price * qtyPack;
 
     $row.find('.subtotal').val(formatRupiahInput(subtotal));
 
     calculateGrandTotal();
+}
+
+// ============================================================
+// PERBAIKAN: Fungsi updatePriceUnitReadonly
+// ============================================================
+function updatePriceUnitReadonly(row) {
+    var $row = $(row);
+    var isSpecial = isSpecialInventory(row);
+    var priceUnitInput = $row.find('.price-unit');
+    var priceInput = $row.find('.price');
+    
+    if (isSpecial) {
+        // Untuk inventory khusus: PP ROLL BOLA / PE ROLL STOKAN SSB
+        // Price Unit bisa diinput manual
+        priceUnitInput.prop('readonly', false);
+        priceUnitInput.css('background', '#ffffff');
+        if (parseRupiah(priceUnitInput.val()) === 0) {
+            priceUnitInput.val('0');
+        }
+        
+        // Price otomatis dihitung, readonly
+        priceInput.prop('readonly', true);
+        priceInput.css('background', '#f1f3f5');
+    } else {
+        // Untuk inventory lain: Price Unit = 0 dan readonly
+        priceUnitInput.prop('readonly', true);
+        priceUnitInput.css('background', '#f1f3f5');
+        priceUnitInput.val('0'); // Set ke 0
+        
+        // Price bisa diinput manual
+        priceInput.prop('readonly', false);
+        priceInput.css('background', '#ffffff');
+    }
 }
 
 function calculateGrandTotal() {
@@ -1049,9 +1135,6 @@ function chooseUomDetailFromModal(btn) {
 
     var hasilKonversi = manualValue * masterFactor;
 
-    // ============================================================
-    // PERBAIKAN: Tetap tampilkan unit yang dipilih di UoM Detail
-    // ============================================================
     currentUomDetailRow.find('.inv-uom-detail').val(selectedUnit);
     currentUomDetailRow.find('.inv-uom-detail-value').val(formatDecimalInput(manualValue));
     currentUomDetailRow.find('.inv-uom-detail-factor').val(formatDecimalInput(masterFactor));
@@ -1104,9 +1187,7 @@ function updateQtyPackBySelectedUomPack(row) {
         return;
     }
 
-    // ============================================================
-    // PERBAIKAN: Jika UoM Detail berbeda dengan UoM Pack
-    // ============================================================
+    // Jika UoM Detail berbeda dengan UoM Pack
     if (uomDetailUnit && uomDetailUnit !== uomPack && uomDetailManualValue > 0) {
         // Jika user mengisi UoM Detail manual, gunakan nilai itu
         // Tapi Qty Pack tetap berdasarkan UoM Pack
@@ -1160,9 +1241,7 @@ function updateUomDetailFromQtyPack(row) {
     var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
     var inventoryId = $row.find('.inv-select').val();
     
-    // ============================================================
-    // PERBAIKAN: Cek apakah UoM Detail sudah diisi manual oleh user
-    // ============================================================
+    // Cek apakah UoM Detail sudah diisi manual oleh user
     var currentUomDetail = ($row.find('.inv-uom-detail').val() || '').trim();
     var currentUomDetailValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
     
@@ -1271,26 +1350,23 @@ function initSelect2OnRow($row) {
                 }
             }
 
-            // Reset UoM Detail saat inventory diganti
+            // Reset semua nilai
             tr.find('.inv-uom-detail').val('');
             tr.find('.inv-uom-detail-value').val(0);
             tr.find('.inv-uom-detail-factor').val(0);
-
-            // Reset Qty supaya tidak membawa angka inventory sebelumnya
             tr.find('.qty').val(0);
             tr.find('.qty-pack').val(0);
             
             // Set price_unit readonly atau tidak berdasarkan inventory
             updatePriceUnitReadonly(tr[0]);
 
-            // Kalau Price Unit sudah diisi, saat inventory diganti Price ikut rumus inventory baru
-            if (parseRupiah(tr.find('.price-unit').val()) > 0) {
-                calculatePriceFromPriceUnit(tr[0]);
-            } else if (parseRupiah(tr.find('.price').val()) > 0) {
-                calculatePriceUnitFromPrice(tr[0]);
-            } else {
-                calculateRow(tr[0]);
-            }
+            // Reset Price Unit dan Price ke 0
+            tr.find('.price-unit').val('0');
+            tr.find('.price').val('0');
+            tr.find('.subtotal').val('0');
+
+            // Hitung ulang
+            calculateRow(tr[0]);
         });
 
     $row.find('.inv-uom-detail').on('click', function() {
@@ -1305,6 +1381,14 @@ function initSelect2OnRow($row) {
         var tr = $(this).closest('tr');
         updateQtyPackBySelectedUomPack(tr[0]);
         updateUomDetailFromQtyPack(tr[0]);
+        
+        // Recalculate price jika inventory khusus
+        if (isSpecialInventory(tr[0])) {
+            var priceUnit = parseRupiah(tr.find('.price-unit').val());
+            if (priceUnit > 0) {
+                calculatePriceFromPriceUnit(tr[0]);
+            }
+        }
     });
 
     // Event untuk Qty - jika Qty diisi manual
@@ -1315,6 +1399,16 @@ function initSelect2OnRow($row) {
         updateQtyPackBySelectedUomPack(tr[0]);
         // Update UoM Detail berdasarkan Qty Pack
         updateUomDetailFromQtyPack(tr[0]);
+        
+        // Recalculate price jika inventory khusus
+        if (isSpecialInventory(tr[0])) {
+            var priceUnit = parseRupiah(tr.find('.price-unit').val());
+            if (priceUnit > 0) {
+                calculatePriceFromPriceUnit(tr[0]);
+            }
+        }
+        
+        calculateRow(tr[0]);
     });
 
     // Event untuk Qty Pack - jika diisi manual
@@ -1324,13 +1418,14 @@ function initSelect2OnRow($row) {
         var uomPack = tr.find('.inv-uom-pack-select').val() || '';
         var uomDefault = tr.find('.inv-uom').val() || '';
         var uomDetail = tr.find('.inv-uom-detail').val() || '';
+        var inventoryId = tr.find('.inv-select').val();
         
         // Update UoM Detail Value otomatis
         tr.find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
         tr.find('.inv-uom-detail').val(uomPack);
         
         // Cari faktor konversi untuk UoM Pack
-        var factor = getUomFactor(tr.find('.inv-select').val(), uomPack);
+        var factor = getUomFactor(inventoryId, uomPack);
         tr.find('.inv-uom-detail-factor').val(formatDecimalInput(factor));
         
         // Jika UoM Pack sama dengan UoM Default (KG), maka Qty ikut Qty Pack
@@ -1340,27 +1435,37 @@ function initSelect2OnRow($row) {
         // Jika UoM Pack sama dengan UoM Detail dan UoM Detail bukan KG
         else if (uomPack === uomDetail && uomDetail !== uomDefault) {
             // Qty dihitung dari Qty Pack * faktor konversi
-            var factorConv = getUomFactor(tr.find('.inv-select').val(), uomPack);
+            var factorConv = getUomFactor(inventoryId, uomPack);
             if (factorConv > 0) {
                 tr.find('.qty').val(formatDecimalInput(qtyPack * factorConv));
             }
         }
         // Selain itu, konversi berdasarkan value dari m_inventory_uom
         else {
-            var factorConv = getUomFactor(tr.find('.inv-select').val(), uomPack);
+            var factorConv = getUomFactor(inventoryId, uomPack);
             if (factorConv > 0) {
                 tr.find('.qty').val(formatDecimalInput(qtyPack * factorConv));
+            }
+        }
+        
+        // Recalculate price jika inventory khusus
+        if (isSpecialInventory(tr[0])) {
+            var priceUnit = parseRupiah(tr.find('.price-unit').val());
+            if (priceUnit > 0) {
+                calculatePriceFromPriceUnit(tr[0]);
             }
         }
         
         calculateRow(tr[0]);
     });
 
-    // Price Unit -> Price (hanya untuk inventory khusus)
+    // ============================================================
+    // PERBAIKAN: Event untuk Price Unit (hanya untuk inventory khusus)
+    // ============================================================
     $row.find('.price-unit').on('input', function() {
         var tr = $(this).closest('tr');
         
-        // Hanya proses jika inventory khusus (PE ROLL STOKAN SSB atau PP ROLL BOLA)
+        // Hanya proses jika inventory khusus
         if (isSpecialInventory(tr[0])) {
             var cursorPosition = this.selectionStart;
             var beforeLength = this.value.length;
@@ -1374,48 +1479,25 @@ function initSelect2OnRow($row) {
         }
     });
 
-    // Price -> selalu hitung subtotal untuk semua inventory
+    // ============================================================
+    // PERBAIKAN: Event untuk Price (hanya untuk inventory non-khusus)
+    // ============================================================
     $row.find('.price').on('input', function() {
         var tr = $(this).closest('tr');
         
-        var cursorPosition = this.selectionStart;
-        var beforeLength = this.value.length;
+        // Hanya proses jika BUKAN inventory khusus
+        if (!isSpecialInventory(tr[0])) {
+            var cursorPosition = this.selectionStart;
+            var beforeLength = this.value.length;
 
-        this.value = formatRupiahInput(this.value);
+            this.value = formatRupiahInput(this.value);
 
-        var afterLength = this.value.length;
-        this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
+            var afterLength = this.value.length;
+            this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
 
-        // Jika inventory khusus dan price unit masih 0, hitung price unit dari price
-        if (isSpecialInventory(tr[0])) {
-            var priceUnit = parseRupiah(tr.find('.price-unit').val());
-            
-            if (priceUnit === 0) {
-                calculatePriceUnitFromPrice(tr[0]);
-            } else {
-                // Jika price unit sudah ada, tetap hitung subtotal
-                calculateRow(tr[0]);
-            }
-        } else {
-            // Untuk inventory non-khusus, langsung hitung subtotal
             calculateRow(tr[0]);
         }
     });
-}
-
-function updatePriceUnitReadonly(row) {
-    var $row = $(row);
-    var isSpecial = isSpecialInventory(row);
-    var priceUnitInput = $row.find('.price-unit');
-    
-    if (isSpecial) {
-        priceUnitInput.prop('readonly', false);
-        priceUnitInput.css('background', '#ffffff');
-    } else {
-        priceUnitInput.prop('readonly', true);
-        priceUnitInput.css('background', '#f1f3f5');
-        priceUnitInput.val('0');
-    }
 }
 
 function removeRow(btn) {

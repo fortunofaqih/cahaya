@@ -1238,7 +1238,7 @@ $f_so_safe = mysqli_real_escape_string($conn, $f_so);
                     <tr><td><b>Standar Pengecekan</b></td><td><input type="text" id="standar_cek_rol" class="form-control form-control-sm" placeholder="Standar cek"></td></tr>
                     <tr><td><b>Gramatur Asli</b></td><td><input type="number" step="0.0001" id="gramatur_asli_rol" class="form-control form-control-sm" value="0"></td></tr>
                     <tr><td><b>Tebal Asli</b></td><td><input type="number" step="0.0001" id="tebal_asli_rol" class="form-control form-control-sm" value="0"></td></tr>
-                    <tr><td><b>Spesifikasi Roll</b></td><td><input type="text" id="spec_rol" class="form-control form-control-sm" placeholder="Spesifikasi roll"></td></tr>
+                    <tr><td><b>Spesifikasi Roll</b></td><td><input type="text" id="spec_rol" class="form-control form-control-sm bg-light" placeholder="Spesifikasi roll" readonly></td></tr>
                     <tr><td><b>Gramatur Roll</b></td><td><input type="text" id="gramatur_rol" class="form-control form-control-sm" value=""></td></tr>
                     <tr><td><b>Tebal Roll</b></td><td><input type="text" id="tebal_rol" class="form-control form-control-sm" value=""></td></tr>
                     <tr><td><b>Keterangan Roll</b></td><td><textarea id="keterangan_rol" rows="2" class="form-control form-control-sm" placeholder="Keterangan roll"></textarea></td></tr>
@@ -1459,8 +1459,19 @@ $(document).ready(function() {
         refreshRollCalculatedFields();
     });
 
-    $(document).on('input change', '#spec_rol, #gramatur_asli_rol, #tebal_asli_rol', function() {
-        updateRollSpecDerivedFields();
+    // Spesifikasi Roll sekarang DIBENTUK dari input Gramatur/Tebal (+) dan (-), bukan sebaliknya.
+    $(document).on('input change', '#gramatur_plus_rol, #gramatur_min_rol, #tebal_plus_rol, #tebal_minus_rol', function() {
+        updateRollSpecFromToleranceInputs();
+    });
+
+    $(document).on('input change', '#gramatur_asli_rol, #tebal_asli_rol', function() {
+        updateRollToleranceRangesFromInputs();
+    });
+
+    // Jika user/pengguna lama masih mengisi Spesifikasi Roll manual, parse sekali untuk kompatibilitas data lama.
+    $(document).on('blur', '#spec_rol', function() {
+        syncRollToleranceInputsFromSpecText(true);
+        updateRollSpecFromToleranceInputs();
     });
 
     // Event listener untuk form submit - update hidden fields sebelum submit
@@ -1477,6 +1488,9 @@ $('#sopForm').on('submit', function() {
         isSubmitting = false;
         return false;
     }
+
+    // Pastikan Spec Roll terakhir sudah mengikuti input Gramatur/Tebal (+/-)
+    updateRollSpecFromToleranceInputs();
 
     // Update semua hidden fields dengan nilai dari specification tabs
     $('input[name^="items["]').each(function() {
@@ -2102,6 +2116,48 @@ function getDefaultSpecRolText() {
     return 'Gram: +/-%  Tebal: +/-%';
 }
 
+function formatToleranceNumber(value) {
+    let num = parseDecimalJS(value);
+
+    if (!isFinite(num)) {
+        return '0';
+    }
+
+    if (Math.abs(num - Math.round(num)) < 0.000001) {
+        return String(Math.round(num));
+    }
+
+    return String(parseFloat(num.toFixed(4))).replace(/\.0+$/, '');
+}
+
+function formatTolerancePart(minusValue, plusValue) {
+    let minusNum = parseDecimalJS(minusValue);
+    let plusNum = parseDecimalJS(plusValue);
+
+    // Kalau belum diisi, tetap tampil sebagai template, bukan 0%.
+    if (minusNum <= 0 && plusNum <= 0) {
+        return '+/-%';
+    }
+
+    // Jika plus dan minus sama, pakai format singkat: +/-3%
+    if (Math.abs(minusNum - plusNum) < 0.000001) {
+        return '+/-' + formatToleranceNumber(plusNum) + '%';
+    }
+
+    // Jika berbeda, pakai format range tidak simetris: -7+3%
+    return '-' + formatToleranceNumber(minusNum) + '+' + formatToleranceNumber(plusNum) + '%';
+}
+
+function buildRollSpecTextFromToleranceInputs() {
+    let gramMinus = $('#gramatur_min_rol').val();
+    let gramPlus = $('#gramatur_plus_rol').val();
+    let tebalMinus = $('#tebal_minus_rol').val();
+    let tebalPlus = $('#tebal_plus_rol').val();
+
+    return 'Gram: ' + formatTolerancePart(gramMinus, gramPlus) +
+           '  Tebal: ' + formatTolerancePart(tebalMinus, tebalPlus);
+}
+
 function parseRollSpecPercent(specText) {
     let spec = String(specText || '').toUpperCase().replace(/,/g, '.');
     let result = {
@@ -2111,8 +2167,11 @@ function parseRollSpecPercent(specText) {
         tebalMinus: 0
     };
 
+    // Format yang didukung:
+    // Gram: -7+3% / Gram: -7 +3% / Gram: -7 + 3%
+    // Gram: +/-3%
     let gramRange = spec.match(/GRAM\s*:?\s*-\s*(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)\s*%?/i);
-    let gramPlusMinus = spec.match(/GRAM\s*:?\s*\+\/-\s*(\d+(?:\.\d+)?)\s*%?/i);
+    let gramPlusMinus = spec.match(/GRAM\s*:?\s*\+\/\-\s*(\d+(?:\.\d+)?)\s*%?/i);
 
     if (gramRange) {
         result.gramMinus = parseFloat(gramRange[1]) || 0;
@@ -2123,7 +2182,7 @@ function parseRollSpecPercent(specText) {
     }
 
     let tebalRange = spec.match(/TEBAL\s*:?\s*-\s*(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)\s*%?/i);
-    let tebalPlusMinus = spec.match(/TEBAL\s*:?\s*\+\/-\s*(\d+(?:\.\d+)?)\s*%?/i);
+    let tebalPlusMinus = spec.match(/TEBAL\s*:?\s*\+\/\-\s*(\d+(?:\.\d+)?)\s*%?/i);
 
     if (tebalRange) {
         result.tebalMinus = parseFloat(tebalRange[1]) || 0;
@@ -2134,6 +2193,28 @@ function parseRollSpecPercent(specText) {
     }
 
     return result;
+}
+
+function hasRollToleranceInputValue() {
+    return parseDecimalJS($('#gramatur_plus_rol').val()) > 0 ||
+           parseDecimalJS($('#gramatur_min_rol').val()) > 0 ||
+           parseDecimalJS($('#tebal_plus_rol').val()) > 0 ||
+           parseDecimalJS($('#tebal_minus_rol').val()) > 0;
+}
+
+function syncRollToleranceInputsFromSpecText(force = false) {
+    if (!force && hasRollToleranceInputValue()) {
+        return;
+    }
+
+    let percent = parseRollSpecPercent($('#spec_rol').val());
+
+    if (percent.gramPlus > 0 || percent.gramMinus > 0 || percent.tebalPlus > 0 || percent.tebalMinus > 0) {
+        $('#gramatur_plus_rol').val(percent.gramPlus || 0);
+        $('#gramatur_min_rol').val(percent.gramMinus || 0);
+        $('#tebal_plus_rol').val(percent.tebalPlus || 0);
+        $('#tebal_minus_rol').val(percent.tebalMinus || 0);
+    }
 }
 
 function calculateToleranceRange(baseValue, minusPercent, plusPercent) {
@@ -2149,16 +2230,25 @@ function calculateToleranceRange(baseValue, minusPercent, plusPercent) {
     return formatNumber2(minValue) + ' -- ' + formatNumber2(maxValue);
 }
 
+function updateRollToleranceRangesFromInputs() {
+    let gramMinus = $('#gramatur_min_rol').val();
+    let gramPlus = $('#gramatur_plus_rol').val();
+    let tebalMinus = $('#tebal_minus_rol').val();
+    let tebalPlus = $('#tebal_plus_rol').val();
+
+    $('#gramatur_rol').val(calculateToleranceRange($('#gramatur_asli_rol').val(), gramMinus, gramPlus));
+    $('#tebal_rol').val(calculateToleranceRange($('#tebal_asli_rol').val(), tebalMinus, tebalPlus));
+}
+
+function updateRollSpecFromToleranceInputs() {
+    $('#spec_rol').val(buildRollSpecTextFromToleranceInputs());
+    updateRollToleranceRangesFromInputs();
+}
+
+// Nama lama tetap dipertahankan agar pemanggilan lama tidak error.
 function updateRollSpecDerivedFields() {
-    let percent = parseRollSpecPercent($('#spec_rol').val());
-
-    $('#gramatur_plus_rol').val(percent.gramPlus || 0);
-    $('#gramatur_min_rol').val(percent.gramMinus || 0);
-    $('#tebal_plus_rol').val(percent.tebalPlus || 0);
-    $('#tebal_minus_rol').val(percent.tebalMinus || 0);
-
-    $('#gramatur_rol').val(calculateToleranceRange($('#gramatur_asli_rol').val(), percent.gramMinus, percent.gramPlus));
-    $('#tebal_rol').val(calculateToleranceRange($('#tebal_asli_rol').val(), percent.tebalMinus, percent.tebalPlus));
+    syncRollToleranceInputsFromSpecText(false);
+    updateRollSpecFromToleranceInputs();
 }
 
 function refreshRollCalculatedFields() {
@@ -2456,15 +2546,16 @@ function copySOP(sopId) {
                     
                     // Isi data items dan specifications
                     let items = response.items;
+                    let bomHtml = '';
                     items.forEach((item, index) => {
-                        let bomHtml = renderBOMRowForCopy(item, index);
-                        $('#formItemGrid tbody').html(bomHtml);
+                        bomHtml += renderBOMRowForCopy(item, index);
                         
                         if (index === 0) {
                             populatePotongSpec(item);
                             populateRollSpec(item);
                         }
                     });
+                    $('#formItemGrid tbody').html(bomHtml);
                     
                     // Tampilkan pesan sukses dengan instruksi tambahan
                     alert("Data SOP berhasil disalin. Silakan pilih Sales Order baru sebelum menyimpan.");
@@ -2753,7 +2844,7 @@ function populateRollSpec(item) {
             <td><b>Tebal Asli</b></td><td><input type="number" step="0.0001" id="tebal_asli_rol" class="form-control form-control-sm" value="${item.tebal_asli_rol || 0}"></td>
         </tr>
         <tr>
-            <td><b>Spesifikasi Roll</b></td><td><input type="text" id="spec_rol" class="form-control form-control-sm" value="${item.spec_rol || ''}"></td>
+            <td><b>Spesifikasi Roll</b></td><td><input type="text" id="spec_rol" class="form-control form-control-sm bg-light" value="${item.spec_rol || ''}" readonly></td>
         </tr>
         <tr>
             <td><b>Gramatur Roll</b></td><td><input type="text" id="gramatur_rol" class="form-control form-control-sm" value="${item.gramatur_rol || ''}"></td>
@@ -2788,6 +2879,13 @@ function populateRollSpec(item) {
     `;
     
     $('#roll_tbody').html(rollHtml);
+
+    // Kompatibilitas edit data lama: jika kolom plus/minus masih 0 tapi spec_rol lama berisi teks, ambil angka dari teks tersebut.
+    syncRollToleranceInputsFromSpecText(false);
+
+    // Setelah edit/load, spec_rol dan range Gramatur/Tebal selalu mengikuti input plus/minus.
+    updateRollSpecFromToleranceInputs();
+
     console.log("Roll specs populated");
 }
 

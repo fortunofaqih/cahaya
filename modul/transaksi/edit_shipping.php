@@ -72,6 +72,9 @@ $order_rs = mysqli_query($conn, "
 // Ambil semua data gudang
 $gudang_rs = mysqli_query($conn, "SELECT gudang_id, name FROM m_gudang ORDER BY name ASC");
 
+// Default gudang: GUDANG BARANG JADI 1 (FC-02)
+$default_gudang_id = 'FC-02';
+
 // Fungsi format tanggal
 function formatDateIndonesian($date) {
     if (empty($date) || $date == '0000-00-00') {
@@ -398,56 +401,61 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
             </div>
         </div>
 
-        <!-- PANEL 4: Transporter & Shipping Location -->
-        <div class="panel-row">
-            <div class="shipping-panel">
-                <div class="shipping-panel-header"><i class="fa-solid fa-truck-fast"></i> Transporter Information</div>
-                <div class="shipping-panel-body">
-                    <div class="ff">
-                        <label>Transporter</label>
-                        <input type="text" name="transporter" value="<?= htmlspecialchars($header['transporter']) ?>" placeholder="Nama Transporter...">
-                    </div>
-                    <div class="ff">
-                        <label>Driver Name</label>
-                        <input type="text" name="driver_name" value="<?= htmlspecialchars($header['driver_name']) ?>" placeholder="Nama Supir...">
-                    </div>
-                    <div class="ff">
-                        <label>Truck No</label>
-                        <input type="text" name="truck_no" value="<?= htmlspecialchars($header['truck_no']) ?>" placeholder="Nomor Truk...">
-                    </div>
-                </div>
+      <!-- PANEL 4: Transporter & Shipping Location -->
+<div class="panel-row">
+    <div class="shipping-panel">
+        <div class="shipping-panel-header"><i class="fa-solid fa-truck-fast"></i> Transporter Information</div>
+        <div class="shipping-panel-body">
+            <div class="ff">
+                <label>Transporter</label>
+                <input type="text" name="transporter" value="<?= htmlspecialchars($header['transporter']) ?>" placeholder="Nama Transporter...">
             </div>
-
-            <div class="shipping-panel">
-                <div class="shipping-panel-header"><i class="fa-solid fa-warehouse"></i> Shipping Location</div>
-                <div class="shipping-panel-body">
-                    <div class="ff">
-                        <label>Shipment Location</label>
-                        <textarea name="shipment_location" id="shipment_location" rows="2" placeholder="Alamat pengiriman..."><?= htmlspecialchars($header['shipment_location']) ?></textarea>
-                    </div>
-                    <div class="ff">
-                        <label>Gudang</label>
-                        <select name="gudang_id" id="gudang_id">
-                            <option value="">-- Pilih Gudang --</option>
-                            <?php 
-                            mysqli_data_seek($gudang_rs, 0);
-                            while ($g = mysqli_fetch_assoc($gudang_rs)): 
-                                $selected = ($g['gudang_id'] == $header['gudang_id']) ? 'selected' : '';
-                            ?>
-                                <option value="<?= htmlspecialchars($g['gudang_id']) ?>" <?= $selected ?>>
-                                    <?= htmlspecialchars($g['name']) ?>
-                                </option>
-                            <?php endwhile; ?>
-                        </select>
-                    </div>
-                    <div class="ff">
-                        <label>Remarks Shipping</label>
-                        <textarea name="remarks_shipping" rows="1" placeholder="Catatan pengiriman..."><?= htmlspecialchars($header['remarks_shipping']) ?></textarea>
-                    </div>
-                </div>
+            <div class="ff">
+                <label>Driver Name</label>
+                <input type="text" name="driver_name" value="<?= htmlspecialchars($header['driver_name']) ?>" placeholder="Nama Supir...">
+            </div>
+            <div class="ff">
+                <label>Truck No</label>
+                <input type="text" name="truck_no" value="<?= htmlspecialchars($header['truck_no']) ?>" placeholder="Nomor Truk...">
             </div>
         </div>
+    </div>
 
+    <div class="shipping-panel">
+        <div class="shipping-panel-header"><i class="fa-solid fa-warehouse"></i> Shipping Location</div>
+        <div class="shipping-panel-body">
+            <div class="ff">
+                <label>Shipment Location</label>
+                <textarea name="shipment_location" id="shipment_location" rows="2" placeholder="Alamat pengiriman..."><?= htmlspecialchars($header['shipment_location']) ?></textarea>
+            </div>
+            <div class="ff">
+                <label>Gudang <span class="required">*</span></label>
+                <select name="gudang_id" id="gudang_id" required>
+                    <option value="">-- Pilih Gudang --</option>
+                    <?php 
+                    mysqli_data_seek($gudang_rs, 0);
+                    while ($g = mysqli_fetch_assoc($gudang_rs)): 
+                        // Jika ada nilai di database, gunakan nilai tersebut
+                        // Jika tidak ada (NULL/kosong), gunakan default FC-02
+                        if (!empty($header['gudang_id'])) {
+                            $selected = ($g['gudang_id'] == $header['gudang_id']) ? 'selected' : '';
+                        } else {
+                            $selected = ($g['gudang_id'] == $default_gudang_id) ? 'selected' : '';
+                        }
+                    ?>
+                        <option value="<?= htmlspecialchars($g['gudang_id']) ?>" <?= $selected ?>>
+                            <?= htmlspecialchars($g['name']) ?>
+                        </option>
+                    <?php endwhile; ?>
+                </select>
+            </div>
+            <div class="ff">
+                <label>Remarks Shipping</label>
+                <textarea name="remarks_shipping" rows="1" placeholder="Catatan pengiriman..."><?= htmlspecialchars($header['remarks_shipping']) ?></textarea>
+            </div>
+        </div>
+    </div>
+</div>
         <!-- PANEL 5: Inventory Details -->
         <div class="shipping-panel-full">
             <div class="shipping-panel-header">

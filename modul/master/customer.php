@@ -45,14 +45,45 @@ function postTextNullable($conn, $key) {
 }
 
 function currentMonthYearLabel() {
-    return date('M-Y'); // contoh: Jun-2026
+    return date('M-Y'); // contoh tampilan: Jun-2026
 }
 
-function monthYearOrNullSql($value) {
+function currentMonthYearSqlDate() {
+    return date('Y-m-01'); // contoh simpan ke kolom DATE: 2026-06-01
+}
+
+function monthYearToSqlDateValue($value) {
+    $value = trim((string)($value ?? ''));
+    if ($value === '') {
+        return null;
+    }
+
+    // Jika dari database / input sudah format DATE: 2026-06-01 atau 2026-06-26
+    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $value, $m)) {
+        return $m[1] . '-' . $m[2] . '-01';
+    }
+
+    // Jika format dari datepicker: Jun-2026 / JUL-2026
+    if (preg_match('/^([A-Za-z]{3})-(\d{4})$/', $value, $m)) {
+        $monthMap = [
+            'JAN' => '01', 'FEB' => '02', 'MAR' => '03', 'APR' => '04',
+            'MAY' => '05', 'JUN' => '06', 'JUL' => '07', 'AUG' => '08',
+            'SEP' => '09', 'OCT' => '10', 'NOV' => '11', 'DEC' => '12'
+        ];
+        $mon = strtoupper($m[1]);
+        if (isset($monthMap[$mon])) {
+            return $m[2] . '-' . $monthMap[$mon] . '-01';
+        }
+    }
+
+    return null;
+}
+
+function sqlDateOrNull($conn, $value) {
     if ($value === null || trim((string)$value) === '') {
         return "NULL";
     }
-    return "'" . $value . "'";
+    return "'" . mysqli_real_escape_string($conn, (string)$value) . "'";
 }
 
 
@@ -148,11 +179,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
 
     $old_code               = postText($conn, 'old_code');
     $area_code              = postText($conn, 'area_code');
-    $effective_date_area    = postTextNullable($conn, 'effective_date_area');
+    $effective_date_area    = monthYearToSqlDateValue($_POST['effective_date_area'] ?? '');
     $remark_area            = postText($conn, 'remark_area');
     $sales_id               = postText($conn, 'sales_id');
     $sales_name             = postText($conn, 'sales_name');
-    $effective_date_sales   = postTextNullable($conn, 'effective_date_sales');
+    $effective_date_sales   = monthYearToSqlDateValue($_POST['effective_date_sales'] ?? '');
     $remark_sales           = postText($conn, 'remark_sales');
     $remarks                = postText($conn, 'remarks');
     $type                   = postText($conn, 'type', 'Lokal');
@@ -161,12 +192,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
     $bagian                 = postText($conn, 'bagian');
     $is_active              = isset($_POST['is_active']) ? 'Checked' : 'Unchecked';
 
-    // Jika area/sales dipilih tetapi tanggal efektif kosong, isi otomatis bulan-tahun saat input
-    if ($area_code !== '' && $effective_date_area === null) {
-        $effective_date_area = mysqli_real_escape_string($conn, currentMonthYearLabel());
+    // Kolom effective_date_* di database bertipe DATE.
+    // Tampilan user tetap Jun-2026, tetapi database disimpan sebagai 2026-06-01.
+    if ($area_code === '') {
+        $effective_date_area = null;
+    } elseif ($effective_date_area === null) {
+        $effective_date_area = currentMonthYearSqlDate();
     }
-    if ($sales_id !== '' && $effective_date_sales === null) {
-        $effective_date_sales = mysqli_real_escape_string($conn, currentMonthYearLabel());
+
+    if ($sales_id === '') {
+        $effective_date_sales = null;
+    } elseif ($effective_date_sales === null) {
+        $effective_date_sales = currentMonthYearSqlDate();
     }
     
     $user_now               = $_SESSION['username'];
@@ -186,9 +223,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
             ) VALUES (
                 '$id', '$customer', '$city', '$address', '$contact_person', '$contact_person_phone', 
                 '$id_number', '$id_name', '$phone', '$credit_limit', '$email', '$old_code', '$area_code', 
-                " . monthYearOrNullSql($effective_date_area) . ", 
+                " . sqlDateOrNull($conn, $effective_date_area) . ", 
                 '$remark_area', '$sales_id', '$sales_name', 
-                " . monthYearOrNullSql($effective_date_sales) . ", 
+                " . sqlDateOrNull($conn, $effective_date_sales) . ", 
                 '$remark_sales', '$remarks', '$type', '$parent_id', '$parent_customer', '$bagian', 
                 '$is_active', '$user_now', '$datetime_now'
             )";
@@ -208,10 +245,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && !isset($_POST['btn_search'])) {
                         contact_person='$contact_person', contact_person_phone='$contact_person_phone',
                         id_number='$id_number', id_name='$id_name', phone='$phone', credit_limit='$credit_limit', 
                         email='$email', old_code='$old_code', area_code='$area_code', 
-                        effective_date_area = " . monthYearOrNullSql($effective_date_area) . ",
+                        effective_date_area = " . sqlDateOrNull($conn, $effective_date_area) . ",
                         remark_area='$remark_area',
                         sales_id='$sales_id', sales_name='$sales_name',
-                        effective_date_sales = " . monthYearOrNullSql($effective_date_sales) . ",
+                        effective_date_sales = " . sqlDateOrNull($conn, $effective_date_sales) . ",
                         remark_sales='$remark_sales',
                         remarks='$remarks', type='$type', 
                         parent_id='$parent_id', parent_customer='$parent_customer', bagian='$bagian', 
@@ -485,11 +522,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">ID Number (NIK / KTP)</label>
-                                <input type="text" name="id_number" id="form_id_number" class="form-control form-control-sm" value="-">
+                                <input type="text" name="id_number" id="form_id_number" class="form-control form-control-sm">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Address</label>
-                                <textarea name="address" id="form_address" class="form-control form-control-sm" rows="3" placeholder="Alamat Pengiriman..."></textarea>
+                                <textarea name="address" id="form_address" class="form-control form-control-sm" rows="3" placeholder="Alamat Pengiriman/Operasional..."></textarea>
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">City <span class="text-danger">*</span></label>
@@ -497,7 +534,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Phone</label>
-                                <input type="text" name="phone" id="form_phone" class="form-control form-control-sm" value="-">
+                                <input type="text" name="phone" id="form_phone" class="form-control form-control-sm">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Credit Limit (Rp)</label>
@@ -505,7 +542,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Email</label>
-                                <input type="text" name="email" id="form_email" class="form-control form-control-sm" value="-">
+                                <input type="text" name="email" id="form_email" class="form-control form-control-sm">
                             </div>
                         </div>
 
@@ -513,11 +550,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['btn_search'])) {
                         <div class="col-md-4 border-end border-2 border-light bg-white p-3 rounded">
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Contact Person</label>
-                                <input type="text" name="contact_person" id="form_contact_person" class="form-control form-control-sm" value="-">
+                                <input type="text" name="contact_person" id="form_contact_person" class="form-control form-control-sm">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label fw-bold mb-0 text-secondary">Contact Person Phone</label>
-                                <input type="text" name="contact_person_phone" id="form_contact_person_phone" class="form-control form-control-sm" value="-">
+                                <input type="text" name="contact_person_phone" id="form_contact_person_phone" class="form-control form-control-sm">
                             </div>
                             
                             <!-- AREA MANAGEMENT SECTION -->
@@ -682,6 +719,25 @@ document.addEventListener("DOMContentLoaded", function() {
         allowClear: true,
         width: '100%'
     });
+
+    // Month-Year datepicker. Tampilan: Jun-2026. Database tetap disimpan: 2026-06-01.
+    if (typeof flatpickr !== 'undefined' && typeof monthSelectPlugin !== 'undefined') {
+        flatpickr('.month-year-picker', {
+            plugins: [new monthSelectPlugin({
+                shorthand: true,
+                dateFormat: 'M-Y',
+                altFormat: 'M-Y'
+            })],
+            allowInput: true
+        });
+    }
+
+    // Jika area dipilih, tanggal efektif area otomatis terisi bulan-tahun saat ini.
+    $('#form_area_code').on('change', function() {
+        if ($(this).val() && !$('#form_effective_date_area').val()) {
+            $('#form_effective_date_area').val(getCurrentMonthYear());
+        }
+    });
     
     // Event handler untuk sales select
     $('#form_sales_id').on('change', function() {
@@ -690,6 +746,9 @@ document.addEventListener("DOMContentLoaded", function() {
         var salesId = selectedOption.val(); // Ambil ID sales
         
         $('#form_sales_name').val(salesName || '');
+        if (salesId && !$('#form_effective_date_sales').val()) {
+            $('#form_effective_date_sales').val(getCurrentMonthYear());
+        }
     });
     
     // Validasi dan default '-' sebelum submit

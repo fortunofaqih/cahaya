@@ -54,6 +54,9 @@ $order_rs = mysqli_query($conn, "
 // Ambil semua data gudang
 $gudang_rs = mysqli_query($conn, "SELECT gudang_id, name FROM m_gudang ORDER BY name ASC");
 
+// Default gudang: GUDANG BARANG JADI 1 (FC-02)
+$default_gudang_id = 'FC-02';
+
 // Fungsi format tanggal
 function formatDateIndonesian($date) {
     if (empty($date) || $date == '0000-00-00') {
@@ -416,11 +419,15 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
                         <input type="text" name="order_date" id="order_date" readonly>
                     </div>
                     <div class="ff">
-                        <label>Gudang</label>
-                        <select name="gudang_id" id="gudang_id">
+                        <label>Gudang <span class="required">*</span></label>
+                        <select name="gudang_id" id="gudang_id" required>
                             <option value="">-- Pilih Gudang --</option>
-                            <?php while ($g = mysqli_fetch_assoc($gudang_rs)): ?>
-                                <option value="<?= htmlspecialchars($g['gudang_id']) ?>"><?= htmlspecialchars($g['name']) ?></option>
+                            <?php while ($g = mysqli_fetch_assoc($gudang_rs)): 
+                                $selected = ($g['gudang_id'] == $default_gudang_id) ? 'selected' : '';
+                            ?>
+                                <option value="<?= htmlspecialchars($g['gudang_id']) ?>" <?= $selected ?>>
+                                    <?= htmlspecialchars($g['name']) ?>
+                                </option>
                             <?php endwhile; ?>
                         </select>
                     </div>
@@ -825,7 +832,6 @@ function checkShippingNo() {
             }
         },
         error: function() {
-            // Jangan blok user kalau cek AJAX gagal, validasi final tetap wajib di save_shipping.php
             shippingNoExists = false;
         }
     });
@@ -866,7 +872,6 @@ $(document).on('change', '#order_no', function() {
     $('#customer_address').val(opt.getAttribute('data-customer-address') || '');
     $('#customer_city').val(opt.getAttribute('data-customer-city') || '');
 
-    // Saat ganti order, kosongkan detail agar user pilih ulang dari modal.
     $('#detailBody').empty();
     rowCounter = 0;
     updateRowNumbers();

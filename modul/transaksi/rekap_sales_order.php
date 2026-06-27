@@ -82,7 +82,8 @@ function convertFilterDateToMysql($date) {
 }
 
 function isStokanRemark($remark) {
-    return strtoupper(trim((string)$remark)) === 'STOKAN';
+    $allowedRemarks = ['STOKAN', 'AMBIL STOKAN'];
+    return in_array(strtoupper(trim((string)$remark)), $allowedRemarks, true);
 }
 
 // ==========================================

@@ -213,14 +213,14 @@ header("Content-Type: text/html; charset=UTF-8");
         
                     <table class="info-box">
                         <tr><td class="label">Tgl Order</td><td class="titik">:</td><td class="val"><?= $tgl_order ?></td></tr>
-                        <tr><td class="label">Nama Customer</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($head['customer'] ?: '-') ?></td></tr>
-                        <tr><td class="label">Berat Jenis</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['berat_jenis_potong'] ?: $detail['spec_potong'] ?: '-') ?></td></tr>
-                        <tr><td class="label">Spec</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['spec_potong'] ?: '-') ?></td></tr>
-                        <tr><td class="label">Ukuran</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['ukuran_potong'] ?: $detail['ukuran_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Nama Customer</td><td class="titik">:</td><td class="val"><?= displayText($head['customer'] ?? '') ?></td></tr>
+                        <tr><td class="label">Berat Jenis</td><td class="titik">:</td><td class="val"><?= displayText($detail['berat_jenis_potong'] ?? '') ?></td></tr>
+                        <tr><td class="label">Spec</td><td class="titik">:</td><td class="val"><?= displayText($detail['spec_potong'] ?? '') ?></td></tr>
+                        <tr><td class="label">Ukuran</td><td class="titik">:</td><td class="val"><?= displayText(($detail['ukuran_potong'] ?? '') !== '' ? $detail['ukuran_potong'] : ($detail['ukuran_rol'] ?? '')) ?></td></tr>
                         <tr><td class="label">Jumlah Order</td><td class="titik">:</td><td class="val"><?= displayOrderPotong($detail['jml_order_potong'] ?? '') ?></td></tr>
-                        <tr><td class="label">Isi per pak & Bal</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['isi_pakbal_potong'] ?: '-') ?></td></tr>
-                        <tr><td class="label">Keterangan</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['keterangan_potong'] ?: $detail['keterangan_rol'] ?: '-') ?></td></tr>
-                        <tr><td class="label">Kode</td><td class="titik">:</td><td class="val"><?= htmlspecialchars($detail['code_potong'] ?: $detail['code_rol'] ?: '-') ?></td></tr>
+                        <tr><td class="label">Isi per pak & Bal</td><td class="titik">:</td><td class="val"><?= displayText($detail['isi_pakbal_potong'] ?? '') ?></td></tr>
+                        <tr><td class="label">Keterangan</td><td class="titik">:</td><td class="val"><?= displayText(($detail['keterangan_potong'] ?? '') !== '' ? $detail['keterangan_potong'] : ($detail['keterangan_rol'] ?? '')) ?></td></tr>
+                        <tr><td class="label">Kode</td><td class="titik">:</td><td class="val"><?= displayText(($detail['code_potong'] ?? '') !== '' ? $detail['code_potong'] : ($detail['code_rol'] ?? '')) ?></td></tr>
                         <tr><td class="label">Tgl Kirim</td><td class="titik">:</td><td class="val"><?= $tgl_kirim ?></td></tr>
                     </table>
             
