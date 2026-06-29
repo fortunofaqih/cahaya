@@ -145,6 +145,11 @@ function formatDateIndonesian($date) {
     return $tanggal . '-' . $bulan[$bulan_num] . '-' . $tahun;
 }
 
+
+function h($value) {
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
+}
+
 // Format tanggal untuk tampilan
 $shipping_date_display = formatDateIndonesian($header['shipping_date']);
 $order_date_display = formatDateIndonesian($header['order_date']);
@@ -442,17 +447,17 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
     <?php endif; ?>
 
     <div class="crystal-header mb-3" style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #fff; padding: 10px 15px; border-radius: 5px;">
-        <h5 class="m-0"><i class="fa fa-edit"></i> Edit Shipping: <?= htmlspecialchars($shipping_no) ?></h5>
+        <h5 class="m-0"><i class="fa fa-edit"></i> Edit Shipping: <?= h($shipping_no) ?></h5>
     </div>
 
     <form method="POST" action="index.php?page=update_shipping" id="formShipping">
-        <input type="hidden" name="shipping_no" value="<?= htmlspecialchars($shipping_no) ?>">
-        <input type="hidden" name="old_order_no" value="<?= htmlspecialchars($header['order_no']) ?>">
+        <input type="hidden" name="shipping_no" value="<?= h($shipping_no) ?>">
+        <input type="hidden" name="old_order_no" value="<?= h($header['order_no'] ?? '') ?>">
         <!-- Field lama tetap dikirim agar update_shipping.php tidak mengosongkan data existing saat panel transporter/shipment location disembunyikan -->
-        <input type="hidden" name="transporter" value="<?= htmlspecialchars($header['transporter'] ?? '') ?>">
-        <input type="hidden" name="driver_name" value="<?= htmlspecialchars($header['driver_name'] ?? '') ?>">
-        <input type="hidden" name="truck_no" value="<?= htmlspecialchars($header['truck_no'] ?? '') ?>">
-        <input type="hidden" name="shipment_location" id="shipment_location" value="<?= htmlspecialchars($header['shipment_location'] ?? '') ?>">
+        <input type="hidden" name="transporter" value="<?= h($header['transporter'] ?? '') ?>">
+        <input type="hidden" name="driver_name" value="<?= h($header['driver_name'] ?? '') ?>">
+        <input type="hidden" name="truck_no" value="<?= h($header['truck_no'] ?? '') ?>">
+        <input type="hidden" name="shipment_location" id="shipment_location" value="<?= h($header['shipment_location'] ?? '') ?>">
         
         <!-- PANEL 1: Shipping Information -->
         <div class="panel-row">
@@ -461,7 +466,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                 <div class="shipping-panel-body">
                     <div class="ff">
                         <label>Shipping No</label>
-                        <input type="text" value="<?= htmlspecialchars($shipping_no) ?>" readonly style="font-weight:bold; color:var(--accent-blue);">
+                        <input type="text" value="<?= h($shipping_no) ?>" readonly style="font-weight:bold; color:var(--accent-blue);">
                     </div>
                     <div class="ff">
                         <label>Shipping Date <span class="required">*</span></label>
@@ -488,28 +493,28 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                             while ($o = mysqli_fetch_assoc($order_rs)): 
                                 $selected = ($o['order_no'] == $header['order_no']) ? 'selected' : '';
                             ?>
-                                <option value="<?= htmlspecialchars($o['order_no']) ?>" <?= $selected ?>
-                                        data-order-date="<?= htmlspecialchars($o['order_date']) ?>"
-                                        data-customer-id="<?= htmlspecialchars($o['customer_id']) ?>"
-                                        data-customer-name="<?= htmlspecialchars($o['customer_name']) ?>"
-                                        data-customer-address="<?= htmlspecialchars($o['customer_address']) ?>"
-                                        data-customer-city="<?= htmlspecialchars($o['customer_city']) ?>"
-                                        data-shipment-location="<?= htmlspecialchars($o['shipment_location']) ?>"
-                                        data-tolerance="<?= htmlspecialchars($o['tolerance'] ?? '10.00') ?>">
-                                    <?= htmlspecialchars($o['order_no']) ?> - <?= htmlspecialchars($o['customer_name']) ?>
+                                <option value="<?= h($o['order_no'] ?? '') ?>" <?= $selected ?>
+                                        data-order-date="<?= h($o['order_date'] ?? '') ?>"
+                                        data-customer-id="<?= h($o['customer_id'] ?? '') ?>"
+                                        data-customer-name="<?= h($o['customer_name'] ?? '') ?>"
+                                        data-customer-address="<?= h($o['customer_address'] ?? '') ?>"
+                                        data-customer-city="<?= h($o['customer_city'] ?? '') ?>"
+                                        data-shipment-location="<?= h($o['shipment_location'] ?? '') ?>"
+                                        data-tolerance="<?= h($o['tolerance'] ?? '10.00') ?>">
+                                    <?= h($o['order_no'] ?? '') ?> - <?= h($o['customer_name'] ?? '') ?>
                                 </option>
                             <?php endwhile; ?>
                             <!-- Tambahkan option untuk order yang sedang dipilih (mungkin sudah Close) -->
                             <?php if ($header['order_no']): ?>
-                            <option value="<?= htmlspecialchars($header['order_no']) ?>" selected
-                                    data-order-date="<?= htmlspecialchars($header['order_date']) ?>"
-                                    data-customer-id="<?= htmlspecialchars($header['customer_id']) ?>"
-                                    data-customer-name="<?= htmlspecialchars($header['customer_name']) ?>"
-                                    data-customer-address="<?= htmlspecialchars($header['customer_address']) ?>"
-                                    data-customer-city="<?= htmlspecialchars($header['customer_city']) ?>"
-                                    data-shipment-location="<?= htmlspecialchars($header['shipment_location']) ?>"
-                                    data-tolerance="<?= htmlspecialchars($header['order_tolerance'] ?? '10.00') ?>">
-                                <?= htmlspecialchars($header['order_no']) ?> - <?= htmlspecialchars($header['customer_name']) ?> (Current)
+                            <option value="<?= h($header['order_no'] ?? '') ?>" selected
+                                    data-order-date="<?= h($header['order_date'] ?? '') ?>"
+                                    data-customer-id="<?= h($header['customer_id'] ?? '') ?>"
+                                    data-customer-name="<?= h($header['customer_name'] ?? '') ?>"
+                                    data-customer-address="<?= h($header['customer_address'] ?? '') ?>"
+                                    data-customer-city="<?= h($header['customer_city'] ?? '') ?>"
+                                    data-shipment-location="<?= h($header['shipment_location'] ?? '') ?>"
+                                    data-tolerance="<?= h($header['order_tolerance'] ?? '10.00') ?>">
+                                <?= h($header['order_no'] ?? '') ?> - <?= h($header['customer_name'] ?? '') ?> (Current)
                             </option>
                             <?php endif; ?>
                         </select>
@@ -531,15 +536,15 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                     $selected = ($g['gudang_id'] == $default_gudang_id) ? 'selected' : '';
                                 }
                             ?>
-                                <option value="<?= htmlspecialchars($g['gudang_id']) ?>" <?= $selected ?>>
-                                    <?= htmlspecialchars($g['name']) ?>
+                                <option value="<?= h($g['gudang_id'] ?? '') ?>" <?= $selected ?>>
+                                    <?= h($g['name'] ?? '') ?>
                                 </option>
                             <?php endwhile; ?>
                         </select>
                     </div>
                     <div class="ff">
                         <label>Remarks Shipping</label>
-                        <textarea name="remarks_shipping" rows="2" placeholder="Catatan pengiriman..."><?= htmlspecialchars($header['remarks_shipping']) ?></textarea>
+                        <textarea name="remarks_shipping" rows="2" placeholder="Catatan pengiriman..."><?= h($header['remarks_shipping'] ?? '') ?></textarea>
                     </div>
                 </div>
             </div>
@@ -550,19 +555,19 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                 <div class="shipping-panel-body">
                     <div class="ff">
                         <label>Customer ID</label>
-                        <input type="text" name="customer_id" id="customer_id" value="<?= htmlspecialchars($header['customer_id']) ?>" readonly>
+                        <input type="text" name="customer_id" id="customer_id" value="<?= h($header['customer_id'] ?? '') ?>" readonly>
                     </div>
                     <div class="ff">
                         <label>Customer Name</label>
-                        <input type="text" name="customer_name" id="customer_name" value="<?= htmlspecialchars($header['customer_name']) ?>" readonly>
+                        <input type="text" name="customer_name" id="customer_name" value="<?= h($header['customer_name'] ?? '') ?>" readonly>
                     </div>
                     <div class="ff">
                         <label>Customer Address</label>
-                        <textarea name="customer_address" id="customer_address" rows="2" readonly><?= htmlspecialchars($header['customer_address']) ?></textarea>
+                        <textarea name="customer_address" id="customer_address" rows="2" readonly><?= h($header['customer_address'] ?? '') ?></textarea>
                     </div>
                     <div class="ff">
                         <label>Customer City</label>
-                        <input type="text" name="customer_city" id="customer_city" value="<?= htmlspecialchars($header['customer_city']) ?>" readonly>
+                        <input type="text" name="customer_city" id="customer_city" value="<?= h($header['customer_city'] ?? '') ?>" readonly>
                     </div>
                 </div>
             </div>
@@ -617,26 +622,26 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                 $uom_detail_summary = implode(', ', $summary_parts);
                             }
                         ?>
-                        <tr class="detail-row" data-idx="<?= $index ?>" data-order-qty="<?= htmlspecialchars($detail['order_qty'] ?? 0) ?>" data-order-qty-pack="<?= htmlspecialchars($detail['order_qty_pack'] ?? 0) ?>">
+                        <tr class="detail-row" data-idx="<?= $index ?>" data-order-qty="<?= h($detail['order_qty'] ?? 0) ?>" data-order-qty-pack="<?= h($detail['order_qty_pack'] ?? 0) ?>">
                             <td style="text-align:center;"><input type="checkbox" class="rowCheckbox"></td>
                             <td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"><?= $index + 1 ?></td>
                             <td>
-                                <input type="text" name="inventory_id[]" class="inv-id" value="<?= htmlspecialchars($detail['inventory_id']) ?>" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">
-                                <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="<?= htmlspecialchars($detail['inventory_name']) ?>">
-                                <input type="hidden" name="detail_id[]" value="<?= htmlspecialchars($detail['id']) ?>">
+                                <input type="text" name="inventory_id[]" class="inv-id" value="<?= h($detail['inventory_id'] ?? '') ?>" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">
+                                <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="<?= h($detail['inventory_name'] ?? '') ?>">
+                                <input type="hidden" name="detail_id[]" value="<?= h($detail['id'] ?? '') ?>">
                             </td>
-                            <td><input type="text" class="inv-name-display" value="<?= htmlspecialchars($detail['inventory_name']) ?>" readonly style="background:#f1f3f5;"></td>
-                            <td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="<?= htmlspecialchars(number_format((float)$detail['qty_shipping'], 4, '.', '')) ?>" style="text-align:right;"></td>
-                            <td><select name="uom_shipping[]" class="inv-uom-select" data-selected="<?= htmlspecialchars($detail['uom_shipping']) ?>" style="width:100%;"></select></td>
-                            <td><input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="<?= htmlspecialchars(number_format((float)$detail['qty_pack_shipping'], 4, '.', '')) ?>" style="text-align:right;"></td>
-                            <td><select name="uom_pack_shipping[]" class="inv-uom-pack-select" data-selected="<?= htmlspecialchars($detail['uom_pack_shipping']) ?>" style="width:100%;"></select></td>
+                            <td><input type="text" class="inv-name-display" value="<?= h($detail['inventory_name'] ?? '') ?>" readonly style="background:#f1f3f5;"></td>
+                            <td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="<?= h(number_format((float)($detail['qty_shipping'] ?? 0), 4, '.', '')) ?>" style="text-align:right;"></td>
+                            <td><select name="uom_shipping[]" class="inv-uom-select" data-selected="<?= h($detail['uom_shipping'] ?? '') ?>" style="width:100%;"></select></td>
+                            <td><input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="<?= h(number_format((float)($detail['qty_pack_shipping'] ?? 0), 4, '.', '')) ?>" style="text-align:right;"></td>
+                            <td><select name="uom_pack_shipping[]" class="inv-uom-pack-select" data-selected="<?= h($detail['uom_pack_shipping'] ?? '') ?>" style="width:100%;"></select></td>
                             <td>
-                                <button type="button" class="uom-detail-btn <?= empty($uom_detail_arr) ? 'empty' : '' ?>" onclick="openUomDetailModal(this)"><?= htmlspecialchars($uom_detail_summary) ?></button>
-                                <input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="<?= htmlspecialchars($detail['uom_detail_shipping']) ?>">
-                                <input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="<?= htmlspecialchars(number_format((float)($detail['qty_detail_shipping'] ?? 0), 4, '.', '')) ?>">
-                                <input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="<?= htmlspecialchars($uom_detail_json) ?>">
+                                <button type="button" class="uom-detail-btn <?= empty($uom_detail_arr) ? 'empty' : '' ?>" onclick="openUomDetailModal(this)"><?= h($uom_detail_summary) ?></button>
+                                <input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="<?= h($detail['uom_detail_shipping'] ?? '') ?>">
+                                <input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="<?= h(number_format((float)($detail['qty_detail_shipping'] ?? 0), 4, '.', '')) ?>">
+                                <input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="<?= h($uom_detail_json) ?>">
                             </td>
-                            <td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="<?= htmlspecialchars($detail['remarks_inventory_shipping']) ?>" placeholder="Catatan..."></td>
+                            <td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="<?= h($detail['remarks_inventory_shipping'] ?? '') ?>" placeholder="Catatan..."></td>
                             <td style="text-align:center;">
                                 <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button>
                             </td>
@@ -736,7 +741,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
 <script>
 var inventoryUomData = {};
 var rowCounter = <?= count($details) ?>;
-var currentOrderNo = '<?= htmlspecialchars($header['order_no'], ENT_QUOTES) ?>';
+var currentOrderNo = '<?= h($header['order_no'] ?? '') ?>';
 
 // Ambil data UoM dari database via AJAX
 $.ajax({
