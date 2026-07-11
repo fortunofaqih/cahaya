@@ -1,8 +1,6 @@
 <?php
 // modul/transaksi/rekap_sales_order.php
 
-// modul/transaksi/rekap_sales_order.php
-
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -313,6 +311,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
     .rekap-header h4 {
         margin: 0;
         font-size: 18px;
+        font-family: inherit;
     }
     
     .filter-box {
@@ -340,11 +339,13 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         font-size: 14px;
         font-weight: bold;
         color: #1e3c72;
+        font-family: inherit;
     }
     
     .customer-header small {
         font-size: 11px;
         color: #6c757d;
+        font-family: inherit;
     }
     
     .order-group {
@@ -361,12 +362,14 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         border-bottom: 1px solid #dee2e6;
         font-size: 12px;
         font-weight: bold;
+        font-family: inherit;
     }
     
     .rekap-table {
         width: 100%;
         border-collapse: collapse;
         font-size: 10px;
+        font-family: inherit;
     }
     
     .rekap-table th,
@@ -374,12 +377,14 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         border: 1px solid #dee2e6;
         padding: 6px 4px;
         vertical-align: top;
+        font-family: inherit;
     }
     
     .rekap-table th {
         background: #e9ecef;
         font-weight: bold;
         text-align: center;
+        font-family: inherit;
     }
     
     .text-right {
@@ -396,6 +401,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         text-align: right;
         font-weight: bold;
         border-top: 2px solid #dee2e6;
+        font-family: inherit;
     }
     
     .btn-action {
@@ -404,24 +410,28 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         border-radius: 4px;
         margin: 0 2px;
     }
-    /* Tambahkan style untuk kolom angka */
+    
+    /* HAPUS style khusus untuk currency - gunakan font yang sama dengan tabel */
     .rekap-table .col-currency {
         white-space: nowrap !important;
         text-align: right;
-        font-family: 'Courier New', monospace;
+        font-family: inherit !important; /* Gunakan font yang sama dengan tabel */
         font-size: 10px;
         min-width: 110px;
         padding: 4px 6px;
     }
 
     .rekap-table .col-currency .currency-symbol {
-        font-size: 9px;
-        color: #666;
+        font-size: 10px; /* Sama dengan ukuran font tabel */
+        color: #333; /* Warna lebih gelap agar terbaca */
         margin-right: 2px;
+        font-family: inherit !important; /* Gunakan font yang sama */
+        font-weight: normal;
     }
 
     .rekap-table .col-currency .amount {
         font-weight: 500;
+        font-family: inherit !important;
     }
 
     /* Untuk kolom yang lebih kecil */
@@ -441,6 +451,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             background: white;
             padding: 0;
             margin: 0;
+            font-family: inherit;
         }
         
         .no-print {
@@ -474,6 +485,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         .rekap-table th,
         .rekap-table td {
             border: 1px solid #000;
+            font-family: inherit;
         }
         
         @page {
@@ -481,37 +493,57 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             margin: 10mm;
         }
     }
+    
     .rekap-table .col-inventory-name {
-    white-space: normal !important;
-    word-break: break-word;
-    overflow-wrap: anywhere;
-    min-width: 220px;
-    max-width: 360px;
-    line-height: 1.35;
- }
- /* Responsive untuk zoom */
-@media screen and (max-width: 1400px) {
-    .rekap-table {
-        font-size: 9px;
+        white-space: normal !important;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        min-width: 220px;
+        max-width: 360px;
+        line-height: 1.35;
+        font-family: inherit;
     }
     
-    .rekap-table .col-currency {
-        min-width: 80px;
-        font-size: 9px;
+    /* Responsive untuk zoom */
+    @media screen and (max-width: 1400px) {
+        .rekap-table {
+            font-size: 9px;
+        }
+        
+        .rekap-table .col-currency {
+            min-width: 80px;
+            font-size: 9px;
+        }
+        
+        .rekap-table .col-currency .currency-symbol {
+            font-size: 9px;
+        }
     }
-    
-    .rekap-table .col-currency .currency-symbol {
-        font-size: 8px;
-    }
-}
 
-@media screen and (max-width: 1200px) {
-    .rekap-table .col-currency {
-        min-width: 70px;
-        font-size: 8px;
+    @media screen and (max-width: 1200px) {
+        .rekap-table .col-currency {
+            min-width: 70px;
+            font-size: 8px;
+        }
+        
+        .rekap-table .col-currency .currency-symbol {
+            font-size: 8px;
+        }
     }
-}
+
+    /* Style untuk filter label */
+    .filter-box .form-label {
+        font-family: inherit;
+    }
+    
+    /* Style untuk input dan select di filter */
+    .filter-box .form-control,
+    .filter-box .form-select {
+        font-family: inherit;
+        font-size: 14px;
+    }
 </style>
+
 <div class="rekap-container">
     <div class="rekap-sticky-panel no-print">
         <div class="rekap-header">
