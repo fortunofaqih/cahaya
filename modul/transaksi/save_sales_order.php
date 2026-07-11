@@ -71,6 +71,7 @@ $year_now     = date('Y');
 $order_no           = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
 $order_date         = mysqli_real_escape_string($conn, $_POST['order_date'] ?? date('Y-m-d'));
 $po_input           = mysqli_real_escape_string($conn, trim($_POST['po'] ?? ''));
+$no_po_input        = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? '')); // TAMBAHAN: ambil no_po dari form
 
 $marketing_id       = mysqli_real_escape_string($conn, $_POST['marketing_id'] ?? '');
 $sales_id           = mysqli_real_escape_string($conn, $_POST['sales_id'] ?? '');
@@ -134,8 +135,10 @@ function generatePONumber($conn, $tahun) {
     return str_pad($next_num, 3, '0', STR_PAD_LEFT) . "/PO/" . $tahun;
 }
 
-$po_number = !empty($po_input) ? $po_input : generatePONumber($conn, $year_now);
+// PRIORITAS: Gunakan no_po dari form jika ada, jika tidak generate baru
+$po_number = !empty($no_po_input) ? $no_po_input : (!empty($po_input) ? $po_input : generatePONumber($conn, $year_now));
 
+// Cek duplikat PO Number
 $cek_po = mysqli_query($conn, "SELECT no_po FROM hed_po WHERE no_po='$po_number' LIMIT 1");
 if ($cek_po && mysqli_num_rows($cek_po) > 0) {
     $po_number = generatePONumber($conn, $year_now);
@@ -297,6 +300,7 @@ try {
     }
 
     // ── INSERT HEAD PO ─────────────────────────────────────────────
+    // MODIFIKASI: Gunakan no_po yang sudah di-generate
     $sql_po = "INSERT INTO hed_po (
         no_po, tgl_order, customer, customer_id, created_by, created_at
     ) VALUES (
@@ -342,6 +346,7 @@ try {
             throw new Exception('Gagal simpan detail SO: ' . mysqli_error($conn));
         }
 
+        // MODIFIKASI: Insert ke det_po dengan no_po yang sudah di-generate
         // Untuk det_po, harga pakai price (karena subtotal = qty_pack * price)
         $harga_po = $det['price'] > 0 ? $det['price'] : $det['price_unit'];
 

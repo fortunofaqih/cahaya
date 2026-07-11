@@ -1,6 +1,7 @@
 <?php
-// modul/transaksi/cetak_shipping.php
-// Format cetak untuk Surat Jalan pre-printed Marketing.
+// modul/transaksi/cetak_slip_shipping.php
+// Format cetak untuk Surat Jalan pre-printed Marketing - Mode Default UOM
+// REVISI: koordinat CSS dikalibrasi ulang berdasarkan pengukuran manual pada foto nota fisik
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -14,7 +15,6 @@ if (!isset($_SESSION['username'])) {
 include __DIR__ . '/../../koneksi.php';
 
 $shipping_no = isset($_GET['id']) ? trim($_GET['id']) : '';
-$mode = isset($_GET['mode']) ? trim($_GET['mode']) : 'default';
 
 if ($shipping_no === '') {
     die('Shipping No tidak ditemukan!');
@@ -39,7 +39,8 @@ function fmtNumber($number, $decimals = 2) {
     return $formatted;
 }
 
-function formatDateForBlank($date) {
+// Fungsi format tanggal Indonesia: DD NamaBulan YYYY (contoh: 06 Juli 2026)
+function formatDateIndonesia($date) {
     if (empty($date) || $date === '0000-00-00') {
         return '';
     }
@@ -49,7 +50,16 @@ function formatDateForBlank($date) {
         return '';
     }
 
-    return date('d-m-Y', $ts);
+    $bulan = [
+        1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    ];
+
+    $d = date('d', $ts);
+    $m = (int)date('m', $ts);
+    $y = date('Y', $ts);
+
+    return $d . ' ' . $bulan[$m] . ' ' . $y;
 }
 
 function splitAddressLines($name, $address, $city) {
@@ -64,7 +74,7 @@ function splitAddressLines($name, $address, $city) {
     }
 
     if ($address !== '') {
-        $wrapped = wordwrap($address, 58, "\n", false);
+        $wrapped = wordwrap($address, 50, "\n", false);
         foreach (explode("\n", $wrapped) as $line) {
             if (count($lines) >= 3) {
                 break;
@@ -90,11 +100,30 @@ function splitAddressLines($name, $address, $city) {
 function getItemNameWithRemarks($detail) {
     $internalName = safeText($detail['internal_name'] ?? '');
     $remarks = safeText($detail['remarks_inventory_shipping'] ?? '');
-    
+
     if ($remarks !== '') {
         return $internalName . ' ' . $remarks;
     }
     return $internalName;
+}
+
+function getQtyDisplay($detail) {
+    $qtyPack = (float)($detail['qty_pack_shipping'] ?? 0);
+    $uomPack = safeText($detail['uom_pack_shipping'] ?? '');
+    $qtyDetail = (float)($detail['qty_detail_shipping'] ?? 0);
+    $uomDetail = safeText($detail['uom_detail_shipping'] ?? '');
+
+    $result = [];
+
+    if ($qtyPack > 0 && $uomPack !== '') {
+        $result[] = fmtNumber($qtyPack) . ' ' . $uomPack;
+    }
+
+    if ($qtyDetail > 0 && $uomDetail !== '') {
+        $result[] = fmtNumber($qtyDetail) . ' ' . $uomDetail;
+    }
+
+    return implode(' | ', $result);
 }
 
 // ===============================
@@ -162,7 +191,8 @@ while ($row = mysqli_fetch_assoc($resultDetail)) {
 }
 mysqli_stmt_close($stmtDetail);
 
-$shippingDate = formatDateForBlank($header['shipping_date'] ?? '');
+// Format Indonesia (contoh: 06 Juli 2026)
+$shippingDate = formatDateIndonesia($header['shipping_date'] ?? '');
 $customerLines = splitAddressLines(
     $header['customer_name'] ?? '',
     $header['customer_address'] ?? '',
@@ -172,13 +202,10 @@ $customerLines = splitAddressLines(
 $vehicleText = safeText($header['transporter'] ?? '');
 $truckNoText = safeText($header['truck_no'] ?? '');
 
-// Maksimal baris mengikuti tinggi form pada foto.
-$maxRows = 9;
+// Berdasarkan foto nota terdapat 10 baris kosong di tabel item
+$maxRows = 10;
 $printRows = array_slice($details, 0, $maxRows);
 $hasMoreRows = count($details) > $maxRows;
-
-// Tentukan mode cetak
-$isWithoutUOM = ($mode === 'without_uom');
 ?>
 <!DOCTYPE html>
 <html>
@@ -194,7 +221,8 @@ $isWithoutUOM = ($mode === 'without_uom');
             margin: 0;
             padding: 0;
             background: #f5f5f5;
-            font-family: "Times New Roman", Times, serif;
+            font-family: "Courier New", Courier, monospace; /* Tipikal font dot-matrix */
+            font-weight: bold;
         }
 
         .no-print {
@@ -218,7 +246,6 @@ $isWithoutUOM = ($mode === 'without_uom');
 
         .btn-secondary { background: #6c757d; color: #fff; }
         .btn-success { background: #28a745; color: #fff; }
-        .btn-warning { background: #ffc107; color: #000; }
 
         .note {
             margin-top: 8px;
@@ -226,183 +253,153 @@ $isWithoutUOM = ($mode === 'without_uom');
             color: #555;
         }
 
-        .mode-indicator {
-            display: inline-block;
-            padding: 4px 12px;
-            margin-left: 10px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-        }
-
-        .mode-default { background: #17a2b8; color: #fff; }
-        .mode-without-uom { background: #fd7e14; color: #fff; }
-
-        /*
-            Kertas mengikuti form Surat Jalan pada foto: kurang lebih A5 landscape.
-            Jika hasil print bergeser, cukup ubah --offset-x dan --offset-y.
-        */
+        /* Container halaman fisik kertas F4 (PORTRAIT) */
         .page {
-            --offset-x: 0mm;
-            --offset-y: 0mm;
-
             position: relative;
-            width: 210mm;
-            height: 148mm;
-            margin: 10mm auto;
+            width: 215mm;
+            height: 330mm;
+            margin: 0 auto;
             background: #fff;
             overflow: hidden;
         }
 
+        /* Elemen teks cetak */
         .field {
             position: absolute;
-            transform: translate(var(--offset-x), var(--offset-y));
             color: #000;
             white-space: nowrap;
             overflow: hidden;
-            line-height: 1.1;
+            line-height: 1;
         }
 
+        /* =====================================================
+           KOORDINAT HASIL KALIBRASI ULANG BERDASARKAN FOTO NOTA
+           Nota fisik "Half Letter" lebar 21cm, ditempel di pojok
+           kiri-atas kertas F4 landscape.
+           ===================================================== */
+
+        /* Surabaya, [Tanggal] -> PASTI: 1,5cm dari atas, 13cm dari kiri kertas nota */
         .date-field {
-            left: 134mm;
-            top: 18.5mm;
-            width: 30mm;
-            font-size: 12pt;
-            text-align: left;
-        }
-
-        .customer-line-1 {
-            left: 114mm;
-            top: 40mm;
-            width: 73mm;
+            left: 130mm;
+            top: 15mm;
+            width: 70mm;
             font-size: 11pt;
         }
 
+        /* Kepada Yth. baris 1 -> PASTI: label "Kepada Yth." @2,5cm + 1cm gap = 3,5cm; 13cm dari kiri */
+        .customer-line-1 {
+            left: 130mm;
+            top: 35mm;
+            width: 80mm;
+            font-size: 11pt;
+        }
+
+        /* Kepada Yth. baris 2 -> PASTI: +1cm dari baris 1 = 4,5cm; 13cm dari kiri */
         .customer-line-2 {
-            left: 114mm;
-            top: 50.5mm;
-            width: 73mm;
-            font-size: 10.5pt;
+            left: 130mm;
+            top: 45mm;
+            width: 80mm;
+            font-size: 11pt;
         }
 
+        /* Kepada Yth. baris 3 (opsional) -> ESTIMASI: hapus div ini di HTML
+           jika nota Anda hanya punya 2 baris kosong seperti terlihat di foto */
         .customer-line-3 {
-            left: 114mm;
-            top: 60.8mm;
-            width: 73mm;
-            font-size: 10.5pt;
+            left: 130mm;
+            top: 55mm;
+            width: 80mm;
+            font-size: 11pt;
         }
 
+        /* Kendaraan & No Polisi -> ESTIMASI (foto tidak memberi angka cm
+           persis di sini, hanya total 4cm dari judul "Surat Jalan" ke tabel).
+           Silakan geser +/- beberapa mm setelah test print di kertas biasa. */
         .vehicle-field {
-            left: 49mm;
-            top: 75.4mm;
-            width: 32mm;
-            font-size: 10.5pt;
+            left: 45mm;
+            top: 75mm;
+            width: 30mm;
+            font-size: 11pt;
         }
 
         .truck-field {
-            left: 90mm;
-            top: 75.4mm;
-            width: 36mm;
-            font-size: 10.5pt;
+            left: 80mm;
+            top: 75mm;
+            width: 30mm;
+            font-size: 11pt;
         }
 
+        /* Pengaturan Baris Item Tabel */
         .row-field {
-            font-size: 10.2pt;
-            height: 5.6mm;
-            line-height: 5.6mm;
+            font-size: 11pt;
+            height: 5mm;
+            line-height: 5mm;
         }
 
+        /* Berdasarkan foto, kolom Banyaknya dibagi sub-kolom (digeser +1cm) */
         .qty-col-1 {
-            left: 20.5mm;
+            left: 15mm;
             width: 15mm;
             text-align: center;
         }
 
         .qty-col-2 {
-            left: 36.3mm;
-            width: 16mm;
+            left: 31mm;
+            width: 15mm;
             text-align: center;
         }
 
+        /* Kolom cadangan jaga-jaga jika ada 3 pecahan qty/UOM */
         .qty-col-3 {
-            left: 53.3mm;
-            width: 16mm;
+            left: 47mm;
+            width: 15mm;
             text-align: center;
-            font-size: 9.6pt;
         }
 
+        /* Kolom NAMA BARANG (digeser +1cm lagi, total +2cm dari semula) */
         .name-col {
-            left: 70.5mm;
-            width: 73mm;
+            left: 70mm;
+            width: 85mm;
             text-align: left;
-        }
-
-        .price-col {
-            left: 146mm;
-            width: 25mm;
-            text-align: right;
-            padding-right: 2mm;
-        }
-
-        .amount-col {
-            left: 173mm;
-            width: 25mm;
-            text-align: right;
-            padding-right: 2mm;
         }
 
         .extra-warning {
             position: absolute;
-            left: 18mm;
-            top: 134mm;
-            font-size: 8pt;
-            font-family: Arial, sans-serif;
+            left: 10mm;
+            top: 155mm;
+            font-size: 9pt;
             color: #000;
         }
 
+        /* ====================================================
+           SETTING UKURAN KERTAS F4 PORTRAIT UTUH (21.5cm x 33cm)
+           ==================================================== */
         @page {
-            size: 210mm 148mm;
-            margin: 0;
+            size: 21.5cm 33cm portrait;
+            margin: 5mm 6mm 5mm 6mm;
         }
 
         @media print {
             @page {
-                size: 210mm 148mm;
+                size: 21.5cm 33cm portrait;
                 margin: 0;
             }
 
-            html,
-            body {
+            html, body {
                 margin: 0 !important;
                 padding: 0 !important;
                 background: #fff !important;
-                width: 210mm;
-                height: 148mm;
-                overflow: hidden !important;
+                width: 215mm;
+                height: 330mm;
             }
 
-            /* Sembunyikan semua elemen bawaan layout ERP: header, menu, logout, ganti password, footer. */
             body * {
                 visibility: hidden !important;
             }
 
-            .page,
-            .page * {
+            .page, .page * {
                 visibility: visible !important;
             }
 
-            header,
-            footer,
-            nav,
-            aside,
-            .navbar,
-            .sidebar,
-            .main-header,
-            .main-sidebar,
-            .content-header,
-            .main-footer,
-            .footer,
-            .breadcrumb,
             .no-print {
                 display: none !important;
                 visibility: hidden !important;
@@ -413,10 +410,10 @@ $isWithoutUOM = ($mode === 'without_uom');
                 left: 0 !important;
                 top: 0 !important;
                 margin: 0 !important;
-                width: 210mm !important;
-                height: 148mm !important;
-                box-shadow: none !important;
+                width: 215mm !important;
+                height: 330mm !important;
                 background: transparent !important;
+                box-shadow: none !important;
             }
         }
     </style>
@@ -425,19 +422,14 @@ $isWithoutUOM = ($mode === 'without_uom');
 
 <div class="no-print">
     <a class="btn btn-secondary" href="index.php?page=shipping">Kembali</a>
-    <a class="btn btn-success" href="?id=<?= e($shipping_no) ?>&mode=default">Slip (Default UOM)</a>
-    <a class="btn btn-warning" href="?id=<?= e($shipping_no) ?>&mode=without_uom">Slip (Tanpa UOM Default)</a>
     <button class="btn btn-success" onclick="window.print()">Cetak / Print</button>
-    <span class="mode-indicator <?= $isWithoutUOM ? 'mode-without-uom' : 'mode-default' ?>">
-        <?= $isWithoutUOM ? 'Mode: Tanpa UOM Default' : 'Mode: Default UOM' ?>
-    </span>
     <div class="note">
-        Format ini untuk form Surat Jalan pre-printed. Jika hasil bergeser, atur nilai <strong>--offset-x</strong> dan <strong>--offset-y</strong> di CSS.
+        Format ini dikonfigurasi untuk kertas <strong>F4 Portrait</strong> dengan area cetak nota pojok kiri atas sebesar <strong>21cm x 16,5cm</strong>. Pastikan orientasi kertas di dialog print juga diset <strong>Portrait</strong>.<br>
+        Koordinat sudah dikalibrasi ulang sesuai foto nota (06/07/2026). Beberapa titik (kendaraan/no polisi & baris ke-3 Kepada Yth) masih estimasi — cek dengan test print di kertas kosong lalu tempel ke nota asli sebelum cetak massal.
     </div>
 </div>
 
 <div class="page">
-    <!-- Header kosong pada form -->
     <div class="field date-field"><?= e($shippingDate) ?></div>
 
     <div class="field customer-line-1"><?= e($customerLines[0]) ?></div>
@@ -448,72 +440,32 @@ $isWithoutUOM = ($mode === 'without_uom');
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-    $startTop = 91.8; // mm; baris pertama tabel pada form
-    $rowHeight = 6.35; // mm
+    // PASTI: baris pertama tabel = 4cm (40mm) dari judul "Surat Jalan"
+    // Estimasi posisi judul ~55mm dari atas kertas nota -> baris pertama tabel = 95mm
+    $startTop = 95;
+    // PASTI: tinggi tiap baris tabel = 0,5cm sesuai tanda di foto
+    $rowHeight = 5.0;
 
     foreach ($printRows as $idx => $detail):
         $top = $startTop + ($idx * $rowHeight);
-
-        $qtyPack = (float)($detail['qty_pack_shipping'] ?? 0);
-        $uomPack = strtoupper(safeText($detail['uom_pack_shipping'] ?? ''));
-        $qtyBase = (float)($detail['qty_shipping'] ?? 0);
-        $uomBase = safeText($detail['uom_shipping'] ?? '');
-        $uomDetail = strtoupper(safeText($detail['uom_detail_shipping'] ?? ''));
-        $qtyDetail = (float)($detail['qty_detail_shipping'] ?? 0);
-        
-        // Nama barang dari internal_name + remarks_inventory_shipping
         $itemName = getItemNameWithRemarks($detail);
-        
-        // Inisialisasi kolom
-        $qtyCol1 = '';
-        $qtyCol2 = '';
-        $qtyCol3 = '';
-        
-        if ($isWithoutUOM) {
-            // Mode Tanpa UOM Default: selalu tampilkan qty dasar + UOM dasar
-            $qtyCol1 = fmtNumber($qtyBase);
-            $qtyCol2 = $uomBase;
-            $qtyCol3 = '';
-        } else {
-            // Mode Default UOM
-            // Cek apakah uom_pack = KG
-            $uomPackFromMaster = strtoupper(safeText($detail['uom_pack'] ?? ''));
-            
-            if ($uomPackFromMaster === 'KG') {
-                // Jika uom_pack KG, semua isian Banyaknya jadi KG
-                $qtyCol1 = fmtNumber($qtyBase);
-                $qtyCol2 = 'KG';
-                $qtyCol3 = '';
-            } else {
-                // Kolom kiri: qty BAL dari UoM Detail
-                if ($uomDetail === 'BAL' && $qtyDetail > 0) {
-                    $qtyCol1 = fmtNumber($qtyDetail);
-                    $qtyCol2 = 'BAL';
-                } else {
-                    $qtyCol1 = '';
-                    $qtyCol2 = '';
-                }
-                
-                // Kolom tengah: qty + UoM Pack
-                $qtyPackVal = (float)($detail['qty_pack_shipping'] ?? 0);
-                $uomPackVal = safeText($detail['uom_pack_shipping'] ?? '');
-                
-                if ($qtyPackVal > 0 && $uomPackVal !== '') {
-                    $qtyCol3 = fmtNumber($qtyPackVal) . ' ' . $uomPackVal;
-                }
-            }
-        }
+        $qtyDisplay = getQtyDisplay($detail);
+
+        // Membagi qty display menjadi maksimal 3 sub-kolom (jaga-jaga jika suatu saat
+        // getQtyDisplay() menghasilkan 3 pecahan, misal PACK | DETAIL | BASE)
+        $qtyParts = explode(' | ', $qtyDisplay);
+        $qtyCol1 = isset($qtyParts[0]) ? $qtyParts[0] : '';
+        $qtyCol2 = isset($qtyParts[1]) ? $qtyParts[1] : '';
+        $qtyCol3 = isset($qtyParts[2]) ? $qtyParts[2] : '';
     ?>
         <div class="field row-field qty-col-1" style="top: <?= $top ?>mm;"><?= e($qtyCol1) ?></div>
         <div class="field row-field qty-col-2" style="top: <?= $top ?>mm;"><?= e($qtyCol2) ?></div>
         <div class="field row-field qty-col-3" style="top: <?= $top ?>mm;"><?= e($qtyCol3) ?></div>
         <div class="field row-field name-col" style="top: <?= $top ?>mm;"><?= e($itemName) ?></div>
-        <div class="field row-field price-col" style="top: <?= $top ?>mm;"></div>
-        <div class="field row-field amount-col" style="top: <?= $top ?>mm;"></div>
     <?php endforeach; ?>
 
     <?php if ($hasMoreRows): ?>
-        <div class="extra-warning">* Item lebih dari <?= (int)$maxRows ?> baris. Lanjutkan pada surat jalan berikutnya.</div>
+        <div class="extra-warning">* Item melebihi kapasitas baris nota. Mohon gunakan lembar Surat Jalan baru.</div>
     <?php endif; ?>
 </div>
 

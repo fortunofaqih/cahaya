@@ -383,6 +383,27 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
 .tolerance-warning-row {
     background: #fff3cd !important;
 }
+.auto-correct-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--accent-blue);
+    margin-left: auto;
+    background: #eaf4ff;
+    border: 1px solid #b6dcff;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+.auto-correct-toggle input {
+    width: auto !important;
+    margin: 0;
+}
+.qty-auto-calculated {
+    background: #eaf4ff !important;
+    font-weight: bold;
+}
 
 </style>
 
@@ -494,9 +515,13 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
                 <button type="button" class="btn-vs btn-primary" onclick="addRow()"><i class="fa fa-plus"></i> Tambah Item Manual</button>
                 <button type="button" class="btn-vs btn-secondary" onclick="deleteSelected()"><i class="fa fa-trash"></i> Hapus Terpilih</button>
                 <button type="button" class="btn-vs btn-warning" onclick="openLoadInventoryModal()"><i class="fa fa-list-check"></i> Load dari Order</button>
-                <span style="font-size:10px; color:#888; margin-left:10px;">
+                <span style="font-size:10px; color:#888;">
                     <i class="fa fa-info-circle"></i> Load dari Order akan membuka modal pilihan inventory terlebih dahulu.
                 </span>
+                <label class="auto-correct-toggle" title="Jika aktif, Qty & Qty Pack akan dihitung otomatis dari UoM Detail x konversi m_inventory_uom">
+                    <input type="checkbox" id="chkAutoCorrect" name="allow_auto_correct" value="Checked" checked>
+                    <i class="fa fa-wand-magic-sparkles"></i> Allow Auto Correct
+                </label>
             </div>
 
             <div class="detail-table-wrap">
@@ -585,7 +610,7 @@ Centang inventory yang ingin dimasukkan ke daftar shipping. Setelah ditambahkan,
         </div>
         <div class="shipping-modal-body">
             <div class="modal-muted" style="margin-bottom:8px;">
-                Centang satu atau lebih UoM, lalu isi Qty untuk masing-masing UoM.
+                Centang satu atau lebih UoM, lalu isi Qty untuk masing-masing UoM. Jika "Auto Correct" aktif, Qty &amp; Qty Pack pada tabel akan dihitung ulang otomatis berdasarkan nilai konversi UoM.
             </div>
             <table class="modal-table">
                 <thead>
@@ -649,15 +674,46 @@ function formatDecimal(num) {
     return n.toFixed(4);
 }
 
-function getUomOptions(inventoryId, selectedValue, selectDefault) {
-    var html = '<option value="">-- Pilih UoM --</option>';
+// Ambil nilai konversi (kolom `Value` di m_inventory_uom) untuk 1 unit inventory tertentu.
+// Toleran terhadap variasi nama key hasil json_encode PHP (value / Value / conversion_value).
+function getUomConversionValue(inventoryId, unit) {
+    if (!inventoryId || !unit || !inventoryUomData[inventoryId]) return null;
+
+    // Backend (get_inventory_uom.php) menyimpan unit dalam UPPERCASE (strtoupper),
+    // sedangkan uom_pack dari Sales Order bisa datang dengan casing berbeda.
+    // Bandingkan dalam bentuk uppercase+trim supaya tidak salah fallback ke 1:1.
+    var target = String(unit).trim().toUpperCase();
+
+    var list = inventoryUomData[inventoryId];
+    for (var i = 0; i < list.length; i++) {
+        var candidate = String(list[i].unit || '').trim().toUpperCase();
+        if (candidate === target) {
+            var raw = list[i].value;
+            if (raw === undefined) raw = list[i].Value;
+            if (raw === undefined) raw = list[i].conversion_value;
+            var v = parseFloat(raw);
+            return isNaN(v) ? null : v;
+        }
+    }
+    return null;
+}
+
+function getUomOptions(inventoryId, selectedValue, selectDefault, includePlaceholder) {
     selectedValue = selectedValue || '';
     selectDefault = (selectDefault === true);
+    includePlaceholder = (includePlaceholder !== false);
+
+    var html = includePlaceholder ? '<option value="">-- Pilih UoM --</option>' : '';
+    var foundSelected = false;
+    var hasOption = false;
 
     if (inventoryId && inventoryUomData[inventoryId]) {
         var uomList = inventoryUomData[inventoryId];
+
         for (var i = 0; i < uomList.length; i++) {
             var unit = uomList[i].unit || '';
+            if (unit === '') continue;
+
             var isDefault = parseInt(uomList[i].default) === 1;
             var selected = '';
 
@@ -667,8 +723,26 @@ function getUomOptions(inventoryId, selectedValue, selectDefault) {
                 selected = 'selected';
             }
 
+            if (selected === 'selected') {
+                foundSelected = true;
+            }
+
+            hasOption = true;
             html += '<option value="' + escAttr(unit) + '" ' + selected + '>' + escHtml(unit) + '</option>';
         }
+    }
+
+    // Jika UoM dari SO tidak ada di master m_inventory_uom, tetap tampilkan nilai dari SO.
+    if (selectedValue !== '' && !foundSelected) {
+        html += '<option value="' + escAttr(selectedValue) + '" selected>' + escHtml(selectedValue) + '</option>';
+        foundSelected = true;
+        hasOption = true;
+    }
+
+    // Fallback agar kolom tidak kosong / tidak menampilkan "-- Pilih UoM --".
+    if (!hasOption && !includePlaceholder) {
+        var fallbackUnit = selectedValue || 'KG';
+        html += '<option value="' + escAttr(fallbackUnit) + '" selected>' + escHtml(fallbackUnit) + '</option>';
     }
 
     return html;
@@ -710,6 +784,45 @@ function syncUomDetailLegacyFields($row, jsonValue) {
     $row.find('.qty-detail-legacy-qty').val(formatDecimal(totalQty));
 }
 
+// Hitung total Qty (base uom / KG) dari kumpulan UoM Detail, lalu turunkan Qty Pack
+// berdasarkan nilai konversi UoM Pack yang sedang dipilih pada baris tersebut.
+// Rumus: Qty (base) = SUM( qty_detail_i x Value_uom_i )
+//        Qty Pack    = Qty (base) / Value_uom_pack
+function applyAutoCorrectToRow($row, detailsArr) {
+    var inventoryId = $row.find('.inv-id').val();
+    if (!inventoryId || !detailsArr || !detailsArr.length) return;
+
+    var baseTotal = 0;
+    var missingConversion = [];
+
+    detailsArr.forEach(function(d) {
+        var val = getUomConversionValue(inventoryId, d.uom);
+        if (val === null) {
+            missingConversion.push(d.uom);
+            val = 1; // fallback 1:1 supaya tidak menghasilkan 0, tapi beri peringatan
+        }
+        baseTotal += (parseFloat(d.qty) || 0) * val;
+    });
+
+    $row.find('.qty-shipping').val(formatDecimal(baseTotal)).addClass('qty-auto-calculated');
+
+    recalcQtyPackFromBase($row, baseTotal);
+
+    if (missingConversion.length) {
+        showNotification('Perhatian: nilai konversi UoM (' + missingConversion.join(', ') + ') tidak ditemukan di m_inventory_uom, dianggap 1:1.', 'error');
+    }
+}
+
+function recalcQtyPackFromBase($row, baseTotal) {
+    var inventoryId = $row.find('.inv-id').val();
+    var packUom = $row.find('.inv-uom-pack-select').val();
+    var packVal = getUomConversionValue(inventoryId, packUom);
+
+    if (packVal && packVal > 0) {
+        $row.find('.qty-pack-shipping').val(formatDecimal(baseTotal / packVal)).addClass('qty-auto-calculated');
+    }
+}
+
 function updateRowNumbers() {
     var rows = document.querySelectorAll('#detailBody .detail-row');
     rows.forEach(function(r, i) {
@@ -725,8 +838,14 @@ function buildRow(data) {
     data = data || {};
 
     var inventoryId = data.inventory_id || '';
-    var uomOptions = getUomOptions(inventoryId, data.uom || '', false);
-    var uomPackOptions = getUomOptions(inventoryId, data.uom_pack || '', false);
+
+    // Kolom UoM utama untuk Shipping selalu KG.
+    var uomOptions = '<option value="KG" selected>KG</option>';
+
+    // Kolom UoM Pack mengikuti UoM Pack dari Sales Order, bukan placeholder.
+    var soUomPack = data.uom_pack || data.so_uom_pack || 'KG';
+    var uomPackOptions = getUomOptions(inventoryId, soUomPack, true, false);
+
     var uomDetailJson = data.uom_detail_json || data.uom_detail || '';
     var uomDetailSummary = getUomDetailSummary(uomDetailJson);
     var isUomDetailEmpty = parseUomDetailJson(uomDetailJson).length === 0;
@@ -839,6 +958,8 @@ function renderModalInventoryRows(items) {
             'data-inventory-name="' + escAttr(item.inventory_name || '') + '" ' +
             'data-order-qty="' + escAttr(qty) + '" ' +
             'data-order-qty-pack="' + escAttr(qtyPack) + '" ' +
+            'data-uom="' + escAttr(item.uom || 'KG') + '" ' +
+            'data-uom-pack="' + escAttr(uomPack || 'KG') + '" ' +
             'data-remarks="' + escAttr(item.remarks || '') + '">' +
             '<td style="text-align:center;"><input type="checkbox" class="modalRowCheckbox"></td>' +
             '<td style="font-weight:bold; text-align:center;">' + escHtml(inventoryId) + '</td>' +
@@ -868,9 +989,9 @@ function addSelectedInventoryFromModal() {
             inventory_id: $r.data('inventory-id') || '',
             inventory_name: $r.data('inventory-name') || '',
             qty: 0,
-            uom: '',
+            uom: 'KG',
             qty_pack: 0,
-            uom_pack: '',
+            uom_pack: $r.attr('data-uom-pack') || 'KG',
             uom_detail_json: '',
             order_qty: parseFloat($r.attr('data-order-qty')) || 0,
             order_qty_pack: parseFloat($r.attr('data-order-qty-pack')) || 0,
@@ -878,7 +999,7 @@ function addSelectedInventoryFromModal() {
         });
     });
 
-    showNotification('Berhasil menambahkan ' + $checked.length + ' item. Qty silakan diisi manual.', 'success');
+    showNotification('Berhasil menambahkan ' + $checked.length + ' item. Qty silakan diisi manual atau lewat UoM Detail (Auto Correct).', 'success');
     closeLoadInventoryModal();
 }
 
@@ -957,6 +1078,11 @@ function saveUomDetailModal() {
     activeUomDetailRow.find('.uom-detail-btn')
         .text(summary)
         .toggleClass('empty', details.length === 0);
+
+    // AUTO CORRECT: hitung ulang Qty & Qty Pack dari UoM Detail x nilai konversi m_inventory_uom
+    if ($('#chkAutoCorrect').is(':checked') && details.length > 0) {
+        applyAutoCorrectToRow(activeUomDetailRow, details);
+    }
 
     closeUomDetailModal();
 }
@@ -1109,6 +1235,35 @@ $(document).on('change', '#order_no', function() {
     $('#detailBody').empty();
     rowCounter = 0;
     updateRowNumbers();
+});
+
+// Jika UoM Pack pada baris diganti manual dan Auto Correct aktif serta baris sudah punya
+// UoM Detail, hitung ulang Qty Pack berdasarkan Qty (base) yang tersimpan.
+$(document).on('change', '.inv-uom-pack-select', function() {
+    if (!$('#chkAutoCorrect').is(':checked')) return;
+
+    var $row = $(this).closest('.detail-row');
+    var details = parseUomDetailJson($row.find('.uom-detail-json').val());
+    if (!details.length) return;
+
+    var baseQty = parseFloat($row.find('.qty-shipping').val()) || 0;
+    recalcQtyPackFromBase($row, baseQty);
+});
+
+// Ketika Auto Correct baru diaktifkan, hitung ulang semua baris yang sudah memiliki UoM Detail.
+$(document).on('change', '#chkAutoCorrect', function() {
+    if (this.checked) {
+        $('#detailBody .detail-row').each(function() {
+            var $row = $(this);
+            var details = parseUomDetailJson($row.find('.uom-detail-json').val());
+            if (details.length > 0) {
+                applyAutoCorrectToRow($row, details);
+            }
+        });
+        showNotification('Auto Correct diaktifkan. Qty & Qty Pack dihitung ulang dari UoM Detail.', 'success');
+    } else {
+        $('.qty-shipping, .qty-pack-shipping').removeClass('qty-auto-calculated');
+    }
 });
 
 $(document).ready(function() {

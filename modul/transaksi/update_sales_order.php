@@ -91,6 +91,7 @@ $datetime_now = date('Y-m-d H:i:s');
 // ── Sanitize ──────────────────────────────────────────────────────────
 $order_no          = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
 $order_date        = mysqli_real_escape_string($conn, $_POST['order_date'] ?? '');
+$no_po_input       = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? '')); // TAMBAHAN
 $marketing_id      = mysqli_real_escape_string($conn, $_POST['marketing_id'] ?? '');
 $sales_id          = mysqli_real_escape_string($conn, $_POST['sales_id'] ?? '');
 $customer_id       = mysqli_real_escape_string($conn, $_POST['customer_id'] ?? '');
@@ -134,6 +135,18 @@ if (empty($customer_name) && !empty($customer_id)) {
 $order_date            = $order_date ?: date('Y-m-d');
 $shipment_due_date_sql = $shipment_due_date ? "'$shipment_due_date'" : 'NULL';
 
+// ── Ambil no_po dari head_sales_order ─────────────────────────────────
+// Gunakan no_po dari input jika ada, atau ambil dari database
+$no_po = $no_po_input;
+
+// Jika no_po kosong, ambil dari database
+if (empty($no_po)) {
+    $q_po = mysqli_query($conn, "SELECT po FROM head_sales_order WHERE order_no='$order_no' LIMIT 1");
+    if ($q_po && $r_po = mysqli_fetch_assoc($q_po)) {
+        $no_po = $r_po['po'];
+    }
+}
+
 // ── Transaction: update head + replace detail ─────────────────────────
 mysqli_begin_transaction($conn);
 
@@ -144,14 +157,9 @@ try {
     }
 
     // Hapus detail PO lama
-    // Ambil no_po dari head_sales_order
-    $q_po = mysqli_query($conn, "SELECT po FROM head_sales_order WHERE order_no='$order_no' LIMIT 1");
-    if ($q_po && $r_po = mysqli_fetch_assoc($q_po)) {
-        $no_po = $r_po['po'];
-        if (!empty($no_po)) {
-            if (!mysqli_query($conn, "DELETE FROM det_po WHERE no_po='$no_po'")) {
-                throw new Exception('Hapus detail PO gagal: ' . mysqli_error($conn));
-            }
+    if (!empty($no_po)) {
+        if (!mysqli_query($conn, "DELETE FROM det_po WHERE no_po='$no_po'")) {
+            throw new Exception('Hapus detail PO gagal: ' . mysqli_error($conn));
         }
     }
 
@@ -306,11 +314,43 @@ try {
         throw new Exception('Update header gagal: ' . mysqli_error($conn));
     }
 
+    // ── TAMBAHAN: Update hed_po jika perlu ──────────────────────────────
+    if (!empty($no_po)) {
+        // Cek apakah data sudah ada di hed_po
+        $cek_hed = mysqli_query($conn, "SELECT no_po FROM hed_po WHERE no_po='$no_po' LIMIT 1");
+        if ($cek_hed && mysqli_num_rows($cek_hed) > 0) {
+            // Update hed_po
+            $sql_update_po = "UPDATE hed_po SET
+                tgl_order = '$order_date',
+                customer = '$customer_name',
+                customer_id = '$customer_id',
+                created_by = '$user_now',
+                created_at = '$datetime_now'
+                WHERE no_po = '$no_po'";
+            
+            if (!mysqli_query($conn, $sql_update_po)) {
+                throw new Exception('Update hed_po gagal: ' . mysqli_error($conn));
+            }
+        } else {
+            // Insert baru ke hed_po jika belum ada
+            $sql_insert_po = "INSERT INTO hed_po (
+                no_po, tgl_order, customer, customer_id, created_by, created_at
+            ) VALUES (
+                '$no_po', '$order_date', '$customer_name', '$customer_id', '$user_now', '$datetime_now'
+            )";
+            
+            if (!mysqli_query($conn, $sql_insert_po)) {
+                throw new Exception('Insert hed_po gagal: ' . mysqli_error($conn));
+            }
+        }
+    }
+
     mysqli_commit($conn);
 
     $_SESSION['alert'] = "
         <div class='alert alert-success p-2 small'>
             <strong>✅ Sales Order <code>$order_no</code> berhasil diupdate!</strong><br>
+            • No PO: <strong>$no_po</strong><br>
             • $detail_count item detail tersimpan<br>
             • Grand Total: <strong>Rp " . number_format($grand_total, 0, ',', '.') . "</strong><br>
             • Down Payment: Rp " . number_format($down_payment, 0, ',', '.') . "<br>

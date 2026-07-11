@@ -1,0 +1,132 @@
+[02-Jul-2026 06:13:34 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:13:38 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:13:40 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:13:49 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:37 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:40 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:42 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:49 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:51 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:54 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:14:56 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:15:13 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:15:15 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:24:53 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[02-Jul-2026 06:26:14 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:11:35 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:11:46 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:11:50 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:11:58 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:12:38 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:15:24 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39
+[03-Jul-2026 06:17:02 Europe/Berlin] PHP Fatal error:  Uncaught TypeError: mysqli_stmt_bind_param(): Argument #1 ($statement) must be of type mysqli_stmt, bool given in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php:39
+Stack trace:
+#0 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(39): mysqli_stmt_bind_param(false, 's', 'customer_deposi...')
+#1 C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php(144): tableExists(Object(mysqli), 'customer_deposi...')
+#2 {main}
+  thrown in C:\xampp\htdocs\cahaya\modul\transaksi\ajax_invoice.php on line 39

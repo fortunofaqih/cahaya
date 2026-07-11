@@ -301,9 +301,9 @@ if (!$query) {
         position: sticky;
         left: 0;
         z-index: 6;
-        min-width: 135px;
-        width: 135px;
-        max-width: 135px;
+        min-width: 250px;
+        width: 250px;
+        max-width: 250px;
         background: #fff !important;
     }
 
@@ -314,11 +314,11 @@ if (!$query) {
 
     .sticky-col-shipping {
         position: sticky;
-        left: 135px;
+        left: 205px;
         z-index: 6;
-        min-width: 130px;
-        width: 130px;
-        max-width: 130px;
+        min-width: 185px;
+        width: 185px;
+        max-width: 185px;
         background: #fff !important;
         font-weight: 700;
     }
@@ -506,8 +506,11 @@ if (!$query) {
                                 <i class="fa fa-trash"></i>
                             </a>
 
-                            <a href="index.php?page=cetak_shipping&id=<?= $shippingNoUrl ?>&type=slip" target="_blank" class="btn-action btn-cetak-shipping" title="Cetak">
-                                <i class="fa fa-print"></i> Cetak
+                            <a href="index.php?page=cetak_slip_shipping&id=<?= $shippingNoUrl ?>&type=slip" target="_blank" class="btn-action btn-cetak-shipping" title="Cetak">
+                                <i class="fa fa-print"></i> Slip
+                            </a>
+                            <a href="index.php?page=cetak_slip_without_uom_default&id=<?= $shippingNoUrl ?>&type=slip" target="_blank" class="btn-action btn-cetak-shipping" title="Cetak">
+                                <i class="fa fa-print"></i> Slip No UoM Default
                             </a>
                         </td>
                         <td class="sticky-col-shipping"><?= e($row['shipping_no']) ?></td>

@@ -483,6 +483,22 @@ while ($row = mysqli_fetch_assoc($query)) {
                 margin: 8mm;
             }
         }
+        .col-price-unit { 
+        width: 10%; 
+        min-width: 65px;
+    }
+    .col-price { 
+        width: 10%; 
+        min-width: 65px;
+    }
+    .col-price-kg { 
+        width: 9%; 
+        min-width: 60px;
+    }
+    .col-subtotal { 
+        width: 11%; 
+        min-width: 75px;
+    }
     </style>
 </head>
 
@@ -490,7 +506,7 @@ while ($row = mysqli_fetch_assoc($query)) {
 <div class="print-container">
 
     <div class="company-header">
-        <h3>PT. MUTIARACAHAYA PLASTINDO (CP)</h3>
+        <h3>CP</h3>
         <h4>REKAP SALES ORDER</h4>
         <p>Periode: <?= htmlspecialchars($start_date_raw) ?> s/d <?= htmlspecialchars($end_date_raw) ?></p>
     </div>
@@ -664,50 +680,50 @@ while ($row = mysqli_fetch_assoc($query)) {
                                     </td>
 
                                     <td class="text-right">
-                                        <?= $price_unit > 0 ? number_format($price_unit, 2, ',', '.') : '-' ?>
+                                        <?php if ($price_unit > 0): ?>
+                                            Rp <?= number_format($price_unit, 2, ',', '.') ?>
+                                        <?php else: ?>
+                                            -
+                                        <?php endif; ?>
                                     </td>
 
                                     <td class="text-right">
-                                        <?= $price > 0 ? number_format($price, 2, ',', '.') : '-' ?>
+                                        <?php if ($price > 0): ?>
+                                            Rp <?= number_format($price, 2, ',', '.') ?>
+                                        <?php else: ?>
+                                            -
+                                        <?php endif; ?>
                                     </td>
 
                                     <td class="text-right">
-                                        <?= $price_kg > 0 ? number_format($price_kg, 2, ',', '.') : '-' ?>
+                                        <?php if ($price_kg > 0): ?>
+                                            Rp <?= number_format($price_kg, 2, ',', '.') ?>
+                                        <?php else: ?>
+                                            -
+                                        <?php endif; ?>
                                     </td>
 
                                     <td class="text-right">
-                                        <?= number_format($subtotal, 2, ',', '.') ?>
+                                        Rp <?= number_format($subtotal, 2, ',', '.') ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
 
                             <tr class="order-total-row">
-                                 <!-- Inventory Name + Remarks -->
-                                <td colspan="2"></td>
-                                <!-- Total : di bawah kolom Inventory ID -->
-                                <td class="text-center">Total :</td>
-
-                                <!-- Order Qty -->
-                                <td class="text-right">
-                                    <?= number_format($order_total_qty, 2, ',', '.') ?>
-                                </td>
-
-                                <!-- UoM -->
-                                <td></td>
-
-                                <!-- Order Bal -->
-                                <td class="text-right">
-                                    <?= number_format($order_total_bal, 2, ',', '.') ?>
-                                </td>
-
-                                <!-- UoM Pack + Price Unit + Price + Price KG -->
-                                <td colspan="4"></td>
-
-                                <!-- Subtotal -->
-                                <td class="text-right">
-                                    <?= number_format($order_total_subtotal, 2, ',', '.') ?>
-                                </td>
-                            </tr>
+                            <td colspan="2"></td>
+                            <td class="text-center">Total :</td>
+                            <td class="text-right">
+                                <?= number_format($order_total_qty, 2, ',', '.') ?>
+                            </td>
+                            <td></td>
+                            <td class="text-right">
+                                <?= number_format($order_total_bal, 2, ',', '.') ?>
+                            </td>
+                            <td colspan="4"></td>
+                            <td class="text-right">
+                                Rp <?= number_format($order_total_subtotal, 2, ',', '.') ?>
+                            </td>
+                        </tr>
                         </tbody>
                     </table>
 
@@ -720,7 +736,7 @@ while ($row = mysqli_fetch_assoc($query)) {
             GRAND TOTAL KESELURUHAN:
             &nbsp; Order Qty: <?= number_format($grand_total_qty, 2, ',', '.') ?>
             &nbsp; | &nbsp; Order Bal: <?= number_format($grand_total_bal, 2, ',', '.') ?>
-            &nbsp; | &nbsp; Subtotal: <?= number_format($grand_total_subtotal, 2, ',', '.') ?>
+            &nbsp; | &nbsp; Subtotal: Rp <?= number_format($grand_total_subtotal, 2, ',', '.') ?>
         </div>
 
     <?php endif; ?>

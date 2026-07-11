@@ -1,6 +1,8 @@
 <?php
 // modul/transaksi/rekap_sales_order.php
 
+// modul/transaksi/rekap_sales_order.php
+
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -87,29 +89,37 @@ function isStokanRemark($remark) {
 }
 
 // ==========================================
-// FILTER PENCARIAN
+// FILTER PENCARIAN - DEFAULT TODAY
 // ==========================================
+// Ambil tanggal hari ini dalam format MySQL (YYYY-MM-DD)
+$today_mysql = date('Y-m-d');
+// Format untuk tampilan (DD-MMM-YYYY)
+$today_display = formatDateIndonesian($today_mysql);
+
+// Cek apakah ada parameter GET, jika tidak maka default ke hari ini
 $start_date_raw = isset($_GET['start_date']) && trim($_GET['start_date']) !== ''
     ? trim($_GET['start_date'])
-    : formatDateIndonesian(date('Y-m-01'));
+    : $today_display; // Default ke hari ini
 
 $end_date_raw = isset($_GET['end_date']) && trim($_GET['end_date']) !== ''
     ? trim($_GET['end_date'])
-    : formatDateIndonesian(date('Y-m-t'));
+    : $today_display; // Default ke hari ini
 
 $start_date_sql = convertFilterDateToMysql($start_date_raw);
 $end_date_sql = convertFilterDateToMysql($end_date_raw);
 
+// Validasi: jika konversi gagal, gunakan hari ini
 if ($start_date_sql === '') {
-    $start_date_sql = date('Y-m-01');
-    $start_date_raw = formatDateIndonesian($start_date_sql);
+    $start_date_sql = $today_mysql;
+    $start_date_raw = $today_display;
 }
 
 if ($end_date_sql === '') {
-    $end_date_sql = date('Y-m-t');
-    $end_date_raw = formatDateIndonesian($end_date_sql);
+    $end_date_sql = $today_mysql;
+    $end_date_raw = $today_display;
 }
 
+// Pastikan start_date tidak lebih besar dari end_date
 if ($start_date_sql > $end_date_sql) {
     $tmp_sql = $start_date_sql;
     $start_date_sql = $end_date_sql;
@@ -136,7 +146,6 @@ $category_safe = mysqli_real_escape_string($conn, $category);
 $approval_status_safe = mysqli_real_escape_string($conn, $approval_status);
 
 // Build WHERE clause untuk header
-// Build WHERE clause untuk header
 $where = "WHERE 1=1";
 
 $where .= " AND DATE(h.order_date) BETWEEN '$start_date_safe' AND '$end_date_safe'";
@@ -161,7 +170,6 @@ if ($approval_status_safe !== '') {
     $where .= " AND h.approval_status = '$approval_status_safe'";
 }
 
-// Query untuk mendapatkan data sales order dengan detail
 // Query untuk mendapatkan data sales order dengan detail
 $query = mysqli_query($conn, "
     SELECT 
@@ -267,11 +275,33 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
     /* Style untuk halaman (layar) */
     .rekap-container {
         max-width: 100%;
+        height: calc(100vh - 20px);
         background: white;
         border-radius: 8px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         overflow: hidden;
         margin-top: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* PANEL ATAS FREEZE: header + filter tetap terlihat saat data discroll */
+    .rekap-sticky-panel {
+        flex: 0 0 auto;
+        position: sticky;
+        top: 0;
+        z-index: 1050;
+        background: #ffffff;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    }
+
+    .rekap-content-scroll {
+        flex: 1 1 auto;
+        min-height: 0;
+        padding: 15px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: #ffffff;
     }
     
     .rekap-header {
@@ -374,6 +404,36 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         border-radius: 4px;
         margin: 0 2px;
     }
+    /* Tambahkan style untuk kolom angka */
+    .rekap-table .col-currency {
+        white-space: nowrap !important;
+        text-align: right;
+        font-family: 'Courier New', monospace;
+        font-size: 10px;
+        min-width: 110px;
+        padding: 4px 6px;
+    }
+
+    .rekap-table .col-currency .currency-symbol {
+        font-size: 9px;
+        color: #666;
+        margin-right: 2px;
+    }
+
+    .rekap-table .col-currency .amount {
+        font-weight: 500;
+    }
+
+    /* Untuk kolom yang lebih kecil */
+    .rekap-table .col-currency-small {
+        min-width: 85px;
+    }
+
+    /* Untuk kolom subtotal */
+    .rekap-table .col-currency-subtotal {
+        min-width: 120px;
+        font-weight: bold;
+    }
     
     /* Style untuk cetak A5 */
     @media print {
@@ -388,8 +448,22 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
         }
         
         .rekap-container {
+            height: auto !important;
             box-shadow: none;
             border-radius: 0;
+            display: block !important;
+            overflow: visible !important;
+        }
+
+        .rekap-sticky-panel {
+            position: static !important;
+            box-shadow: none !important;
+        }
+
+        .rekap-content-scroll {
+            height: auto !important;
+            padding: 0 !important;
+            overflow: visible !important;
         }
         
         .customer-group {
@@ -407,14 +481,45 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             margin: 10mm;
         }
     }
+    .rekap-table .col-inventory-name {
+    white-space: normal !important;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    min-width: 220px;
+    max-width: 360px;
+    line-height: 1.35;
+ }
+ /* Responsive untuk zoom */
+@media screen and (max-width: 1400px) {
+    .rekap-table {
+        font-size: 9px;
+    }
+    
+    .rekap-table .col-currency {
+        min-width: 80px;
+        font-size: 9px;
+    }
+    
+    .rekap-table .col-currency .currency-symbol {
+        font-size: 8px;
+    }
+}
+
+@media screen and (max-width: 1200px) {
+    .rekap-table .col-currency {
+        min-width: 70px;
+        font-size: 8px;
+    }
+}
 </style>
 <div class="rekap-container">
-    <div class="rekap-header no-print">
-        <h4><i class="fa fa-file-alt"></i> Rekap Sales Order</h4>
-    </div>
-    
-    <!-- FILTER PANEL (hanya tampil di layar) -->
-    <div class="filter-box no-print">
+    <div class="rekap-sticky-panel no-print">
+        <div class="rekap-header">
+            <h4><i class="fa fa-file-alt"></i> Rekap Sales Order</h4>
+        </div>
+        
+        <!-- FILTER PANEL (hanya tampil di layar) -->
+        <div class="filter-box">
         <form method="GET" action="index.php" class="row g-2">
             <input type="hidden" name="page" value="rekap_sales_order">
             <div class="col-md-2">
@@ -476,10 +581,11 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                 <a href="index.php?page=sales_order" class="btn btn-sm btn-secondary"><i class="fa fa-arrow-left"></i> Kembali</a>
             </div>
         </form>
+        </div>
     </div>
     
     <!-- KONTEN REKAP -->
-    <div style="padding: 15px;">
+    <div class="rekap-content-scroll">
         <?php if (empty($grouped_data)): ?>
             <div class="alert alert-info text-center">Tidak ada data Sales Order ditemukan.</div>
         <?php else: ?>
@@ -568,7 +674,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                     <tr>
                                         <td><?= htmlspecialchars($item['inventory_id']) ?></td>
 
-                                        <td><?= htmlspecialchars(substr($item['inventory_name'], 0, 50)) ?></td>
+                                        <td><?= htmlspecialchars($item['inventory_name']) ?></td>
 
                                         <td class="text-center">
                                             <?= htmlspecialchars($remarks_display) ?>
@@ -591,50 +697,49 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                             <?= htmlspecialchars($item['uom_pack']) ?>
                                         </td>
 
-                                        <td class="text-right">
-                                            <?= $price_unit > 0 ? 'Rp ' . number_format($price_unit, 2, ',', '.') : '-' ?>
+                                       <td class="text-right col-currency">
+                                            <?php if ($price_unit > 0): ?>
+                                                <span class="currency-symbol">Rp</span><span class="amount"><?= number_format($price_unit, 2, ',', '.') ?></span>
+                                            <?php else: ?>
+                                                <span style="color: #999;">-</span>
+                                            <?php endif; ?>
                                         </td>
 
-                                        <td class="text-right">
-                                            <?= $price > 0 ? 'Rp ' . number_format($price, 2, ',', '.') : '-' ?>
+                                        <td class="text-right col-currency">
+                                            <?php if ($price > 0): ?>
+                                                <span class="currency-symbol">Rp</span><span class="amount"><?= number_format($price, 2, ',', '.') ?></span>
+                                            <?php else: ?>
+                                                <span style="color: #999;">-</span>
+                                            <?php endif; ?>
                                         </td>
 
-                                        <td class="text-right">
-                                            <?= $price_kg > 0 ? 'Rp ' . number_format($price_kg, 2, ',', '.') : '-' ?>
+                                        <td class="text-right col-currency">
+                                            <?php if ($price_kg > 0): ?>
+                                                <span class="currency-symbol">Rp</span><span class="amount"><?= number_format($price_kg, 2, ',', '.') ?></span>
+                                            <?php else: ?>
+                                                <span style="color: #999;">-</span>
+                                            <?php endif; ?>
                                         </td>
 
-                                        <td class="text-right">
-                                            Rp <?= number_format($subtotal, 2, ',', '.') ?>
+                                        <td class="text-right col-currency col-currency-subtotal">
+                                            <span class="currency-symbol">Rp</span><span class="amount"><?= number_format($subtotal, 2, ',', '.') ?></span>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
 
                                     <tr style="background: #f0f0f0; font-weight: bold;">
-                                       
-
-                                        <!-- Inventory Name + Remarks -->
                                         <td colspan="2"></td>
-                                        <!-- Tulisan Total berada di bawah kolom Inventory ID -->
                                         <td class="text-center">Total :</td>
-                                        <!-- Order Qty -->
                                         <td class="text-right">
                                             <?= number_format($order_total_qty, 2, ',', '.') ?>
                                         </td>
-
-                                        <!-- UoM -->
                                         <td></td>
-
-                                        <!-- Order Bal -->
                                         <td class="text-right">
                                             <?= number_format($order_total_bal, 2, ',', '.') ?>
                                         </td>
-
-                                        <!-- UoM Pack + Price Unit + Price + Price KG -->
                                         <td colspan="4"></td>
-
-                                        <!-- Subtotal -->
-                                        <td class="text-right">
-                                            Rp <?= number_format($order_total_subtotal, 2, ',', '.') ?>
+                                        <td class="text-right col-currency col-currency-subtotal">
+                                            <span class="currency-symbol">Rp</span><span class="amount"><?= number_format($order_total_subtotal, 2, ',', '.') ?></span>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -646,12 +751,12 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                 </div>
             <?php endforeach; ?>
             
-            <div class="grand-total">
-                GRAND TOTAL KESELURUHAN:
-                &nbsp; Order Qty: <?= number_format($grand_total_qty, 2, ',', '.') ?>
-                &nbsp; | &nbsp; Order Bal: <?= number_format($grand_total_bal, 2, ',', '.') ?>
-                &nbsp; | &nbsp; Subtotal: Rp <?= number_format($grand_total_subtotal, 2, ',', '.') ?>
-            </div>
+           <div class="grand-total">
+            GRAND TOTAL KESELURUHAN:
+            &nbsp; Order Qty: <strong><?= number_format($grand_total_qty, 2, ',', '.') ?></strong>
+            &nbsp; | &nbsp; Order Bal: <strong><?= number_format($grand_total_bal, 2, ',', '.') ?></strong>
+            &nbsp; | &nbsp; Subtotal: <strong>Rp <?= number_format($grand_total_subtotal, 2, ',', '.') ?></strong>
+        </div>
         <?php endif; ?>
     </div>
 </div>
@@ -686,7 +791,7 @@ $(document).ready(function() {
     $('.print-title').remove();
 
     var titleHtml = '<div class="print-title" style="text-align: center; margin-bottom: 20px;">' +
-        '<h3>PT MUTIARA CAHAYA PLASTINDO</h3>' +
+        '<h3>CP</h3>' +
         '<h4>REKAP SALES ORDER</h4>' +
         '<p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>' +
         '<hr>' +

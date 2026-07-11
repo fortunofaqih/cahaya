@@ -27,6 +27,17 @@ if (!$q_head || mysqli_num_rows($q_head) == 0) {
 }
 $head = mysqli_fetch_assoc($q_head);
 
+// TAMBAHAN: Ambil no_po dari tabel hed_po
+$q_po = mysqli_query($conn, "SELECT no_po FROM hed_po WHERE no_po = (SELECT po FROM head_sales_order WHERE order_no = '$order_no') LIMIT 1");
+$no_po = '';
+if ($q_po && $r_po = mysqli_fetch_assoc($q_po)) {
+    $no_po = $r_po['no_po'];
+}
+// Jika tidak ditemukan, coba ambil dari po di head_sales_order
+if (empty($no_po) && !empty($head['po'])) {
+    $no_po = $head['po'];
+}
+
 // Ambil data detail untuk ditampilkan (readonly)
 $q_det = mysqli_query($conn, "SELECT * FROM detail_sales_order WHERE order_no = '$order_no' ORDER BY id ASC");
 $details = [];
@@ -359,7 +370,7 @@ if ($uom_q) {
     <div class="so-body">
     <form method="POST" action="index.php?page=update_sales_order" id="formEditSO">
         <input type="hidden" name="order_no" value="<?= htmlspecialchars($order_no) ?>">
-
+         <input type="hidden" name="no_po" value="<?= htmlspecialchars($no_po) ?>">
         <!-- 3 PANEL ROW (sama seperti sebelumnya) -->
         <div class="panel-row">
             <!-- PANEL 1: Order Information -->
@@ -373,6 +384,11 @@ if ($uom_q) {
                     <div class="ff">
                         <label>Order Date</label>
                         <input type="date" name="order_date" value="<?= htmlspecialchars($head['order_date']) ?>">
+                    </div>
+                    <div class="ff">
+                        <label>No. PO</label>
+                        <input type="text" name="no_po" value="<?= htmlspecialchars($no_po) ?>" readonly style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                        <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO tidak dapat diubah</small>
                     </div>
                     <div class="ff">
                         <label>Marketing</label>

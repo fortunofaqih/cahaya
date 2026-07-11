@@ -11,6 +11,8 @@ include __DIR__ . '/../../koneksi.php';
 // =============================================
 // FILTER PENCARIAN - DEFAULT HARI INI
 // =============================================
+// Di bagian atas, tambahkan variabel untuk menangkap filter customer
+$customer_name_filter = isset($_GET['customer_name']) ? mysqli_real_escape_string($conn, trim($_GET['customer_name'])) : '';
 function formatDateIndonesian($date) {
     if (empty($date) || $date == '0000-00-00') {
         return '';
@@ -145,6 +147,11 @@ if ($approval_status !== '') {
 
 if ($so_id !== '') {
     $where .= " AND h.order_no LIKE '%$so_id%'";
+}
+
+// TAMBAHAN: Filter berdasarkan Customer Name
+if ($customer_name_filter !== '') {
+    $where .= " AND h.customer_name LIKE '%$customer_name_filter%'";
 }
 
 if ($show_checked == 'on') {
@@ -399,6 +406,17 @@ if (!$query) {
         cursor: pointer;
         min-width: 90px;
     }
+    .btn-secondary {
+    background: #6c757d !important;
+    color: #fff !important;
+    border: 1px solid #6c757d !important;
+    }
+
+    .btn-secondary:hover {
+        background: #5a6268 !important;
+        color: #fff !important;
+        transform: translateY(-1px);
+    }
 </style>
 
 <div class="d-print-none">
@@ -408,7 +426,7 @@ if (!$query) {
     
   <!-- FILTER PANEL -->
 <div class="filter-box">
-    <form method="GET" action="index.php" class="row g-2 align-items-end">
+    <form method="GET" action="index.php" class="row g-2 align-items-end" id="filterForm">
         <input type="hidden" name="page" value="sales_order">
 
         <div class="col-md-2">
@@ -463,20 +481,42 @@ if (!$query) {
             >
         </div>
 
-        <div class="col-md-1"></div>
-
+        <!-- Filter Customer Name -->
         <div class="col-md-2">
-            <button type="submit" class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100 mb-2">
-                <i class="fa fa-search"></i> Search
-            </button>
-
-            <button 
-                type="button"
-                class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100"
-                onclick="window.location.href='index.php?page=add_sales_order'"
+            <label class="form-label fw-bold small">Customer Name</label>
+            <input 
+                type="text" 
+                name="customer_name" 
+                class="form-control form-control-sm" 
+                placeholder="Search Customer..." 
+                value="<?= htmlspecialchars($customer_name_filter) ?>"
             >
-                <i class="fa fa-plus-circle"></i> Create New SO
-            </button>
+        </div>
+
+        <!-- Tombol Aksi -->
+        <div class="col-md-3">
+            <div class="row g-1">
+                <div class="col-6">
+                    <button type="submit" class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100 mb-2">
+                        <i class="fa fa-search"></i> Search
+                    </button>
+                </div>
+                <div class="col-6">
+                    <!-- TAMBAHAN: Tombol Reset Filter -->
+                    <button type="button" class="btn btn-secondary btn-sm px-3 fw-bold shadow-sm w-100 mb-2" onclick="resetFilter()">
+                        <i class="fa fa-undo"></i> Reset
+                    </button>
+                </div>
+                <div class="col-12">
+                    <button 
+                        type="button"
+                        class="btn btn-vb-primary btn-sm px-3 fw-bold shadow-sm w-100"
+                        onclick="window.location.href='index.php?page=add_sales_order'"
+                    >
+                        <i class="fa fa-plus-circle"></i> Create New SO
+                    </button>
+                </div>
+            </div>
         </div>
     </form>
 </div>
@@ -590,6 +630,36 @@ function confirmDelete(orderNo) {
     if (confirm('Yakin ingin menghapus Sales Order ' + orderNo + '?')) {
         window.location.href = 'index.php?page=sales_order&action=delete&id=' + orderNo;
     }
+}
+// Fungsi Reset Filter
+function resetFilter() {
+    // Reset semua input text
+    document.querySelectorAll('#filterForm input[type="text"]').forEach(function(input) {
+        input.value = '';
+    });
+    
+    // Reset semua select
+    document.querySelectorAll('#filterForm select').forEach(function(select) {
+        select.value = '';
+    });
+    
+    // Set date ke hari ini
+    var today = new Date();
+    var day = String(today.getDate()).padStart(2, '0');
+    var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    var month = monthNames[today.getMonth()];
+    var year = today.getFullYear();
+    var dateString = day + '-' + month + '-' + year;
+    
+    // Set tanggal start dan end ke hari ini
+    var dateInputs = document.querySelectorAll('#filterForm .datepicker');
+    if (dateInputs.length >= 2) {
+        dateInputs[0].value = dateString;
+        dateInputs[1].value = dateString;
+    }
+    
+    // Submit form
+    document.getElementById('filterForm').submit();
 }
 // Fungsi untuk update approval status via AJAX
 // Update approval status via AJAX

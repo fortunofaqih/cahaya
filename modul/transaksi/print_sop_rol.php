@@ -12,25 +12,31 @@ if (!isset($conn)) {
 if (!isset($conn) || !$conn) {
     die("Koneksi database gagal. Silakan periksa file koneksi.php");
 }
-
+$user_name = isset($_SESSION['username']) ? $_SESSION['username'] : '';
 $sop_id = isset($_GET['sop_id']) ? mysqli_real_escape_string($conn, $_GET['sop_id']) : '';
 if (empty($sop_id)) {
     die("SOP ID tidak ditemukan");
 }
 
-// Ambil data header & detail SOP
+// Ambil data header SOP
 $head_query = mysqli_query($conn, "SELECT * FROM head_sop WHERE sop_id = '$sop_id' LIMIT 1");
 $head = mysqli_fetch_assoc($head_query);
 if (!$head) {
     die("Data SOP tidak ditemukan");
 }
 
-$detail_query = mysqli_query($conn, "SELECT * FROM det_sop WHERE sop_id = '$sop_id' LIMIT 1");
+// Ambil data detail SOP + inventory name untuk deteksi PE / PP / HD
+// Catatan: jika nama kolom relasi inventory di det_sop bukan inventory_id, sesuaikan bagian ON mi.inventory_id = ds.inventory_id.
+$detail_query = mysqli_query($conn, "
+    SELECT 
+        ds.*,
+        mi.inventory_name
+    FROM det_sop ds
+    LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
+    WHERE ds.sop_id = '$sop_id'
+    LIMIT 1
+");
 $detail = mysqli_fetch_assoc($detail_query);
-
-$tgl_order = date('d-M-Y', strtotime($head['sop_date']));
-$tgl_kirim = !empty($detail['shipment_due_date']) ? date('d-M-Y', strtotime($detail['shipment_due_date'])) : '-';
-$spec_rol_display = getRollSpecText($detail ?: []);
 
 // Helper agar aman untuk kolom yang kadang berisi angka + satuan, contoh: "0.12 KG/ROL" atau "10 ROL".
 function isPlainNumericValue($value) {
@@ -60,7 +66,7 @@ function formatNumberOrText($value, $decimals = 2, $default = '-') {
         return number_format(safeNumber($value), $decimals);
     }
 
-    return htmlspecialchars($value);
+    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
 
 function formatBeratRol($value) {
@@ -129,13 +135,63 @@ function displayField($value, $fallback = '-') {
     return htmlspecialchars($value !== '' ? $value : $fallback, ENT_QUOTES, 'UTF-8');
 }
 
+function getMaterialPrefixFromInventoryName($inventoryName) {
+    $name = strtoupper(trim((string)$inventoryName));
+
+    if ($name === '') {
+        return '';
+    }
+
+    // Ambil hanya kata PE, PP, atau HD sebagai kata terpisah.
+    // Contoh cocok:
+    // PE SLONTONG
+    // SLONTONG PE
+    // PE ROLL STOKAN 0.2000X300/160X51 M PAKAI UV 5%
+    // PP ROLL
+    // HD POTONG
+    if (preg_match('/\b(PP|PE|HD)\b/', $name, $match)) {
+        return $match[1];
+    }
+
+    return '';
+}
+
+function formatBeratJenisWithMaterial($beratJenis, $inventoryName) {
+    $beratJenis = trim((string)($beratJenis ?? ''));
+
+    if ($beratJenis === '') {
+        return '-';
+    }
+
+    $prefix = getMaterialPrefixFromInventoryName($inventoryName);
+
+    // Kalau sudah diawali PE / PP / HD, jangan dobel.
+    if (preg_match('/^(PP|PE|HD)\s+/i', $beratJenis)) {
+        return htmlspecialchars($beratJenis, ENT_QUOTES, 'UTF-8');
+    }
+
+    if ($prefix !== '') {
+        return htmlspecialchars($prefix . ' ' . $beratJenis, ENT_QUOTES, 'UTF-8');
+    }
+
+    return htmlspecialchars($beratJenis, ENT_QUOTES, 'UTF-8');
+}
+
+function h($value) {
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+$tgl_order = !empty($head['sop_date']) ? date('d-M-Y', strtotime($head['sop_date'])) : '-';
+$tgl_kirim = !empty($detail['shipment_due_date']) ? date('d-M-Y', strtotime($detail['shipment_due_date'])) : '-';
+$spec_rol_display = getRollSpecText($detail ?: []);
+
 header("Content-Type: text/html; charset=UTF-8");
 ?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <title>SOP ROLL - <?= $sop_id ?></title>
+    <title>SOP ROLL - <?= htmlspecialchars($sop_id, ENT_QUOTES, 'UTF-8') ?></title>
     <style>
         * {
             margin: 0;
@@ -153,10 +209,10 @@ header("Content-Type: text/html; charset=UTF-8");
         
         body {
             font-family: Arial, Helvetica, sans-serif;
-            font-size: 10pt;
+            font-size: 8pt;
             background: white;
             color: #000;
-            line-height: 1.15;
+            line-height: 1.1;
             width: 100%;
         }
         
@@ -177,11 +233,11 @@ header("Content-Type: text/html; charset=UTF-8");
         /* Header */
         .header {
             text-align: left;
-            margin-bottom: 5px;
+            margin-bottom: 3px;
         }
         
         .header h1 {
-            font-size: 11pt;
+            font-size: 9pt;
             font-weight: bold;
             text-decoration: underline;
         }
@@ -190,12 +246,12 @@ header("Content-Type: text/html; charset=UTF-8");
         .info-box {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 5px;
-            font-size: 10pt;
+            margin-bottom: 3px;
+            font-size: 8pt;
         }
         
         .info-box td {
-            padding: 0.5px 2px;
+            padding: 0.3px 2px;
             vertical-align: top;
         }
         
@@ -207,7 +263,7 @@ header("Content-Type: text/html; charset=UTF-8");
         .produksi-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 5px;
+            margin-top: 3px;
         }
         
         .produksi-table th, 
@@ -220,11 +276,11 @@ header("Content-Type: text/html; charset=UTF-8");
         
         .produksi-table th {
             font-weight: normal;
-            font-size: 8pt;
+            font-size: 6.5pt;
         }
         
         .produksi-table tbody td {
-            height: 22px; /* Disesuaikan agar pas di sisa ruang vertikal */
+            height: 16px; /* Disesuaikan agar pas di sisa ruang vertikal */
         }
         
         /* Kolom khusus Tabel Rol (Kiri) */
@@ -242,24 +298,24 @@ header("Content-Type: text/html; charset=UTF-8");
         
         /* Footer TTD Area */
         .ttd-section {
-            margin-top: 12px;
+            margin-top: 8px;
             width: 100%;
-            font-size: 10pt;
+            font-size: 8pt;
         }
         
         .print-btn {
             display: block;
             text-align: center;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
         }
         
         .btn-print {
             background: #007bff;
             color: white;
             border: none;
-            padding: 8px 20px;
+            padding: 6px 15px;
             cursor: pointer;
-            font-size: 11pt;
+            font-size: 9pt;
             border-radius: 5px;
         }
         
@@ -279,13 +335,13 @@ header("Content-Type: text/html; charset=UTF-8");
         
         <div class="sisi-cetak">
             <div class="header">
-                <h1>Surat Perintah Kerja Rol (CP)</h1>
+                <h1>Surat Perintah Kerja Rol</h1>
             </div>
             
             <table class="info-box">
                 <tr><td class="label">Tgl Order</td><td class="titik">:</td><td class="val"><?= $tgl_order ?></td></tr>
                 <tr><td class="label">Nama Customer</td><td class="titik">:</td><td class="val"><?= displayField($head['customer'] ?? '') ?></td></tr>
-                <tr><td class="label">Berat Jenis</td><td class="titik">:</td><td class="val"><?= displayField($detail['berat_jenis_rol'] ?? '') ?></td></tr>
+                <tr><td class="label">Berat Jenis</td><td class="titik">:</td><td class="val"><?= formatBeratJenisWithMaterial($detail['berat_jenis_rol'] ?? '', $detail['inventory_name'] ?? '') ?></td></tr>
                 <tr><td class="label">Ukuran</td><td class="titik">:</td><td class="val"><?= displayField($detail['ukuran_rol'] ?? '') ?></td></tr>
                 <tr><td class="label">Berat/Rol</td><td class="titik">:</td><td class="val"><?= formatBeratRol($detail['berat_rol'] ?? '') ?></td></tr>
                 <tr><td class="label">Isi/Bal</td><td class="titik">:</td><td class="val"><?= displayField($detail['isi_bal_rol'] ?? '') ?></td></tr>
@@ -329,16 +385,26 @@ header("Content-Type: text/html; charset=UTF-8");
             
             <table class="ttd-section">
                 <tr>
-                    <td style="text-align: left;">
-                        Dibuat Oleh,<br><br><br><br>
-                        ( &nbsp; &nbsp; &nbsp; admin &nbsp; &nbsp; &nbsp; )
+                    <td style="text-align: left; padding-left: 25px;">
+                       Dibuat Oleh,<br><br><br><br>
+                    <?php if (!empty($user_name)): ?>
+                        ( <?= h($user_name) ?> )
+                    <?php else: ?>
+                        ( &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; )
+                    <?php endif; ?>
+                    </td>
+                    <td style="text-align: right; padding-right: 20px;">
+                        Diperiksa Oleh,<br><br><br><br>
+                        ( &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; )
                     </td>
                 </tr>
             </table>
+            
+            <div class="footer" style="margin-top: 10px; font-size: 6pt; text-align: center; border-top: 1px solid #ccc; padding-top: 2px;">
+                Dicetak pada: <?= date('d-m-Y H:i:s') ?> | SOP: <?= h($sop_id) ?>
+            </div>
         </div>
         
-      
-       
     </div>
 </body>
 </html>

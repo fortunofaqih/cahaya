@@ -5,7 +5,7 @@
 $host = "localhost";
 $user = "root";
 $pass = "";
-$db   = "db_cahaya";
+$db   = "db_cahaya_02072026";
 $port = 3306; // Gunakan integer tanpa tanda kutip untuk port
 
 $conn = mysqli_connect($host, $user, $pass, $db, $port);

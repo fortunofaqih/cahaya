@@ -5,7 +5,7 @@
 <!-- Footer Bawah -->
 <footer class="footer mt-auto py-2 bg-white border-top text-center text-muted" style="font-size: 11px;">
     <div class="container-fluid">
-        <span>&copy; <?= date('Y'); ?> PT. MUTIARACAHAYA PLASTINDO - System ERP V1.0 Modular (Responsive)</span>
+        <span>&copy; <?= date('Y'); ?> CP - System ERP V1.0 Modular (Responsive)</span>
     </div>
 </footer>
 

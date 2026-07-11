@@ -147,9 +147,6 @@ switch ($page) {
     case 'cetak_shipping':
         include 'modul/transaksi/cetak_shipping.php';
         break;
-    case 'invoice':
-        include 'modul/transaksi/invoice.php';
-        break;
     case 'rekap_sales_order':
         include 'modul/transaksi/rekap_sales_order.php';
         break;
@@ -164,6 +161,57 @@ switch ($page) {
         break;
     case 'ajax_kartu_stok_order_customer_detail':
         include 'modul/transaksi/ajax_kartu_stok_order_customer_detail.php';
+        break;
+    case 'invoice':
+        include 'modul/transaksi/invoice.php';
+        break;
+    case 'add_invoice':
+        include 'modul/transaksi/add_invoice.php';
+        break;
+    case 'save_invoice':
+        include 'modul/transaksi/save_invoice.php';
+        break;
+    case 'cetak_invoice':
+        include 'modul/transaksi/cetak_invoice.php';
+        break;
+    case 'edit_invoice':
+        include 'modul/transaksi/edit_invoice.php';
+        break;
+    case 'delete_invoice':
+        include 'modul/transaksi/delete_invoice.php';
+        break;
+    case 'cetak_slip_shipping':
+        include 'modul/transaksi/cetak_slip_shipping.php';
+        break;
+    case 'cetak_slip_without_uom_default':
+        include 'modul/transaksi/cetak_slip_without_uom_default.php';
+        break;
+    case 'kartu_piutang':
+        include 'modul/transaksi/kartu_piutang.php';
+        break;
+    case 'cetak_kartu_piutang':
+        include 'modul/transaksi/cetak_kartu_piutang.php';
+        break;
+    case 'pembayaran':
+        include 'modul/transaksi/pembayaran.php';
+        break;
+    case 'add_bayar':
+        include 'modul/transaksi/add_bayar.php';
+        break;
+    case 'edit_bayar':
+        include 'modul/transaksi/edit_bayar.php';
+        break;
+    case 'titip_uang':
+        include 'modul/transaksi/titip_uang.php';
+        break;
+    case 'add_titip':
+        include 'modul/transaksi/add_titip.php';
+        break;
+    case 'edit_titip':
+        include 'modul/transaksi/edit_titip.php';
+        break;
+    case 'detail_titip':
+        include 'modul/transaksi/detail_titip.php';
         break;
 
     // --- PROGRAM / KEAMANAN ---

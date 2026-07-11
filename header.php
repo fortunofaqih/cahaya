@@ -180,7 +180,7 @@ $groupLabels = [
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top border-bottom border-secondary">
     <div class="container-fluid">
         <a class="navbar-brand fw-bold text-info" href="index.php">
-            Mutiaracahaya Plastindo 
+            CP
             <span class="badge bg-secondary text-white" style="font-size: 10px;">ERP</span>
         </a>
         <button class="navbar-toggler d-md-none" type="button" data-bs-toggle="collapse" data-bs-target="#sidebarMenu" aria-controls="sidebarMenu" aria-expanded="false" aria-label="Toggle navigation">
@@ -318,7 +318,7 @@ $groupLabels = [
                     <!-- ================== TRANSAKSI ================== -->
                     <?php 
                     $hasTransaksiMenu = false;
-                    $transaksiMenus = ['sales_order', 'sop', 'shipping', 'invoice', 'retur-invoice', 'pembayaran', 'downpayment', 'titip-uang', 'purchase_order'];
+                    $transaksiMenus = ['sales_order', 'sop', 'shipping', 'invoice', 'retur-invoice', 'pembayaran', 'downpayment', 'titip_uang', 'purchase_order'];
                     foreach ($transaksiMenus as $menu) {
                         if (canAccessMenu($menu, $allowedMenus)) {
                             $hasTransaksiMenu = true;
@@ -387,9 +387,9 @@ $groupLabels = [
                         </li>
                         <?php endif; ?>
                         
-                        <?php if (canAccessMenu('titip-uang', $allowedMenus)): ?>
+                        <?php if (canAccessMenu('titip_uang', $allowedMenus)): ?>
                         <li class="nav-item">
-                            <a class="nav-link" href="index.php?page=titip-uang">
+                            <a class="nav-link" href="index.php?page=titip_uang">
                                 <i class="fa fa-wallet me-2"></i> Titip Uang
                             </a>
                         </li>
@@ -477,7 +477,7 @@ $groupLabels = [
                     $staticMenus = ['dashboard', 'customer', 'supplier', 'area', 'marketing', 'sales', 
                                    'inventory', 'category', 'gudang', 'mesin', 'uom', 'purchase_order', 
                                    'sales_order', 'sop', 'shipping', 'invoice', 'retur-invoice', 
-                                   'pembayaran', 'downpayment', 'titip-uang', 'kartu-stok', 
+                                   'pembayaran', 'downpayment', 'titip_uang', 'kartu-stok', 
                                    'rekap_sales_order', 'aging', 'konfigurasi', 'user-akses', 
                                    'add-menu', 'backup', 'ganti-password'];
                     

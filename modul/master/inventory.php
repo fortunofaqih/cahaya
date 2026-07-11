@@ -1,6 +1,10 @@
 <?php
 // modul/master/inventory.php
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 if (!isset($_SESSION['username'])) {
     // Jika session tidak ada, return JSON error, bukan redirect
     if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
@@ -18,7 +22,12 @@ include __DIR__ . '/../../koneksi.php';;
 // AJAX HANDLER - Ditempatkan di PALING ATAS sebelum HTML apapun
 // ====================================================================
 if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
-    header('Content-Type: application/json');
+    // Pastikan response AJAX bersih JSON murni.
+    // Penting: AJAX jangan dipanggil lewat index.php setelah header.php ter-render.
+    if (ob_get_length()) {
+        @ob_clean();
+    }
+    header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-cache, must-revalidate');
     
     // Handler untuk get_inventory_uom
@@ -300,6 +309,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action_form'])) {
 // Default: tampilkan inventory yang dibuat hari ini agar load awal ringan.
 // ====================================================================
 $today = date('Y-m-d');
+$first_day_of_year = date('Y-01-01');
 $search_keyword = trim($_GET['search'] ?? '');
 
 function parseInventoryFilterDate($value, $fallback) {
@@ -329,7 +339,7 @@ function parseInventoryFilterDate($value, $fallback) {
     return $fallback;
 }
 
-$start_date = parseInventoryFilterDate($_GET['start_date'] ?? '', $today);
+$start_date = parseInventoryFilterDate($_GET['start_date'] ?? '', $first_day_of_year);
 $end_date = parseInventoryFilterDate($_GET['end_date'] ?? '', $today);
 
 // Nilai yang ditampilkan di input datepicker.
@@ -830,7 +840,43 @@ function generateInventoryId($conn, $inventory_name, $type) {
                     <div id="specification" class="spec-content active">
                         <table class="spec-table"><tr><td><b>Cap</b></td><td><input type="text" name="cap" id="form_cap"></td></tr>
                         <tr><td><b>Colour</b></td><td><input type="text" name="colour" id="form_colour"></td></tr>
-                        <tr><td><b>Quality</b></td><td><select name="quality" id="form_quality" class="form-select"><option value="">-- Pilih Quality --</option><option value="BIJI PLASTIK">BIJI PLASTIK</option><option value="HD KRESEK">HD KRESEK</option><option value="HD POTONG">HD POTONG</option><option value="HD ROLL">HD ROLL</option><option value="PE KRESEK">PE KRESEK</option><option value="PE POTONG">PE POTONG</option><option value="PE ROLL">PE ROLL</option><option value="PP ROLL">PP ROLL</option><option value="PP POTONG">PP POTONG</option></select></td></tr>
+                        <tr><td><b>Quality</b></td><td><select name="quality" id="form_quality" class="form-select">
+						<option value="">-- Pilih Quality --</option>
+						<option value="BIJI PLASTIK">BIJI PLASTIK</option>
+						<option value="HD KRESEK">HD KRESEK</option>
+						<option value="HD POTONG">HD POTONG</option>
+						<option value="HD ROLL">HD ROLL</option>
+						<option value="PE KRESEK">PE KRESEK</option>
+						<option value="PE POTONG">PE POTONG</option>
+						<option value="PE ROLL">PE ROLL</option>
+						<option value="PP ROLL">PP ROLL</option>
+						<option value="PP ROLL BOLA">PP ROLL BOLA</option>
+						<option value="PP POTONG">PP POTONG</option>
+						<option value="GEOMEMBRANE">GEOMEMBRANE</option>
+						<option value="BOX">BOX</option>
+						<option value="BRONGSONG PISANG">BRONGSONG PISANG</option>
+						<option value="BUNGKUS">BUNGKUS</option>
+						<option value="GEOMEMBRANE">GEOMEMBRANE</option>
+						<option value="KAOS">KAOS</option>
+						<option value="KOLAM">KOLAM</option>
+						<option value="LEMPER">LEMPER</option>
+						<option value="MULSA">MULSA</option>
+						<option value="MULSA TAMBAK">MULSA TAMBAK</option>
+						<option value="OBAT WARNA">OBAR WARNA</option>
+						<option value="PAGER SAWAH">PAGER SAWAH</option>
+						<option value="PLASTIK LOUNDRY">PLASTIK LOOUNDRY</option>
+						<option value="PLASTIK SAMPAH">PLASTIK SAMPAH</option>
+						<option value="PLASTIK SAYUR">PLASTIK SAYUR</option>
+						<option value="PLASTIK SEMANGKA">PLASTIK SEMANGKA</option>
+						<option value="POLYBAG">POLYBAG</option>
+						<option value="PORPORATED">PORPORATED</option>
+						<option value="SEDOTAN">SEDOTAN</option>
+						<option value="SELANG">SELANG</option>
+						<option value="SLONTONG">SLONTONG</option>
+						<option value="TERPAL">TERPAL</option>
+						<option value="UV1">UV1</option>
+						<option value="UV2">UV2</option>
+						</select></td></tr>
                         <tr><td><b>Volume Default</b></td><td><input type="number" step="0.0001" name="volume_default" id="form_volume_default" value="1.0000"></td></tr>
                         <tr><td><b>Tolerance (%)</b></td><td><input type="number" step="0.01" name="tolerance" id="form_tolerance" value="0"></td></tr>
                         <tr><td><b>Upper Tolerance</b></td><td><input type="number" step="0.01" name="upper_tolerance" id="form_upper_tolerance" value="0.00"></td></tr>
@@ -863,7 +909,13 @@ function generateInventoryId($conn, $inventory_name, $type) {
                         <tr><td><b>Part No</b></td><td><input type="text" name="part_no" id="form_part_no"></td></tr>
                         <tr><td><b>Calculation</b></td><td><input type="text" name="calculation" id="form_calculation"></td></tr>
                         <tr><td><b>Printing Type</b></td><td><input type="text" name="printing_type" id="form_printing_type"></td></tr>
-                        <tr><td><b>Origin</b></td><td><select name="origin" id="form_origin" class="form-select"><option value="">-- Pilih Origin --</option><option value="Gudang Bahan Baku">Gudang Bahan Baku</option><option value="Gudang Bahan Jadi">Gudang Bahan Jadi</option></select></td></tr>
+                        <tr><td><b>Origin</b></td><td><select name="origin" id="form_origin" class="form-select">
+                            <option value="">-- Pilih Origin --</option>
+                            <option value="Gudang Bahan Baku">Gudang Bahan Baku</option>
+                            <option value="Gudang Bahan Jadi">Gudang Barang Jadi 1</option>
+                            <option value="Gudang Bahan Jadi">Gudang Produksi</option>
+                            <option value="Gudang Bahan Jadi">Gudang Barang Jadi 2</option>
+                        </select></td></tr>
                         <tr><td><b>Supp Code</b></td><td><input type="text" name="supp_code" id="form_supp_code"></td></tr>
                         <tr><td><b>Description</b></td><td><textarea name="description" id="form_description" rows="2"></textarea></td></tr>
                         <tr><td><b>Nama Customer</b></td><td><input type="text" name="nama_customer" id="form_nama_customer"></td></tr>
@@ -1009,7 +1061,7 @@ function showModalEdit(data) {
         // LOAD UOM DATA
         if(data.inventory_id) {
             showLoading(true);
-            var url = 'index.php?page=inventory&ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
+            var url = 'modul/master/inventory.php?ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
              console.log("Fetching URL:", url); // Debug
             fetch(url, {
                 method: 'GET', 

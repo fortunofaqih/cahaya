@@ -92,7 +92,7 @@ while ($inv = mysqli_fetch_assoc($inventory_rs)) {
   $inventory_options[] = [
     'id' => $inv['inventory_id'],
     'name' => $inv['inventory_name'],
-    'uom' => $inv['uom'],
+    'uom' => 'KG',
     'uom_pack' => $inv['uom_pack'],
     'p' => (float)$inv['p'],
     'l' => (float)$inv['l'],
@@ -149,7 +149,7 @@ $order_date_display = formatDateIndonesian($order_date);
 
 $order_no     = generateOrderNo($conn);
 $tahun        = date('Y');
-$po_number    = generatePONumber($conn, $tahun);
+$no_po    = generatePONumber($conn, $tahun);
 ?>
 
 <!-- CSS & JS -->
@@ -416,6 +416,28 @@ $po_number    = generatePONumber($conn, $tahun);
     font-size: 10px;
     cursor: pointer;
 }
+
+.auto-correct-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--accent-blue);
+    margin-left: auto;
+    background: #eaf4ff;
+    border: 1px solid #b6dcff;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+.auto-correct-toggle input {
+    width: auto !important;
+    margin: 0;
+}
+.qty-auto-calculated {
+    background: #eaf4ff !important;
+    font-weight: bold;
+}
 </style>
 
 <div class="so-wrap">
@@ -424,8 +446,8 @@ $po_number    = generatePONumber($conn, $tahun);
     <?php endif; ?>
 
     <form method="POST" action="index.php?page=save_sales_order" id="formSO">
-        <input type="hidden" name="po" value="<?= htmlspecialchars($po_number) ?>">
-        
+        <input type="hidden" name="po" value="<?= htmlspecialchars($no_po) ?>">
+         <input type="hidden" name="no_po" value="<?= htmlspecialchars($no_po) ?>">
         <!-- PANEL 1: Order Information -->
         <div class="panel-row">
             <div class="so-panel">
@@ -439,6 +461,11 @@ $po_number    = generatePONumber($conn, $tahun);
                         <label>Order Date</label>
                         <input type="text" name="order_date" class="form-control form-control-sm datepicker" value="<?= $order_date_display ?>">
                     </div>
+                     <div class="ff">
+                            <label>No. PO <span class="required">*</span></label>
+                            <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" readonly style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                            <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO akan otomatis digenerate</small>
+                        </div>
                     <div class="ff">
                         <label>Marketing <span class="required">*</span></label>
                         <select name="marketing_id" id="marketing_id" required>
@@ -557,6 +584,10 @@ $po_number    = generatePONumber($conn, $tahun);
             <div class="detail-toolbar">
                 <button type="button" class="btn-vs btn-primary" onclick="addRow()"><i class="fa fa-plus"></i> Tambah Baris Item</button>
                 <button type="button" class="btn-vs btn-secondary" onclick="deleteSelected()"><i class="fa fa-trash"></i> Hapus Terpilih</button>
+                <label class="auto-correct-toggle" title="Jika aktif, Qty & Qty Pack akan dihitung otomatis dari UoM Detail x konversi m_inventory_uom">
+                    <input type="checkbox" id="chkAutoCorrect" name="allow_auto_correct" value="Checked">
+                    <i class="fa fa-wand-magic-sparkles"></i> Allow Auto Correct
+                </label>
             </div>
 
             <div class="detail-table-wrap">
@@ -722,7 +753,7 @@ function buildRow(data) {
         optionsHtml += '<option value="' + escHtml(inv.id) + '" ' +
             selectedAttr + ' ' +
             'data-inv-name="' + escHtml(inv.name) + '" ' +
-            'data-uom="' + escHtml(inv.uom) + '" ' +
+            'data-uom="KG" ' +
             'data-uom-pack="' + escHtml(inv.uom_pack) + '" ' +
             'data-p="' + escHtml(inv.p || 0) + '" ' +
             'data-l="' + escHtml(inv.l || 0) + '" ' +
@@ -753,7 +784,7 @@ function buildRow(data) {
         </td>
 
         <td>
-            <input type="text" name="uom[]" class="inv-uom" value="${escHtml(data.uom || '')}" readonly style="background:#f1f3f5; text-align:center;">
+            <input type="text" name="uom[]" class="inv-uom" value="${escHtml(data.uom || 'KG')}" readonly style="background:#f1f3f5; text-align:center;">
         </td>
 
         <td>
@@ -1030,6 +1061,73 @@ function getUomFactor(inventoryId, unit) {
     return 0;
 }
 
+function showNotification(message, type) {
+    var notification = $('<div class="notification">' + escHtml(message) + '</div>');
+    var bgColor = type === 'success' ? '#28a745' : '#dc3545';
+
+    notification.css({
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        padding: '12px 20px',
+        background: bgColor,
+        color: '#fff',
+        borderRadius: '5px',
+        zIndex: 9999,
+        fontSize: '12px',
+        boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
+    });
+
+    $('body').append(notification);
+
+    setTimeout(function() {
+        notification.fadeOut(500, function() { $(this).remove(); });
+    }, 3000);
+}
+
+function applyAutoCorrectToRow(row) {
+    var $row = $(row);
+
+    var inventoryId = $row.find('.inv-select').val();
+    var uomDetailUnit = ($row.find('.inv-uom-detail').val() || '').trim();
+    var uomDetailValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
+    var uomDetailFactor = parseFloat($row.find('.inv-uom-detail-factor').val()) || 0;
+    var uomPack = ($row.find('.inv-uom-pack-select').val() || '').trim();
+
+    if (!inventoryId || !uomDetailUnit || uomDetailValue <= 0) return;
+
+    if (uomDetailFactor <= 0) {
+        uomDetailFactor = getUomFactor(inventoryId, uomDetailUnit);
+        $row.find('.inv-uom-detail-factor').val(formatDecimalInput(uomDetailFactor));
+    }
+
+    if (uomDetailFactor <= 0) {
+        showNotification('Perhatian: nilai konversi UoM ' + uomDetailUnit + ' tidak ditemukan di m_inventory_uom.', 'error');
+        return;
+    }
+
+    var qtyDefault = uomDetailValue * uomDetailFactor;
+    $row.find('.qty').val(formatDecimalInput(qtyDefault)).addClass('qty-auto-calculated');
+
+    var packFactor = getUomFactor(inventoryId, uomPack);
+
+    if (uomPack && packFactor > 0) {
+        $row.find('.qty-pack').val(formatDecimalInput(qtyDefault / packFactor)).addClass('qty-auto-calculated');
+    } else if (uomPack) {
+        $row.find('.qty-pack').val(formatDecimalInput(qtyDefault)).addClass('qty-auto-calculated');
+        showNotification('Perhatian: nilai konversi UoM Pack ' + uomPack + ' tidak ditemukan, Qty Pack dianggap 1:1.', 'error');
+    }
+
+    if (isSpecialInventory(row)) {
+        var priceUnit = parseRupiah($row.find('.price-unit').val());
+        if (priceUnit > 0) {
+            calculatePriceFromPriceUnit(row);
+        }
+    }
+
+    calculateRow(row);
+}
+
 function openUomDetailModal(row) {
     currentUomDetailRow = $(row);
 
@@ -1139,29 +1237,37 @@ function chooseUomDetailFromModal(btn) {
     currentUomDetailRow.find('.inv-uom-detail-value').val(formatDecimalInput(manualValue));
     currentUomDetailRow.find('.inv-uom-detail-factor').val(formatDecimalInput(masterFactor));
 
-    // Qty diisi dengan hasil konversi (dalam KG / unit default)
-    currentUomDetailRow.find('.qty').val(formatDecimalInput(hasilKonversi));
+    if ($('#chkAutoCorrect').is(':checked')) {
+        // Allow Auto Correct hanya berjalan jika user mencentang checkbox.
+        applyAutoCorrectToRow(currentUomDetailRow[0]);
+    } else {
+        // Default tetap mengikuti ketentuan add_sales_order sebelumnya.
+        currentUomDetailRow.find('.qty, .qty-pack').removeClass('qty-auto-calculated');
+        currentUomDetailRow.find('.qty').val(formatDecimalInput(hasilKonversi));
+        updateQtyPackBySelectedUomPack(currentUomDetailRow[0]);
+        calculateRow(currentUomDetailRow[0]);
+    }
 
-    // Update Qty Pack berdasarkan UoM Pack yang dipilih
-    updateQtyPackBySelectedUomPack(currentUomDetailRow[0]);
-
-    calculateRow(currentUomDetailRow[0]);
     closeUomDetailModal();
 }
 
 function recalculateFromUomDetail(row) {
     var $row = $(row);
 
+    if ($('#chkAutoCorrect').is(':checked')) {
+        applyAutoCorrectToRow(row);
+        return;
+    }
+
+    // Default tetap mengikuti ketentuan add_sales_order sebelumnya.
+    $row.find('.qty, .qty-pack').removeClass('qty-auto-calculated');
+
     var manualValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
     var factor = parseFloat($row.find('.inv-uom-detail-factor').val()) || 0;
 
     if (manualValue > 0 && factor > 0) {
         var hasilKonversi = manualValue * factor;
-
-        // Qty diisi dengan hasil konversi (dalam KG)
         $row.find('.qty').val(formatDecimalInput(hasilKonversi));
-
-        // Update Qty Pack berdasarkan UoM Pack yang dipilih
         updateQtyPackBySelectedUomPack(row);
     }
 
@@ -1308,7 +1414,7 @@ function initSelect2OnRow($row) {
             var selectedOption = $(this).find('option:selected');
 
             var inventoryName = selectedOption.data('inv-name') || '';
-            var uom = selectedOption.data('uom') || '';
+            var uom = 'KG';
             var uomPack = selectedOption.data('uom-pack') || uom;
 
             var p = parseFloat(selectedOption.data('p')) || 0;
@@ -1379,6 +1485,12 @@ function initSelect2OnRow($row) {
 
     $row.find('.inv-uom-pack-select').on('change', function() {
         var tr = $(this).closest('tr');
+
+        if ($('#chkAutoCorrect').is(':checked') && (tr.find('.inv-uom-detail').val() || '').trim() && (parseFloat(tr.find('.inv-uom-detail-value').val()) || 0) > 0) {
+            applyAutoCorrectToRow(tr[0]);
+            return;
+        }
+
         updateQtyPackBySelectedUomPack(tr[0]);
         updateUomDetailFromQtyPack(tr[0]);
         
@@ -1535,6 +1647,24 @@ $(document).on('input', '#down_payment', function() {
     this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
 
     calculateGrandTotal();
+});
+
+
+$(document).on('change', '#chkAutoCorrect', function() {
+    if (this.checked) {
+        $('#detailBody .detail-row').each(function() {
+            var $row = $(this);
+            var hasUomDetail = ($row.find('.inv-uom-detail').val() || '').trim();
+            var hasValue = (parseFloat($row.find('.inv-uom-detail-value').val()) || 0) > 0;
+
+            if (hasUomDetail && hasValue) {
+                applyAutoCorrectToRow(this);
+            }
+        });
+        showNotification('Auto Correct diaktifkan. Qty & Qty Pack dihitung ulang dari UoM Detail.', 'success');
+    } else {
+        $('.qty, .qty-pack').removeClass('qty-auto-calculated');
+    }
 });
 
 $(document).ready(function() {
