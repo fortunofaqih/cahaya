@@ -213,6 +213,15 @@ switch ($page) {
     case 'detail_titip':
         include 'modul/transaksi/detail_titip.php';
         break;
+    case 'aging_piutang':
+        include 'modul/transaksi/aging_piutang.php';
+        break;
+    case 'cetak_aging_piutang_global':
+        include 'modul/transaksi/cetak_aging_piutang_global.php';
+        break;
+    case 'cetak_aging_piutang_detail':
+        include 'modul/transaksi/cetak_aging_piutang_detail.php';
+        break;
 
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':

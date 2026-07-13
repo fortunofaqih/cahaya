@@ -400,7 +400,7 @@ $groupLabels = [
                     <!-- ================== LAPORAN ================== -->
                     <?php 
                     $hasLaporanMenu = false;
-                    $laporanMenus = ['kartu-stok', 'rekap_sales_order', 'aging'];
+                    $laporanMenus = ['kartu-stok', 'rekap_sales_order', 'aging_piutang'];
                     foreach ($laporanMenus as $menu) {
                         if (canAccessMenu($menu, $allowedMenus)) {
                             $hasLaporanMenu = true;
@@ -427,10 +427,10 @@ $groupLabels = [
                         </li>
                         <?php endif; ?>
                         
-                        <?php if (canAccessMenu('aging', $allowedMenus)): ?>
+                        <?php if (canAccessMenu('aging_piutang', $allowedMenus)): ?>
                         <div class="menu-header">Laporan Piutang</div>
                         <li class="nav-item">
-                            <a class="nav-link" href="index.php?page=aging">
+                            <a class="nav-link" href="index.php?page=aging_piutang">
                                 <i class="fa fa-clock me-2"></i> Aging Piutang
                             </a>
                         </li>
@@ -478,7 +478,7 @@ $groupLabels = [
                                    'inventory', 'category', 'gudang', 'mesin', 'uom', 'purchase_order', 
                                    'sales_order', 'sop', 'shipping', 'invoice', 'retur-invoice', 
                                    'pembayaran', 'downpayment', 'titip_uang', 'kartu-stok', 
-                                   'rekap_sales_order', 'aging', 'konfigurasi', 'user-akses', 
+                                   'rekap_sales_order', 'aging_piutang', 'konfigurasi', 'user-akses', 
                                    'add-menu', 'backup', 'ganti-password'];
                     
                     foreach ($menusByGroup as $group => $menus) {
