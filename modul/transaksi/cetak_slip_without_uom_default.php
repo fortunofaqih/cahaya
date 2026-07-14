@@ -1,5 +1,5 @@
 <?php
-// modul/transaksi/cetak_slip_shipping.php
+// modul/transaksi/cetak_slip_without_uom_default.php
 // Format cetak untuk Surat Jalan pre-printed Marketing - Mode Default UOM
 // REVISI: koordinat CSS dikalibrasi ulang berdasarkan pengukuran manual pada foto nota fisik
 
@@ -39,27 +39,14 @@ function fmtNumber($number, $decimals = 2) {
     return $formatted;
 }
 
-// Fungsi format tanggal Indonesia: DD NamaBulan YYYY (contoh: 06 Juli 2026)
-function formatDateIndonesia($date) {
+// Format tanggal: DD-MM-YYYY (contoh: 14-07-2026)
+function formatShippingDate($date) {
     if (empty($date) || $date === '0000-00-00') {
         return '';
     }
 
     $ts = strtotime($date);
-    if (!$ts) {
-        return '';
-    }
-
-    $bulan = [
-        1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
-    ];
-
-    $d = date('d', $ts);
-    $m = (int)date('m', $ts);
-    $y = date('Y', $ts);
-
-    return $d . ' ' . $bulan[$m] . ' ' . $y;
+    return $ts ? date('d-m-Y', $ts) : '';
 }
 
 function splitAddressLines($name, $address, $city) {
@@ -105,6 +92,36 @@ function getItemNameWithRemarks($detail) {
         return $internalName . ' ' . $remarks;
     }
     return $internalName;
+}
+
+// Pecah nama barang panjang menjadi beberapa baris (bukan dikecilkan fontnya),
+// karena tiap baris fisik nota berjarak tetap 5mm (0,5cm). Baris ke-2/3 nama
+// barang akan "turun" memakai slot baris fisik berikutnya. $maxLines membatasi
+// supaya 1 item tidak memakan terlalu banyak baris; kalau masih kepanjangan,
+// baris terakhir dipotong dengan "...".
+function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 3) {
+    $text = trim((string)$text);
+    if ($text === '') {
+        return [''];
+    }
+
+    // Estimasi lebar per karakter untuk font Courier New bold (monospace):
+    // ~0.6 x fontSizePt, dikonversi pt -> mm (1pt = 0.3528mm)
+    $charWidthMm = $fontPt * 0.6 * 0.3528;
+    $maxChars = max(1, (int)floor($maxWidthMm / $charWidthMm));
+
+    // cut=true supaya kata/kode yang sangat panjang tanpa spasi tetap dipotong
+    $wrapped = wordwrap($text, $maxChars, "\n", true);
+    $lines = explode("\n", $wrapped);
+
+    if (count($lines) > $maxLines) {
+        $lines = array_slice($lines, 0, $maxLines);
+        $lastIdx = $maxLines - 1;
+        $cut = max(0, $maxChars - 3);
+        $lines[$lastIdx] = mb_substr($lines[$lastIdx], 0, $cut) . '...';
+    }
+
+    return $lines;
 }
 
 function getQtyDisplay($detail) {
@@ -191,8 +208,8 @@ while ($row = mysqli_fetch_assoc($resultDetail)) {
 }
 mysqli_stmt_close($stmtDetail);
 
-// Format Indonesia (contoh: 06 Juli 2026)
-$shippingDate = formatDateIndonesia($header['shipping_date'] ?? '');
+// Format tanggal cetak: DD-MM-YYYY
+$shippingDate = formatShippingDate($header['shipping_date'] ?? '');
 $customerLines = splitAddressLines(
     $header['customer_name'] ?? '',
     $header['customer_address'] ?? '',
@@ -202,10 +219,10 @@ $customerLines = splitAddressLines(
 $vehicleText = safeText($header['transporter'] ?? '');
 $truckNoText = safeText($header['truck_no'] ?? '');
 
-// Berdasarkan foto nota terdapat 10 baris kosong di tabel item
-$maxRows = 10;
-$printRows = array_slice($details, 0, $maxRows);
-$hasMoreRows = count($details) > $maxRows;
+// Nota fisik punya 10 baris fisik (masing-masing 5mm). Nama barang yang wrap
+// ke lebih dari 1 baris akan memakai lebih dari 1 slot baris fisik -> logika
+// pembagian slot dihitung langsung di loop cetak di bawah.
+$maxRowSlots = 10;
 ?>
 <!DOCTYPE html>
 <html>
@@ -221,8 +238,8 @@ $hasMoreRows = count($details) > $maxRows;
             margin: 0;
             padding: 0;
             background: #f5f5f5;
-            font-family: "Courier New", Courier, monospace; /* Tipikal font dot-matrix */
-            font-weight: bold;
+            font-family: Arial, Helvetica, sans-serif;
+            font-weight: normal;
         }
 
         .no-print {
@@ -278,18 +295,18 @@ $hasMoreRows = count($details) > $maxRows;
            kiri-atas kertas F4 landscape.
            ===================================================== */
 
-        /* Surabaya, [Tanggal] -> PASTI: 1,5cm dari atas, 13cm dari kiri kertas nota */
+        /* Shipping date dinaikkan 0,5cm */
         .date-field {
-            left: 130mm;
+            left: 140mm;
             top: 15mm;
             width: 70mm;
             font-size: 11pt;
         }
 
-        /* Kepada Yth. baris 1 -> PASTI: label "Kepada Yth." @2,5cm + 1cm gap = 3,5cm; 13cm dari kiri */
+        /* Customer baris 1 dinaikkan 0,5cm */
         .customer-line-1 {
             left: 130mm;
-            top: 35mm;
+            top: 30mm;
             width: 80mm;
             font-size: 11pt;
         }
@@ -305,7 +322,7 @@ $hasMoreRows = count($details) > $maxRows;
         /* Kepada Yth. baris 3 (opsional) -> ESTIMASI: hapus div ini di HTML
            jika nota Anda hanya punya 2 baris kosong seperti terlihat di foto */
         .customer-line-3 {
-            left: 130mm;
+            left: 160mm;
             top: 55mm;
             width: 80mm;
             font-size: 11pt;
@@ -335,31 +352,33 @@ $hasMoreRows = count($details) > $maxRows;
             line-height: 5mm;
         }
 
-        /* Berdasarkan foto, kolom Banyaknya dibagi sub-kolom (digeser +1cm) */
+        /* Kolom qty digeser 0,8cm ke kiri */
         .qty-col-1 {
-            left: 15mm;
+            left: 7mm;
             width: 15mm;
             text-align: center;
         }
 
         .qty-col-2 {
-            left: 31mm;
+            left: 23mm;
             width: 15mm;
             text-align: center;
         }
 
         /* Kolom cadangan jaga-jaga jika ada 3 pecahan qty/UOM */
         .qty-col-3 {
-            left: 47mm;
+            left: 39mm;
             width: 15mm;
             text-align: center;
         }
 
-        /* Kolom NAMA BARANG (digeser +1cm lagi, total +2cm dari semula) */
+        /* Kolom NAMA BARANG -> lebar fisik kolom cuma 7cm, font akan auto-shrink
+           untuk nama barang panjang (lihat getNameFontSize() di PHP) */
         .name-col {
             left: 70mm;
-            width: 85mm;
+            width: 70mm;
             text-align: left;
+            text-overflow: ellipsis;
         }
 
         .extra-warning {
@@ -384,36 +403,72 @@ $hasMoreRows = count($details) > $maxRows;
                 margin: 0;
             }
 
-            html, body {
+            html,
+            body {
                 margin: 0 !important;
                 padding: 0 !important;
+                width: 215mm !important;
+                height: auto !important;
+                min-height: 0 !important;
                 background: #fff !important;
-                width: 215mm;
-                height: 330mm;
+                overflow: visible !important;
             }
 
+            /*
+             * Sembunyikan seluruh layout ERP saat print, termasuk header,
+             * navbar, tombol logout, sidebar, breadcrumb, dan footer.
+             * Elemen tetap berada di DOM agar halaman slip tidak rusak.
+             */
             body * {
                 visibility: hidden !important;
             }
 
-            .page, .page * {
+            .no-print,
+            header,
+            footer,
+            nav,
+            aside,
+            .navbar,
+            .topbar,
+            .sidebar,
+            .main-header,
+            .main-footer,
+            .content-header,
+            .breadcrumb,
+            #header,
+            #footer,
+            #sidebar {
+                display: none !important;
+            }
+
+            /*
+             * Tampilkan hanya slip dan tempelkan ke pojok kiri atas area
+             * cetak. Position fixed mencegah wrapper halaman ERP memberi
+             * jarak tambahan atau memunculkan halaman kedua.
+             */
+            .page,
+            .page * {
                 visibility: visible !important;
             }
 
-            .no-print {
-                display: none !important;
-                visibility: hidden !important;
-            }
-
             .page {
-                position: absolute !important;
+                display: block !important;
+                position: fixed !important;
                 left: 0 !important;
                 top: 0 !important;
-                margin: 0 !important;
                 width: 215mm !important;
-                height: 330mm !important;
+                height: 165mm !important;
+                min-height: 165mm !important;
+                max-height: 165mm !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
                 background: transparent !important;
                 box-shadow: none !important;
+                z-index: 999999 !important;
+                break-inside: avoid-page !important;
+                page-break-inside: avoid !important;
+                page-break-after: avoid !important;
             }
         }
     </style>
@@ -440,15 +495,25 @@ $hasMoreRows = count($details) > $maxRows;
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-    // PASTI: baris pertama tabel = 4cm (40mm) dari judul "Surat Jalan"
-    // Estimasi posisi judul ~55mm dari atas kertas nota -> baris pertama tabel = 95mm
-    $startTop = 95;
+    // Baris pertama tabel -> dinaikkan 1cm dari hasil test print (95mm -> 85mm)
+    $startTop = 85;
     // PASTI: tinggi tiap baris tabel = 0,5cm sesuai tanda di foto
     $rowHeight = 5.0;
 
-    foreach ($printRows as $idx => $detail):
-        $top = $startTop + ($idx * $rowHeight);
+    $currentTop = $startTop;
+    $usedSlots = 0;
+    $hasMoreRows = false;
+
+    foreach ($details as $detail):
         $itemName = getItemNameWithRemarks($detail);
+        $nameLines = wrapItemName($itemName, 70, 11, 3); // kolom nama barang lebar 7cm, maks 3 baris
+        $lineCount = count($nameLines);
+
+        if ($usedSlots + $lineCount > $maxRowSlots) {
+            $hasMoreRows = true;
+            break;
+        }
+
         $qtyDisplay = getQtyDisplay($detail);
 
         // Membagi qty display menjadi maksimal 3 sub-kolom (jaga-jaga jika suatu saat
@@ -458,11 +523,17 @@ $hasMoreRows = count($details) > $maxRows;
         $qtyCol2 = isset($qtyParts[1]) ? $qtyParts[1] : '';
         $qtyCol3 = isset($qtyParts[2]) ? $qtyParts[2] : '';
     ?>
-        <div class="field row-field qty-col-1" style="top: <?= $top ?>mm;"><?= e($qtyCol1) ?></div>
-        <div class="field row-field qty-col-2" style="top: <?= $top ?>mm;"><?= e($qtyCol2) ?></div>
-        <div class="field row-field qty-col-3" style="top: <?= $top ?>mm;"><?= e($qtyCol3) ?></div>
-        <div class="field row-field name-col" style="top: <?= $top ?>mm;"><?= e($itemName) ?></div>
-    <?php endforeach; ?>
+        <div class="field row-field qty-col-1" style="top: <?= $currentTop ?>mm;"><?= e($qtyCol1) ?></div>
+        <div class="field row-field qty-col-2" style="top: <?= $currentTop ?>mm;"><?= e($qtyCol2) ?></div>
+        <div class="field row-field qty-col-3" style="top: <?= $currentTop ?>mm;"><?= e($qtyCol3) ?></div>
+        <?php foreach ($nameLines as $lineIdx => $nameLine): ?>
+        <div class="field row-field name-col" style="top: <?= $currentTop + ($lineIdx * $rowHeight) ?>mm;"><?= e($nameLine) ?></div>
+        <?php endforeach; ?>
+    <?php
+        $currentTop += $rowHeight * $lineCount;
+        $usedSlots += $lineCount;
+    endforeach;
+    ?>
 
     <?php if ($hasMoreRows): ?>
         <div class="extra-warning">* Item melebihi kapasitas baris nota. Mohon gunakan lembar Surat Jalan baru.</div>

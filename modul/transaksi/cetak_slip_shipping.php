@@ -39,27 +39,14 @@ function fmtNumber($number, $decimals = 2) {
     return $formatted;
 }
 
-// Fungsi format tanggal Indonesia: DD NamaBulan YYYY (contoh: 06 Juli 2026)
-function formatDateIndonesia($date) {
+// Format tanggal: DD-MM-YYYY (contoh: 14-07-2026)
+function formatShippingDate($date) {
     if (empty($date) || $date === '0000-00-00') {
         return '';
     }
 
     $ts = strtotime($date);
-    if (!$ts) {
-        return '';
-    }
-
-    $bulan = [
-        1 => 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
-    ];
-
-    $d = date('d', $ts);
-    $m = (int)date('m', $ts);
-    $y = date('Y', $ts);
-
-    return $d . ' ' . $bulan[$m] . ' ' . $y;
+    return $ts ? date('d-m-Y', $ts) : '';
 }
 
 function splitAddressLines($name, $address, $city) {
@@ -221,8 +208,8 @@ while ($row = mysqli_fetch_assoc($resultDetail)) {
 }
 mysqli_stmt_close($stmtDetail);
 
-// Format Indonesia (contoh: 06 Juli 2026)
-$shippingDate = formatDateIndonesia($header['shipping_date'] ?? '');
+// Format tanggal cetak: DD-MM-YYYY
+$shippingDate = formatShippingDate($header['shipping_date'] ?? '');
 $customerLines = splitAddressLines(
     $header['customer_name'] ?? '',
     $header['customer_address'] ?? '',
@@ -251,8 +238,8 @@ $maxRowSlots = 10;
             margin: 0;
             padding: 0;
             background: #f5f5f5;
-            font-family: "Courier New", Courier, monospace; /* Tipikal font dot-matrix */
-            font-weight: bold;
+            font-family: Arial, Helvetica, sans-serif;
+            font-weight: normal;
         }
 
         .no-print {
@@ -308,18 +295,18 @@ $maxRowSlots = 10;
            kiri-atas kertas F4 landscape.
            ===================================================== */
 
-        /* Surabaya, [Tanggal] -> top digeser turun 0,5cm hasil test print */
+        /* Shipping date dinaikkan 0,5cm */
         .date-field {
-            left: 130mm;
-            top: 20mm;
+            left: 140mm;
+            top: 15mm;
             width: 70mm;
             font-size: 11pt;
         }
 
-        /* Kepada Yth. baris 1 -> PASTI: label "Kepada Yth." @2,5cm + 1cm gap = 3,5cm; 13cm dari kiri */
+        /* Customer baris 1 dinaikkan 0,5cm */
         .customer-line-1 {
             left: 130mm;
-            top: 35mm;
+            top: 30mm;
             width: 80mm;
             font-size: 11pt;
         }
@@ -335,7 +322,7 @@ $maxRowSlots = 10;
         /* Kepada Yth. baris 3 (opsional) -> ESTIMASI: hapus div ini di HTML
            jika nota Anda hanya punya 2 baris kosong seperti terlihat di foto */
         .customer-line-3 {
-            left: 130mm;
+            left: 160mm;
             top: 55mm;
             width: 80mm;
             font-size: 11pt;
@@ -365,22 +352,22 @@ $maxRowSlots = 10;
             line-height: 5mm;
         }
 
-        /* Berdasarkan foto, kolom Banyaknya dibagi sub-kolom (digeser +1cm) */
+        /* Kolom qty digeser 0,8cm ke kiri */
         .qty-col-1 {
-            left: 15mm;
+            left: 7mm;
             width: 15mm;
             text-align: center;
         }
 
         .qty-col-2 {
-            left: 31mm;
+            left: 23mm;
             width: 15mm;
             text-align: center;
         }
 
         /* Kolom cadangan jaga-jaga jika ada 3 pecahan qty/UOM */
         .qty-col-3 {
-            left: 47mm;
+            left: 39mm;
             width: 15mm;
             text-align: center;
         }
@@ -416,36 +403,72 @@ $maxRowSlots = 10;
                 margin: 0;
             }
 
-            html, body {
+            html,
+            body {
                 margin: 0 !important;
                 padding: 0 !important;
+                width: 215mm !important;
+                height: auto !important;
+                min-height: 0 !important;
                 background: #fff !important;
-                width: 215mm;
-                height: 330mm;
+                overflow: visible !important;
             }
 
+            /*
+             * Sembunyikan seluruh layout ERP saat print, termasuk header,
+             * navbar, tombol logout, sidebar, breadcrumb, dan footer.
+             * Elemen tetap berada di DOM agar halaman slip tidak rusak.
+             */
             body * {
                 visibility: hidden !important;
             }
 
-            .page, .page * {
+            .no-print,
+            header,
+            footer,
+            nav,
+            aside,
+            .navbar,
+            .topbar,
+            .sidebar,
+            .main-header,
+            .main-footer,
+            .content-header,
+            .breadcrumb,
+            #header,
+            #footer,
+            #sidebar {
+                display: none !important;
+            }
+
+            /*
+             * Tampilkan hanya slip dan tempelkan ke pojok kiri atas area
+             * cetak. Position fixed mencegah wrapper halaman ERP memberi
+             * jarak tambahan atau memunculkan halaman kedua.
+             */
+            .page,
+            .page * {
                 visibility: visible !important;
             }
 
-            .no-print {
-                display: none !important;
-                visibility: hidden !important;
-            }
-
             .page {
-                position: absolute !important;
+                display: block !important;
+                position: fixed !important;
                 left: 0 !important;
                 top: 0 !important;
-                margin: 0 !important;
                 width: 215mm !important;
-                height: 330mm !important;
+                height: 165mm !important;
+                min-height: 165mm !important;
+                max-height: 165mm !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
                 background: transparent !important;
                 box-shadow: none !important;
+                z-index: 999999 !important;
+                break-inside: avoid-page !important;
+                page-break-inside: avoid !important;
+                page-break-after: avoid !important;
             }
         }
     </style>
