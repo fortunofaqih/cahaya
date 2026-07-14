@@ -74,6 +74,7 @@ $start_date_display = formatDateDisplay($start_date);
 $end_date_display = formatDateDisplay($end_date);
 $status = trim((string)($_GET['status'] ?? 'All'));
 $invoice_no_search = trim((string)($_GET['invoice_no'] ?? ''));
+$shipping_no_search = trim((string)($_GET['shipping_no'] ?? ''));
 
 $where = ["hi.invoice_date BETWEEN ? AND ?"];
 $types = 'ss';
@@ -89,6 +90,17 @@ if ($invoice_no_search !== '') {
     $where[] = "hi.invoice_no LIKE ?";
     $types .= 's';
     $params[] = '%' . $invoice_no_search . '%';
+}
+
+if ($shipping_no_search !== '') {
+    $where[] = "EXISTS (
+        SELECT 1
+        FROM det_invoice di_search
+        WHERE di_search.invoice_no = hi.invoice_no
+          AND di_search.shipping_no LIKE ?
+    )";
+    $types .= 's';
+    $params[] = '%' . $shipping_no_search . '%';
 }
 
 $where_sql = 'WHERE ' . implode(' AND ', $where);
@@ -115,10 +127,14 @@ $sql = "
         hi.date_created,
         hi.user_modified,
         hi.date_modified,
-        COALESCE(dc.total_shipping, 0) AS total_shipping
+        COALESCE(dc.total_shipping, 0) AS total_shipping,
+        COALESCE(dc.shipping_nos, '') AS shipping_nos
     FROM head_invoice hi
     LEFT JOIN (
-        SELECT invoice_no, COUNT(*) AS total_shipping
+        SELECT
+            invoice_no,
+            COUNT(DISTINCT shipping_no) AS total_shipping,
+            GROUP_CONCAT(DISTINCT shipping_no ORDER BY shipping_date, shipping_no SEPARATOR ', ') AS shipping_nos
         FROM det_invoice
         GROUP BY invoice_no
     ) dc ON dc.invoice_no = hi.invoice_no
@@ -184,7 +200,7 @@ $result = mysqli_stmt_get_result($stmt);
 }
 .filter-grid {
     display: grid;
-    grid-template-columns: repeat(5, minmax(130px, 1fr));
+    grid-template-columns: repeat(6, minmax(130px, 1fr));
     gap: 8px;
     align-items: end;
 }
@@ -244,7 +260,7 @@ $result = mysqli_stmt_get_result($stmt);
 }
 .invoice-table {
     width: 100%;
-    min-width: 2100px;
+    min-width: 2250px;
     border-collapse: collapse;
     font-size: 10.5px;
 }
@@ -354,6 +370,10 @@ $result = mysqli_stmt_get_result($stmt);
                     <label>Invoice No</label>
                     <input type="text" name="invoice_no" value="<?= h($invoice_no_search) ?>" placeholder="Cari Invoice No...">
                 </div>
+                <div class="ff">
+                    <label>Shipping No</label>
+                    <input type="text" name="shipping_no" value="<?= h($shipping_no_search) ?>" placeholder="Cari Shipping No...">
+                </div>
                 <div style="display:flex;gap:6px;">
                     <button type="submit" class="btn-vs btn-dark">
                         <span class="app-icon"><?= appIcon('search') ?></span>
@@ -375,6 +395,7 @@ $result = mysqli_stmt_get_result($stmt);
                     <th class="sticky-aksi">Aksi</th>
                     <th>Invoice No.</th>
                     <th>Invoice Date</th>
+                    <th>Shipping No.</th>
                     <th>Customer Name</th>
                     <th>Customer Address</th>
                     <th>Customer City</th>
@@ -397,7 +418,7 @@ $result = mysqli_stmt_get_result($stmt);
             <tbody>
                 <?php if (!$result || mysqli_num_rows($result) === 0): ?>
                     <tr>
-                        <td colspan="20" style="text-align:center;color:#777;padding:15px;">
+                        <td colspan="21" style="text-align:center;color:#777;padding:15px;">
                             Tidak ada data invoice.
                         </td>
                     </tr>
@@ -433,6 +454,7 @@ $result = mysqli_stmt_get_result($stmt);
                             </td>
                             <td class="text-bold text-blue"><?= h($invoiceNo) ?></td>
                             <td><?= h(formatDateDisplay($row['invoice_date'])) ?></td>
+                            <td><?= h($row['shipping_nos']) ?></td>
                             <td><?= h($row['customer_name']) ?></td>
                             <td><?= h($row['customer_address']) ?></td>
                             <td><?= h($row['customer_city']) ?></td>
