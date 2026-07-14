@@ -775,24 +775,32 @@ function formatDecimal(num) {
 
 function getUomOptions(inventoryId, selectedValue, selectDefault) {
     var html = '<option value="">-- Pilih UoM --</option>';
-    selectedValue = selectedValue || '';
+    selectedValue = $.trim(selectedValue || '');
     selectDefault = (selectDefault === true);
+    var selectedFound = false;
 
     if (inventoryId && inventoryUomData[inventoryId]) {
         var uomList = inventoryUomData[inventoryId];
         for (var i = 0; i < uomList.length; i++) {
-            var unit = uomList[i].unit || '';
+            var unit = $.trim(uomList[i].unit || '');
             var isDefault = parseInt(uomList[i].default) === 1;
             var selected = '';
 
-            if (selectedValue !== '') {
-                selected = (unit === selectedValue) ? 'selected' : '';
-            } else if (selectDefault && isDefault) {
+            if (selectedValue !== '' && unit.toUpperCase() === selectedValue.toUpperCase()) {
+                selected = 'selected';
+                selectedFound = true;
+            } else if (selectedValue === '' && selectDefault && isDefault) {
                 selected = 'selected';
             }
 
             html += '<option value="' + escAttr(unit) + '" ' + selected + '>' + escHtml(unit) + '</option>';
         }
+    }
+
+    // Nilai UoM dari Sales Order harus tetap terpilih walaupun belum tercatat
+    // atau penulisannya berbeda pada m_inventory_uom.
+    if (selectedValue !== '' && !selectedFound) {
+        html += '<option value="' + escAttr(selectedValue) + '" selected>' + escHtml(selectedValue) + '</option>';
     }
 
     return html;
@@ -977,6 +985,8 @@ function renderModalInventoryRows(items) {
         html += '<tr class="modal-inventory-row" ' +
             'data-inventory-id="' + escAttr(inventoryId) + '" ' +
             'data-inventory-name="' + escAttr(item.inventory_name || '') + '" ' +
+            'data-uom="' + escAttr(item.uom || '') + '" ' +
+            'data-uom-pack="' + escAttr(uomPack) + '" ' +
             'data-order-qty="' + escAttr(qty) + '" ' +
             'data-order-qty-pack="' + escAttr(qtyPack) + '" ' +
             'data-remarks="' + escAttr(item.remarks || '') + '">' +
@@ -1005,16 +1015,16 @@ function addSelectedInventoryFromModal() {
     $checked.each(function() {
         var $r = $(this).closest('.modal-inventory-row');
         addRow({
-            inventory_id: $r.data('inventory-id') || '',
-            inventory_name: $r.data('inventory-name') || '',
+            inventory_id: $r.attr('data-inventory-id') || '',
+            inventory_name: $r.attr('data-inventory-name') || '',
             qty: 0,
-            uom: '',
+            uom: $r.attr('data-uom') || '',
             qty_pack: 0,
-            uom_pack: '',
+            uom_pack: $r.attr('data-uom-pack') || '',
             uom_detail_json: '',
             order_qty: parseFloat($r.attr('data-order-qty')) || 0,
             order_qty_pack: parseFloat($r.attr('data-order-qty-pack')) || 0,
-            remarks: $r.data('remarks') || ''
+            remarks: $r.attr('data-remarks') || ''
         });
     });
 
