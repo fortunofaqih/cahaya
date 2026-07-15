@@ -62,20 +62,18 @@ function initRow($label) {
 }
 
 function getGroupLabel($row, $filterBy) {
-    $area = trim((string)($row['area_code'] ?? ''));
     $city = trim((string)($row['city'] ?? ''));
     $customerId = trim((string)($row['customer_id'] ?? ''));
     $customerName = trim((string)($row['customer_name'] ?? ''));
-
-    if ($filterBy === 'kota') {
-        return $city !== '' ? $city : 'TANPA KOTA';
-    }
 
     if ($filterBy === 'pelanggan') {
         return trim($customerId . ' - ' . $customerName);
     }
 
-    return $area !== '' ? $area : 'TANPA GRUP';
+    // Untuk report global, kolom Daerah/Kota dikelompokkan berdasarkan city.
+    // Filter "grup" tetap memakai m_customer.area_code pada WHERE,
+    // tetapi hasil baris report ditampilkan dan dijumlahkan per city.
+    return $city !== '' ? $city : 'TANPA KOTA';
 }
 
 function getLabelTitle($filterBy) {

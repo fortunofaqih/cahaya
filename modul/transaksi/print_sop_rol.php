@@ -202,9 +202,9 @@ header("Content-Type: text/html; charset=UTF-8");
         /* ====================================================
            SETTING UKURAN KERTAS F4 LANDSCAPE UTUH (33cm x 21.5cm)
            ==================================================== */
-        @page {
-            size: 33cm 21.5cm; /* Ukuran standar kertas Folio / F4 posisi tidur */
-            margin: 5mm 6mm 5mm 6mm;
+      @page {
+            size: landscape; /* Biarkan printer yang menentukan ukuran kertasnya, CSS hanya mengunci posisi tidurnya */
+            margin: 5mm 6mm; /* Atas-Bawah 5mm, Kiri-Kanan 6mm */
         }
         
         body {
@@ -319,10 +319,17 @@ header("Content-Type: text/html; charset=UTF-8");
             border-radius: 5px;
         }
         
-        @media print {
-            .print-btn { display: none; }
-            body { padding: 0; margin: 0; }
+       @media print {
+        .print-btn { display: none; }
+        body { 
+            padding: 0; 
+            margin: 0; 
+            width: 32cm; /* Kunci sedikit di bawah 33cm untuk toleransi margin fisik printer */
         }
+        .flex-container {
+            width: 100%;
+        }
+    }
     </style>
 </head>
 <body>

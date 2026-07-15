@@ -177,138 +177,150 @@ header("Content-Type: text/html; charset=UTF-8");
 <head>
     <meta charset="UTF-8">
     <title>SOP POTONG - <?= h($sop_id) ?></title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+<style>
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }
+    
+    /* ====================================================
+       SETTING UKURAN KERTAS SECARA FLEKSIBEL (LANDSCAPE)
+       ==================================================== */
+    @page {
+        size: landscape; /* Biarkan browser mendeteksi orientasi landscape secara otomatis */
+        margin: 5mm 6mm; /* Margin atas-bawah 5mm, kiri-kanan 6mm */
+    }
+    
+    body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 9pt;
+        background: white;
+        color: #000;
+        line-height: 1.1;
+        width: 100%;
+    }
+    
+    /* Container Utama Flexbox untuk membagi 2 kolom berdampingan */
+    .flex-container {
+        display: flex;
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    /* Sisi Kiri (Rol) & Sisi Kanan (Potong) masing-masing max 48% agar ada jarak di tengah */
+    .sisi-cetak {
+        width: 48%;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    /* Header */
+    .header {
+        text-align: left;
+        margin-bottom: 3px;
+    }
+    
+    .header h1 {
+        font-size: 10pt;
+        font-weight: bold;
+        text-decoration: underline;
+    }
+    
+    /* Info Box / Spesifikasi */
+    .info-box {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 3px;
+        font-size: 9pt;
+    }
+    
+    .info-box td {
+        padding: 0.3px 2px;
+        vertical-align: top;
+    }
+    
+    .info-box td.label { width: 30%; }
+    .info-box td.titik { width: 3%; }
+    .info-box td.val   { width: 67%; }
+    
+    /* Global Table Style */
+    .produksi-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 3px;
+    }
+    
+    .produksi-table th, 
+    .produksi-table td {
+        border: 1px solid #000;
+        padding: 0; 
+        text-align: center;
+        vertical-align: middle;
+    }
+    
+    .produksi-table th {
+        font-weight: normal;
+        font-size: 7.5pt;
+    }
+    
+    .produksi-table tbody td {
+        height: 18px; /* Disesuaikan agar pas di sisa ruang vertikal */
+    }
+    
+    /* Kolom khusus Tabel Rol (Kiri) */
+    .col-rol-tgl   { width: 10%; }
+    .col-rol-shf   { width: 15%; }
+    .col-rol-total { width: 17%; }
+    .col-rol-sisa  { width: 16%; }
+    .col-rol-prf   { width: 12%; }
+    
+    /* Kolom khusus Tabel Potong (Kanan) */
+    .col-pot-tgl   { width: 7%; }
+    .col-pot-rol   { width: 9%; }
+    .col-pot-kg    { width: 9%; }
+    .col-pot-shf   { width: 9%; }
+    
+    /* Footer TTD Area */
+    .ttd-section {
+        margin-top: 8px;
+        width: 100%;
+        font-size: 9pt;
+    }
+    
+    .print-btn {
+        display: block;
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    
+    .btn-print {
+        background: #007bff;
+        color: white;
+        border: none;
+        padding: 6px 15px;
+        cursor: pointer;
+        font-size: 9pt;
+        border-radius: 5px;
+    }
+    
+    /* ====================================================
+       PENGATURAN AMAN SAAT PRINT DI EPSON / CANON
+       ==================================================== */
+    @media print {
+        .print-btn { 
+            display: none; 
         }
-        
-        /* ====================================================
-           SETTING UKURAN KERTAS F4 LANDSCAPE UTUH (33cm x 21.5cm)
-           ==================================================== */
-        @page {
-            size: 33cm 21.5cm; /* Ukuran standar kertas Folio / F4 posisi tidur */
-            margin: 5mm 6mm 5mm 6mm;
-        }
-        
-        body {
-            font-family: Arial, Helvetica, sans-serif;
-            font-size: 9pt;
-            background: white;
-            color: #000;
-            line-height: 1.1;
-            width: 100%;
-        }
-        
-        /* Container Utama Flexbox untuk membagi 2 kolom berdampingan */
-        .flex-container {
-            display: flex;
-            width: 100%;
-            justify-content: space-between;
-        }
-        
-        /* Sisi Kiri (Rol) & Sisi Kanan (Potong) masing-masing max 48% agar ada jarak di tengah */
-        .sisi-cetak {
-            width: 48%;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        /* Header */
-        .header {
-            text-align: left;
-            margin-bottom: 3px;
-        }
-        
-        .header h1 {
-            font-size: 10pt;
-            font-weight: bold;
-            text-decoration: underline;
-        }
-        
-        /* Info Box / Spesifikasi */
-        .info-box {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 3px;
-            font-size: 9pt;
-        }
-        
-        .info-box td {
-            padding: 0.3px 2px;
-            vertical-align: top;
-        }
-        
-        .info-box td.label { width: 30%; }
-        .info-box td.titik { width: 3%; }
-        .info-box td.val   { width: 67%; }
-        
-        /* Global Table Style */
-        .produksi-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 3px;
-        }
-        
-        .produksi-table th, 
-        .produksi-table td {
-            border: 1px solid #000;
+        body { 
             padding: 0; 
-            text-align: center;
-            vertical-align: middle;
+            margin: 0; 
+            width: 32cm; /* Dikunci sedikit di bawah 33cm agar pas di area cetak fisik printer */
         }
-        
-        .produksi-table th {
-            font-weight: normal;
-            font-size: 7.5pt;
-        }
-        
-        .produksi-table tbody td {
-            height: 18px; /* Disesuaikan agar pas di sisa ruang vertikal */
-        }
-        
-        /* Kolom khusus Tabel Rol (Kiri) */
-        .col-rol-tgl   { width: 10%; }
-        .col-rol-shf   { width: 15%; }
-        .col-rol-total { width: 17%; }
-        .col-rol-sisa  { width: 16%; }
-        .col-rol-prf   { width: 12%; }
-        
-        /* Kolom khusus Tabel Potong (Kanan) */
-        .col-pot-tgl   { width: 7%; }
-        .col-pot-rol   { width: 9%; }
-        .col-pot-kg    { width: 9%; }
-        .col-pot-shf   { width: 9%; }
-        
-        /* Footer TTD Area */
-        .ttd-section {
-            margin-top: 8px;
+        .flex-container {
             width: 100%;
-            font-size: 9pt;
         }
-        
-        .print-btn {
-            display: block;
-            text-align: center;
-            margin-bottom: 10px;
-        }
-        
-        .btn-print {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 6px 15px;
-            cursor: pointer;
-            font-size: 9pt;
-            border-radius: 5px;
-        }
-        
-        @media print {
-            .print-btn { display: none; }
-            body { padding: 0; margin: 0; }
-        }
-    </style>
+    }
+</style>
 </head>
 <body>
     <div class="print-btn">
