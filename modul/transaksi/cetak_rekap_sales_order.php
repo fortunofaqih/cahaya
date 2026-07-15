@@ -506,8 +506,7 @@ while ($row = mysqli_fetch_assoc($query)) {
 <div class="print-container">
 
     <div class="company-header">
-        <h3>CP</h3>
-        <h4>REKAP SALES ORDER</h4>
+        <h4>REKAP SALES ORDER (CP)</h4>
         <p>Periode: <?= htmlspecialchars($start_date_raw) ?> s/d <?= htmlspecialchars($end_date_raw) ?></p>
     </div>
 
