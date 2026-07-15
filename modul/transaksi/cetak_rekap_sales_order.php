@@ -531,7 +531,7 @@ while ($row = mysqli_fetch_assoc($query)) {
             <td>: <?= $approval_status !== '' ? htmlspecialchars($approval_status) : 'ALL' ?></td>
 
             <td><strong>Printed By</strong></td>
-            <td>: <?= htmlspecialchars($_SESSION['username'] ?? '-') ?> / <?= date('d-M-Y H:i') ?></td>
+            <td>: <?= htmlspecialchars($_SESSION['username'] ?? '-') ?> / <?= date('d-M-Y') ?></td>
         </tr>
     </table>
 
