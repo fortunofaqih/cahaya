@@ -438,35 +438,6 @@ function generateInventoryId($conn, $inventory_name, $type) {
 ?>
 
     <style>
-		.loading-page {
-			position: fixed;
-			inset: 0;
-			background: rgba(255, 255, 255, 0.82);
-			z-index: 99999;
-			display: none;
-			align-items: center;
-			justify-content: center;
-			flex-direction: column;
-			gap: 12px;
-			color: #212529;
-			font-size: 13px;
-			font-weight: 600;
-		}
-
-		.loading-page .spinner {
-			width: 42px;
-			height: 42px;
-			border: 4px solid #dee2e6;
-			border-top-color: #0d6efd;
-			border-radius: 50%;
-			animation: spinLoading 0.8s linear infinite;
-		}
-
-		@keyframes spinLoading {
-			to {
-				transform: rotate(360deg);
-			}
-		}
         .loading {
             position: fixed;
             top: 50%;
@@ -605,9 +576,9 @@ function generateInventoryId($conn, $inventory_name, $type) {
             background: white;
             z-index: 2;
         }
-        .sticky-col-aksi { left: 0; min-width: 85px; max-width: 85px; }
-        .sticky-col-id { left: 85px; min-width: 100px; max-width: 100px; }
-        .sticky-col-name { left: 185px; min-width: 180px; }
+        .sticky-col-aksi { left: 0; min-width: 55px; max-width: 55px; }
+        .sticky-col-id { left: 55px; min-width: 100px; max-width: 100px; }
+        .sticky-col-name { left: 155px; min-width: 180px; }
         .table-inventory th.sticky-col-aksi,
         .table-inventory th.sticky-col-id,
         .table-inventory th.sticky-col-name { z-index: 3; background: #e9ecef; }
@@ -662,9 +633,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
         <h5 class="fw-bold text-dark m-0"><i class="fa fa-boxes text-info"></i> Master Data Inventory</h5>
         <div class="d-flex gap-2">
             <button class="btn-vs btn-info" onclick="showModalImportCSV()"><i class="fa fa-upload"></i> Import CSV</button>
-            <button class="btn-vs btn-excel" onclick="exportInventory()">
-				<i class="fa fa-file-excel-o"></i> Export to Excel
-			</button>
+            <button class="btn-vs btn-excel" onclick="window.location.href='modul/master/export_inventory.php'"><i class="fa fa-file-excel-o"></i> Export to Excel</button>
             <button class="btn-vs btn-add" onclick="showModalTambah()"><i class="fa fa-plus-circle"></i> Tambah Item</button>
         </div>
     </div>
@@ -765,7 +734,7 @@ function generateInventoryId($conn, $inventory_name, $type) {
             </div>
             <div class="col-12">
                 <small class="text-muted">
-                    Default menampilkan semua inventory. Ubah tanggal untuk melihat data yang diinginkan.
+                    Default menampilkan inventory yang dibuat hari ini. Ubah tanggal untuk melihat data lama.
                 </small>
             </div>
         </form>
@@ -816,9 +785,8 @@ function generateInventoryId($conn, $inventory_name, $type) {
                             'UTF-8'
                         );
                     ?>
-                    <button type="button" class="btn btn-micro btn-warning text-dark" onclick="showModalEdit(<?= $jsonData ?>)" title="Edit"><i class="fa fa-edit"></i></button>
-                    <button type="button" class="btn btn-micro btn-info text-white" onclick="showModalCopy(<?= $jsonData ?>)" title="Copy"><i class="fa fa-copy"></i></button>
-                    <a href="index.php?page=inventory&action=delete&id=<?= urlencode($d['inventory_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm(<?= $deleteConfirm ?>)" title="Hapus"><i class="fa fa-trash"></i></a>
+                    <button type="button" class="btn btn-micro btn-warning text-dark" onclick="showModalEdit(<?= $jsonData ?>)"><i class="fa fa-edit"></i></button>
+                    <a href="index.php?page=inventory&action=delete&id=<?= urlencode($d['inventory_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm(<?= $deleteConfirm ?>)"><i class="fa fa-trash"></i></a>
                 </td>
                 <td class="sticky-col-id fw-bold text-secondary"><?= htmlspecialchars($d['inventory_id']) ?></td>
                 <td class="sticky-col-name fw-bold text-dark"><?= htmlspecialchars($d['inventory_name']) ?></td>
@@ -959,19 +927,10 @@ function generateInventoryId($conn, $inventory_name, $type) {
     </div>
 </div>
 
-
-<div id="loadingIndicator" class="loading">
-    <i class="fa fa-spinner fa-spin"></i> Memproses...
-</div>
-
-<div id="pageLoading" class="loading-page">
-    <div class="spinner"></div>
-    <div>Sedang memuat data inventory...</div>
-</div>
+<div id="loadingIndicator" class="loading"><i class="fa fa-spinner fa-spin"></i> Memproses...</div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-
 <script>
 var bootstrapModalInventory = null;
 var bootstrapModalUOM = null;
@@ -980,6 +939,7 @@ var isModalOpen = false;
 
 var uomList = <?php 
     $uom_array = [];
+    // Gunakan 'unit' karena di tabel m_uom kolomnya 'unit'
     $query_uom = mysqli_query($conn, "SELECT unit FROM m_uom WHERE is_active='Checked' ORDER BY unit ASC");
     if ($query_uom) {
         while ($row_uom = mysqli_fetch_assoc($query_uom)) {
@@ -990,55 +950,12 @@ var uomList = <?php
 ?>;
 
 document.addEventListener("DOMContentLoaded", function() {
-    // Jangan biarkan overlay loading menutup seluruh tombol jika event window.load
-    // sudah selesai sebelum modul inventory dirender.
-    if (document.readyState === 'complete') {
-        hidePageLoading();
-    } else {
-        showPageLoading('Sedang memuat data inventory...');
-        window.addEventListener('load', function() {
-            hidePageLoading();
-        }, { once: true });
-    }
-
-    // Pengaman tambahan agar overlay tidak pernah tertinggal.
-    setTimeout(function() {
-        hidePageLoading();
-    }, 1500);
-
-    var searchForm = document.querySelector('form[action="index.php"]');
-    if (searchForm) {
-        searchForm.addEventListener('submit', function() {
-            showPageLoading('Sedang mencari data inventory...');
-        });
-    }
-
-    var resetBtn = document.querySelector('a[href="index.php?page=inventory"]');
-    if (resetBtn) {
-        resetBtn.addEventListener('click', function() {
-            showPageLoading('Mengatur ulang filter...');
-        });
-    }
-
     try {
         var modalInventory = document.getElementById('modalInventory');
-        if (modalInventory) {
-            bootstrapModalInventory = new bootstrap.Modal(modalInventory, {
-                backdrop: 'static',
-                keyboard: true
-            });
-        }
-
+        if (modalInventory) bootstrapModalInventory = new bootstrap.Modal(modalInventory, {backdrop: 'static', keyboard: true});
         var modalUOM = document.getElementById('modalUOMSelection');
-        if (modalUOM) {
-            bootstrapModalUOM = new bootstrap.Modal(modalUOM, {
-                backdrop: 'static',
-                keyboard: true
-            });
-        }
-    } catch(e) {
-        console.error("Error initializing modals:", e);
-    }
+        if (modalUOM) bootstrapModalUOM = new bootstrap.Modal(modalUOM, {backdrop: 'static', keyboard: true});
+    } catch(e) { console.error("Error initializing modals:", e); }
 
     if (typeof flatpickr !== 'undefined') {
         flatpickr('.js-date-picker', {
@@ -1046,104 +963,42 @@ document.addEventListener("DOMContentLoaded", function() {
             allowInput: true
         });
     }
-
-    var specTabsEl = document.querySelector('.spec-tabs');
-    if (specTabsEl) {
-        specTabsEl.addEventListener('click', function(e) {
-            var tab = e.target.closest('.spec-tab');
-            if (!tab) return;
-
+    
+    document.querySelector('.spec-tabs')?.addEventListener('click', function(e) {
+        var tab = e.target.closest('.spec-tab');
+        if (!tab) return;
+        e.preventDefault();
+        var tabId = tab.getAttribute('data-tab');
+        document.querySelectorAll('.spec-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.spec-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        var targetContent = document.getElementById(tabId);
+        if (targetContent) targetContent.classList.add('active');
+    });
+    
+    document.getElementById('formInventory')?.addEventListener('submit', function(e) {
+        var inventoryName = document.getElementById('form_inventory_name');
+        if (!inventoryName || !inventoryName.value.trim()) {
             e.preventDefault();
-
-            var tabId = tab.getAttribute('data-tab');
-
-            document.querySelectorAll('.spec-tab').forEach(function(t) {
-                t.classList.remove('active');
-            });
-
-            document.querySelectorAll('.spec-content').forEach(function(c) {
-                c.classList.remove('active');
-            });
-
-            tab.classList.add('active');
-
-            var targetContent = document.getElementById(tabId);
-            if (targetContent) {
-                targetContent.classList.add('active');
-            }
-        });
-    }
-
-    var formInventoryEl = document.getElementById('formInventory');
-    if (formInventoryEl) {
-        formInventoryEl.addEventListener('submit', function(e) {
-            var inventoryName = document.getElementById('form_inventory_name');
-
-            if (!inventoryName || !inventoryName.value.trim()) {
-                e.preventDefault();
-                alert('Inventory Name wajib diisi!');
-                return false;
-            }
-
-            showPageLoading('Sedang menyimpan data inventory...');
-        });
-    }
-
-    if (modalInventory) {
-        modalInventory.addEventListener('hidden.bs.modal', function() {
-            var loading = document.getElementById('loadingIndicator');
-            if (loading) {
-                loading.style.display = 'none';
-            }
+            alert('Inventory Name wajib diisi!');
+            return false;
+        }
+        document.getElementById('loadingIndicator').style.display = 'flex';
+    });
+    
+    if (bootstrapModalInventory) {
+        document.getElementById('modalInventory').addEventListener('hidden.bs.modal', function() {
+            document.getElementById('loadingIndicator').style.display = 'none';
         });
     }
 });
 
-function showPageLoading(text) {
-    var loader = document.getElementById('pageLoading');
-
-    if (!loader) return;
-
-    var label = loader.querySelector('div:last-child');
-    if (label && text) {
-        label.textContent = text;
-    }
-
-    loader.style.display = 'flex';
-}
-
-function hidePageLoading() {
-    var loader = document.getElementById('pageLoading');
-
-    if (loader) {
-        loader.style.display = 'none';
-    }
-}
-
-function showLoading(show) {
-    var loader = document.getElementById('loadingIndicator');
-    if (loader) {
-        loader.style.display = show ? 'flex' : 'none';
-    }
-}
-
-function resetFormState() {
-    selectedUOMs = [];
-
-    var uomData = document.getElementById('uom_data');
-    if (uomData) {
-        uomData.value = '[]';
-    }
-
-    var uomPack = document.getElementById('form_uom_pack');
-    if (uomPack) {
-        uomPack.value = '';
-    }
-}
+function showLoading(show) { var loader = document.getElementById('loadingIndicator'); if(loader) loader.style.display = show ? 'flex' : 'none'; }
+function resetFormState() { selectedUOMs = []; var uomData = document.getElementById('uom_data'); if(uomData) uomData.value = '[]'; var uomPack = document.getElementById('form_uom_pack'); if(uomPack) uomPack.value = ''; }
 
 function ensureBootstrapModals() {
     if (typeof bootstrap === 'undefined') {
-        console.error('Bootstrap JS belum ter-load. Pastikan bootstrap.bundle.min.js sudah dipanggil.');
+        console.error('Bootstrap JS belum ter-load. Pastikan bootstrap.bundle.min.js sudah dipanggil di index.php/header.');
         return false;
     }
 
@@ -1151,17 +1006,11 @@ function ensureBootstrapModals() {
     var modalUOM = document.getElementById('modalUOMSelection');
 
     if (!bootstrapModalInventory && modalInventory) {
-        bootstrapModalInventory = new bootstrap.Modal(modalInventory, {
-            backdrop: 'static',
-            keyboard: true
-        });
+        bootstrapModalInventory = new bootstrap.Modal(modalInventory, {backdrop: 'static', keyboard: true});
     }
 
     if (!bootstrapModalUOM && modalUOM) {
-        bootstrapModalUOM = new bootstrap.Modal(modalUOM, {
-            backdrop: 'static',
-            keyboard: true
-        });
+        bootstrapModalUOM = new bootstrap.Modal(modalUOM, {backdrop: 'static', keyboard: true});
     }
 
     return true;
@@ -1169,379 +1018,174 @@ function ensureBootstrapModals() {
 
 function showModalTambah() {
     ensureBootstrapModals();
-
-    if (isModalOpen) return;
-
+    if(isModalOpen) return;
     try {
-        var form = document.getElementById('formInventory');
-        if (form) {
-            form.reset();
-        }
-
+        var form = document.getElementById('formInventory'); if(form) form.reset();
         document.getElementById('action_form').value = 'insert';
         document.getElementById('modalTitle').innerHTML = '<i class="fa fa-plus-circle"></i> Tambah Item Inventory Baru';
-
         var invId = document.getElementById('form_inventory_id');
-        if (invId) {
-            invId.removeAttribute('readonly');
-            invId.style.background = '#ffffff';
-            invId.value = '';
-        }
-
+        if(invId) { invId.removeAttribute('readonly'); invId.style.background = '#ffffff'; invId.value = ''; }
         document.getElementById('form_status').value = 'Active';
         document.getElementById('form_volume_default').value = '1.0000';
         document.getElementById('form_uom_pack').value = '';
-
-        document.querySelectorAll('#formInventory input[type="checkbox"]').forEach(function(cb) {
-            cb.checked = false;
-        });
-
+        document.querySelectorAll('#formInventory input[type="checkbox"]').forEach(cb => cb.checked = false);
         selectedUOMs = [];
         document.getElementById('uom_data').value = '[]';
-
-        if (bootstrapModalInventory) {
-            isModalOpen = true;
-            bootstrapModalInventory.show();
-
-            setTimeout(function() {
-                isModalOpen = false;
-            }, 500);
-        }
-    } catch(e) {
-        console.error(e);
-        alert("Error: " + e.message);
-        isModalOpen = false;
-    }
+        if(bootstrapModalInventory) { isModalOpen = true; bootstrapModalInventory.show(); setTimeout(() => { isModalOpen = false; }, 500); }
+    } catch(e) { console.error(e); alert("Error: " + e.message); isModalOpen = false; }
 }
 
 function showModalEdit(data) {
     ensureBootstrapModals();
-
-    if (isModalOpen) return;
-
-    if (!data || !data.inventory_id) {
-        alert("Data tidak valid");
-        return;
-    }
-
+    if(isModalOpen) return;
+    if(!data || !data.inventory_id) { alert("Data tidak valid"); return; }
     try {
-        var form = document.getElementById('formInventory');
-        if (form) {
-            form.reset();
-        }
-
+        var form = document.getElementById('formInventory'); 
+        if(form) form.reset();
         document.getElementById('action_form').value = 'update';
         document.getElementById('modalTitle').innerHTML = '<i class="fa fa-edit"></i> Edit Inventory: ' + (data.inventory_name || '');
-
+        
+        // Isi form
         populateForm(data);
-
-        var cbW48 = document.getElementById('form_dont_show_at_w48');
-        if (cbW48) {
-            cbW48.checked = data.dont_show_at_w48 === 'Checked';
-        }
-
-        var cbStokan = document.getElementById('form_stokan');
-        if (cbStokan) {
-            cbStokan.checked = data.stokan === 'Checked';
-        }
-
+        
+        // Checkbox
+        document.getElementById('form_dont_show_at_w48').checked = data.dont_show_at_w48 === 'Checked';
+        document.getElementById('form_stokan').checked = data.stokan === 'Checked';
+        
         var invId = document.getElementById('form_inventory_id');
-        if (invId) {
-            invId.setAttribute('readonly', 'readonly');
-            invId.style.background = '#e9ecef';
+        if(invId) { 
+            invId.setAttribute('readonly', 'readonly'); 
+            invId.style.background = '#e9ecef'; 
         }
-
-        if (data.inventory_id) {
+        
+        // LOAD UOM DATA
+        if(data.inventory_id) {
             showLoading(true);
-
             var url = 'modul/master/inventory.php?ajax=get_inventory_uom&id=' + encodeURIComponent(data.inventory_id);
-
+             console.log("Fetching URL:", url); // Debug
             fetch(url, {
-                method: 'GET',
+                method: 'GET', 
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'application/json'
                 }
             })
-            .then(function(response) {
-                return response.text();
+            .then(function(response) { 
+                console.log("Response status:", response.status); // Debug
+                console.log("Response headers:", response.headers.get('content-type')); // Debug
+                return response.text(); // Gunakan text() dulu untuk lihat response mentah
             })
-            .then(function(text) {
-                try {
-                    return JSON.parse(text);
-                } catch(e) {
-                    console.error("JSON Parse error:", e);
-                    throw new Error("Response bukan JSON: " + text.substring(0, 200));
-                }
+              .then(function(text) {
+            console.log("Raw response:", text); // Debug - lihat apa yang dikembalikan
+            
+            // Coba parse JSON
+            try {
+                var result = JSON.parse(text);
+                console.log("Parsed result:", result);
+                return result;
+            } catch(e) {
+                console.error("JSON Parse error:", e);
+                throw new Error("Response bukan JSON: " + text.substring(0, 200));
+            }
             })
             .then(function(result) {
                 showLoading(false);
-
-                if (result.status === 'success' && Array.isArray(result.data)) {
+                console.log("UOM response:", result); // Debug
+                
+                if(result.status === 'success' && Array.isArray(result.data)) {
+                    // Konversi data dari database ke format yang diinginkan
                     selectedUOMs = result.data.map(function(uom) {
                         return {
                             Uom: uom.Uom,
-                            unit: uom.Uom,
+                            unit: uom.Uom,  // Tambahkan alias unit
                             Default: uom.Default,
                             is_default: uom.Default == 1 ? 'Checked' : 'Unchecked',
                             Value: uom.Value,
                             value_roll: uom.Value
                         };
                     });
-
-                    var defaultUOM = selectedUOMs.find(function(u) {
-                        return u.Default == 1;
-                    });
-
-                    if (defaultUOM) {
+                    
+                    console.log("Processed UOMs:", selectedUOMs); // Debug
+                    
+                    var defaultUOM = selectedUOMs.find(function(u) { return u.Default == 1; });
+                    if(defaultUOM) {
                         document.getElementById('form_uom_pack').value = defaultUOM.Uom;
-                    } else if (selectedUOMs.length > 0) {
+                    } else if(selectedUOMs.length > 0) {
                         document.getElementById('form_uom_pack').value = selectedUOMs[0].Uom;
                     }
-
                     document.getElementById('uom_data').value = JSON.stringify(selectedUOMs);
-                } else {
-                    resetUOMData();
+                } else { 
+                    console.warn("No UOM data:", result);
+                    resetUOMData(); 
                 }
             })
-            .catch(function(error) {
-                showLoading(false);
-                resetUOMData();
-                console.error("Error loading UOM:", error);
+            .catch(function(error) { 
+                showLoading(false); 
+                resetUOMData(); 
+                console.error("Error loading UOM:", error); 
                 alert("Gagal load data UOM: " + error.message);
             });
-        } else {
-            resetUOMData();
+        } else { 
+            resetUOMData(); 
         }
-
-        if (bootstrapModalInventory) {
-            isModalOpen = true;
-            bootstrapModalInventory.show();
-
-            setTimeout(function() {
-                isModalOpen = false;
-            }, 500);
+        
+        if(bootstrapModalInventory) { 
+            isModalOpen = true; 
+            bootstrapModalInventory.show(); 
+            setTimeout(function(){ isModalOpen = false; }, 500); 
         }
-    } catch(e) {
-        console.error(e);
-        alert("Error: " + e.message);
-        isModalOpen = false;
-    }
-}
-
-
-function loadInventoryUOM(inventoryId, errorLabel) {
-    showLoading(true);
-
-    var url = 'modul/master/inventory.php?ajax=get_inventory_uom&id=' +
-        encodeURIComponent(inventoryId);
-
-    return fetch(url, {
-        method: 'GET',
-        headers: {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Accept': 'application/json'
-        }
-    })
-    .then(function(response) {
-        return response.text();
-    })
-    .then(function(text) {
-        try {
-            return JSON.parse(text);
-        } catch (e) {
-            throw new Error('Response bukan JSON: ' + text.substring(0, 200));
-        }
-    })
-    .then(function(result) {
-        showLoading(false);
-
-        if (result.status !== 'success' || !Array.isArray(result.data)) {
-            resetUOMData();
-            return;
-        }
-
-        selectedUOMs = result.data.map(function(uom) {
-            return {
-                Uom: uom.Uom,
-                unit: uom.Uom,
-                Default: uom.Default,
-                is_default: uom.Default == 1 ? 'Checked' : 'Unchecked',
-                Value: uom.Value,
-                value_roll: uom.Value
-            };
-        });
-
-        var defaultUOM = selectedUOMs.find(function(u) {
-            return u.Default == 1;
-        });
-
-        var uomPack = document.getElementById('form_uom_pack');
-        if (uomPack) {
-            uomPack.value = defaultUOM
-                ? defaultUOM.Uom
-                : (selectedUOMs.length > 0 ? selectedUOMs[0].Uom : '');
-        }
-
-        document.getElementById('uom_data').value = JSON.stringify(selectedUOMs);
-    })
-    .catch(function(error) {
-        showLoading(false);
-        resetUOMData();
-        console.error(errorLabel || 'Gagal load UOM:', error);
-        alert((errorLabel || 'Gagal load data UOM') + ': ' + error.message);
-    });
-}
-
-function showModalCopy(data) {
-    ensureBootstrapModals();
-
-    if (isModalOpen) return;
-    if (!data || !data.inventory_id) {
-        alert('Data tidak valid');
-        return;
-    }
-
-    try {
-        var sourceInventoryId = data.inventory_id;
-        var form = document.getElementById('formInventory');
-
-        if (form) {
-            form.reset();
-        }
-
-        // Tetap INSERT agar inventory sumber tidak berubah.
-        document.getElementById('action_form').value = 'insert';
-        document.getElementById('modalTitle').innerHTML =
-            '<i class="fa fa-copy"></i> Copy Inventory: ' + (data.inventory_name || '');
-
-        populateForm(data);
-
-        var cbW48 = document.getElementById('form_dont_show_at_w48');
-        if (cbW48) {
-            cbW48.checked = data.dont_show_at_w48 === 'Checked';
-        }
-
-        var cbStokan = document.getElementById('form_stokan');
-        if (cbStokan) {
-            cbStokan.checked = data.stokan === 'Checked';
-        }
-
-        // Kosong berarti generateInventoryId() menentukan nomor berikutnya saat save.
-        var invId = document.getElementById('form_inventory_id');
-        if (invId) {
-            invId.value = '';
-            invId.removeAttribute('readonly');
-            invId.style.background = '#ffffff';
-            invId.placeholder = 'Auto';
-        }
-
-        selectedUOMs = [];
-        document.getElementById('uom_data').value = '[]';
-        loadInventoryUOM(sourceInventoryId, 'Gagal menyalin data UOM');
-
-        if (bootstrapModalInventory) {
-            isModalOpen = true;
-            bootstrapModalInventory.show();
-
-            setTimeout(function() {
-                isModalOpen = false;
-            }, 500);
-        }
-    } catch (e) {
-        showLoading(false);
-        console.error(e);
-        alert('Error: ' + e.message);
-        isModalOpen = false;
+    } catch(e) { 
+        console.error(e); 
+        alert("Error: " + e.message); 
+        isModalOpen = false; 
     }
 }
 
 function populateForm(data) {
-    for (var key in data) {
-        if (data.hasOwnProperty(key)) {
+    // Untuk semua input, textarea, select
+    for(var key in data) {
+        if(data.hasOwnProperty(key)) {
             var el = document.getElementById('form_' + key);
-
-            if (el) {
-                if (el.tagName === 'SELECT') {
-                    if (key === 'category') {
-                        setSelectValueSmart(el, data.category, data.category_name);
-                    } else {
-                        setSelectValueSmart(el, data[key], data[key]);
+            if(el) {
+                console.log("Populating field:", key, "with value:", data[key]);
+                
+                if(el.tagName === 'SELECT') {
+                    // Untuk select, cari option dengan value yang cocok
+                    var optionExists = false;
+                    for(var i = 0; i < el.options.length; i++) {
+                        // Gunakan == (bukan ===) karena bisa beda tipe data (string vs number)
+                        if(el.options[i].value == data[key]) {
+                            el.selectedIndex = i;
+                            optionExists = true;
+                            console.log("Option found for", key, ":", el.options[i].value);
+                            break;
+                        }
                     }
-                } else if (el.type === 'checkbox') {
+                    if(!optionExists && el.options.length > 0) {
+                        console.warn('Value "' + data[key] + '" not found in select ' + key);
+                        console.log('Available options:', Array.from(el.options).map(o => o.value));
+                        // Optional: Set ke option pertama jika tidak ditemukan
+                        // el.selectedIndex = 0;
+                    }
+                } else if(el.type === 'checkbox') {
                     el.checked = data[key] === 'Checked' || data[key] === true || data[key] === 1;
                 } else {
                     el.value = data[key] !== null ? data[key] : '';
                 }
+            } else {
+                console.warn("Element form_" + key + " not found");
             }
         }
     }
-
-    setSelectValueSmart(document.getElementById('form_type'), data.type, data.type);
-    setSelectValueSmart(document.getElementById('form_category'), data.category, data.category_name);
 }
 
-function normalizeText(value) {
-    return String(value || '')
-        .trim()
-        .replace(/-+$/g, '')
-        .trim()
-        .replace(/\s+/g, ' ')
-        .toLowerCase();
-}
+function resetUOMData() { selectedUOMs = []; document.getElementById('uom_data').value = '[]'; document.getElementById('form_uom_pack').value = ''; }
 
-function setSelectValueSmart(selectEl, value, textFallback) {
-    if (!selectEl) return;
-
-    var targetValue = String(value || '').trim();
-    var targetText = String(textFallback || value || '').trim();
-
-    for (var i = 0; i < selectEl.options.length; i++) {
-        if (String(selectEl.options[i].value).trim() === targetValue) {
-            selectEl.selectedIndex = i;
-            return;
-        }
-    }
-
-    for (var j = 0; j < selectEl.options.length; j++) {
-        if (normalizeText(selectEl.options[j].value) === normalizeText(targetValue)) {
-            selectEl.selectedIndex = j;
-            return;
-        }
-    }
-
-    for (var k = 0; k < selectEl.options.length; k++) {
-        if (
-            normalizeText(selectEl.options[k].text) === normalizeText(targetText) ||
-            normalizeText(selectEl.options[k].text) === normalizeText(targetValue)
-        ) {
-            selectEl.selectedIndex = k;
-            return;
-        }
-    }
-
-    if (targetValue !== '' || targetText !== '') {
-        var opt = document.createElement('option');
-        opt.value = targetValue || targetText;
-        opt.text = targetText || targetValue;
-        opt.selected = true;
-        opt.setAttribute('data-old-value', '1');
-        selectEl.appendChild(opt);
-    }
-}
-
-function resetUOMData() {
-    selectedUOMs = [];
-    document.getElementById('uom_data').value = '[]';
-    document.getElementById('form_uom_pack').value = '';
-}
-
-function showUOMSelector() {
+function showUOMSelector() { 
     ensureBootstrapModals();
-
-    if (bootstrapModalUOM) {
-        renderUOMTable();
-        bootstrapModalUOM.show();
+    if(bootstrapModalUOM) { 
+        renderUOMTable(); 
+        bootstrapModalUOM.show(); 
     } else {
         alert("Modal UOM tidak tersedia. Bootstrap JS belum siap.");
     }
@@ -1549,154 +1193,82 @@ function showUOMSelector() {
 
 function renderUOMTable() {
     var tbody = document.getElementById('uomSelectionBody');
-
-    if (!tbody) return;
-
+    if(!tbody) return;
     tbody.innerHTML = '';
-
-    if (!selectedUOMs || selectedUOMs.length === 0) {
-        addUOMRow();
-        return;
+    
+    console.log("Selected UOMs:", selectedUOMs); // Debug
+    
+    if(!selectedUOMs || selectedUOMs.length === 0) { 
+        addUOMRow(); 
+        return; 
     }
-
+    
     var fragment = document.createDocumentFragment();
-
-    selectedUOMs.forEach(function(uom, idx) {
-        var row = createUOMRow(uom, idx);
-        if (row) {
-            fragment.appendChild(row);
-        }
+    selectedUOMs.forEach(function(uom, idx) { 
+        console.log("Processing UOM:", uom); // Debug
+        var row = createUOMRow(uom, idx); 
+        if(row) fragment.appendChild(row); 
     });
-
     tbody.appendChild(fragment);
     syncUOMPack();
 }
 
 function createUOMRow(existingData, idx) {
     try {
+        // PERBAIKAN: Prioritas Uom (dari database) lalu unit
         var unit = existingData ? (existingData.Uom || existingData.unit || '') : '';
         var isDefault = existingData ? (existingData.Default == 1 || existingData.is_default === 'Checked') : false;
         var value = existingData ? (existingData.Value || existingData.value_roll || 0) : 0;
-
+        
+        console.log("Creating UOM row:", {unit, isDefault, value}); // Debug
+        
         var options = '<option value="">-- Pilih UOM --</option>';
-
-        for (var i = 0; i < uomList.length; i++) {
+        for(var i = 0; i < uomList.length; i++) {
             var selected = (unit === uomList[i]) ? ' selected' : '';
             options += '<option value="' + uomList[i] + '"' + selected + '>' + uomList[i] + '</option>';
         }
-
+        
         var row = document.createElement('tr');
-
-        row.innerHTML =
-            '<td class="text-center"><input type="radio" name="default_uom" value="' + (idx || Date.now()) + '"' + (isDefault ? ' checked' : '') + '></td>' +
-            '<td><select class="form-select form-select-sm uom-unit" style="width:120px">' + options + '</select></td>' +
-            '<td><input type="number" step="0.01" class="form-control form-control-sm uom-value" value="' + value + '" style="width:70px"></td>' +
-            '<td class="text-center"><button type="button" class="btn btn-sm btn-danger" onclick="removeUOMRow(this)"><i class="fa fa-trash"></i></button></td>';
-
+        row.innerHTML = '<td class="text-center"><input type="radio" name="default_uom" value="' + (idx||Date.now()) + '"' + (isDefault ? ' checked' : '') + '></td>' +
+                       '<td><select class="form-select form-select-sm uom-unit" style="width:120px">' + options + '</select></td>' +
+                       '<td><input type="number" step="0.01" class="form-control form-control-sm uom-value" value="' + value + '" style="width:70px"></td>' +
+                       '<td class="text-center"><button type="button" class="btn btn-sm btn-danger" onclick="removeUOMRow(this)"><i class="fa fa-trash"></i></button></td>';
+        
         var radio = row.querySelector('input[type="radio"]');
         var unitSelect = row.querySelector('.uom-unit');
-
-        if (radio) {
-            radio.addEventListener('change', function() {
-                syncUOMPack();
-            });
-        }
-
-        if (unitSelect) {
-            unitSelect.addEventListener('change', function() {
-                var body = document.getElementById('uomSelectionBody');
-                if (body && body.children.length === 1 && radio) {
-                    radio.checked = true;
-                }
-                syncUOMPack();
-            });
-        }
-
+        if(radio) radio.addEventListener('change', function() { syncUOMPack(); });
+        if(unitSelect) unitSelect.addEventListener('change', function() { 
+            if(document.getElementById('uomSelectionBody').children.length === 1 && radio) radio.checked = true; 
+            syncUOMPack(); 
+        });
         return row;
-    } catch(e) {
-        console.error("Error in createUOMRow:", e);
-        return null;
+    } catch(e) { 
+        console.error("Error in createUOMRow:", e); 
+        return null; 
     }
 }
 
-function addUOMRow() {
-    var tbody = document.getElementById('uomSelectionBody');
+function addUOMRow() { var tbody = document.getElementById('uomSelectionBody'); if(tbody) { var row = createUOMRow(null); if(row) { tbody.appendChild(row); if(tbody.children.length === 1) { var radio = row.querySelector('input[type="radio"]'); if(radio) radio.checked = true; } syncUOMPack(); } } }
 
-    if (tbody) {
-        var row = createUOMRow(null);
+function removeUOMRow(btn) { var row = btn.closest('tr'); if(row) row.remove(); var tbody = document.getElementById('uomSelectionBody'); if(tbody && tbody.children.length === 1) { var radio = tbody.children[0].querySelector('input[type="radio"]'); if(radio) radio.checked = true; } syncUOMPack(); }
 
-        if (row) {
-            tbody.appendChild(row);
-
-            if (tbody.children.length === 1) {
-                var radio = row.querySelector('input[type="radio"]');
-                if (radio) {
-                    radio.checked = true;
-                }
-            }
-
-            syncUOMPack();
-        }
-    }
-}
-
-function removeUOMRow(btn) {
-    var row = btn.closest('tr');
-
-    if (row) {
-        row.remove();
-    }
-
-    var tbody = document.getElementById('uomSelectionBody');
-
-    if (tbody && tbody.children.length === 1) {
-        var radio = tbody.children[0].querySelector('input[type="radio"]');
-        if (radio) {
-            radio.checked = true;
-        }
-    }
-
-    syncUOMPack();
-}
-
-function syncUOMPack() {
-    var rows = document.querySelectorAll('#uomSelectionBody tr');
-    var defaultUnit = '';
-
-    for (var i = 0; i < rows.length; i++) {
-        var radio = rows[i].querySelector('input[type="radio"]');
-        var unitSelect = rows[i].querySelector('.uom-unit');
-
-        if (radio && radio.checked && unitSelect && unitSelect.value) {
-            defaultUnit = unitSelect.value;
-            break;
-        }
-    }
-
-    var uomPack = document.getElementById('form_uom_pack');
-    if (uomPack) {
-        uomPack.value = defaultUnit;
-    }
-}
+function syncUOMPack() { var rows = document.querySelectorAll('#uomSelectionBody tr'); var defaultUnit = ''; for(var i=0;i<rows.length;i++) { var radio = rows[i].querySelector('input[type="radio"]'); var unitSelect = rows[i].querySelector('.uom-unit'); if(radio && radio.checked && unitSelect && unitSelect.value) { defaultUnit = unitSelect.value; break; } } var uomPack = document.getElementById('form_uom_pack'); if(uomPack) uomPack.value = defaultUnit; }
 
 function applyUOMSelection() {
     var rows = document.querySelectorAll('#uomSelectionBody tr');
     var uomData = [];
-
-    for (var i = 0; i < rows.length; i++) {
+    for(var i = 0; i < rows.length; i++) {
         var unitSelect = rows[i].querySelector('.uom-unit');
         var unit = unitSelect ? unitSelect.value : '';
-
-        if (unit !== '') {
-            var radioInput = rows[i].querySelector('input[type="radio"]');
-            var isDefault = radioInput ? radioInput.checked : false;
-
+        if(unit !== '') {
+            var isDefault = rows[i].querySelector('input[type="radio"]')?.checked || false;
             var valueInput = rows[i].querySelector('.uom-value');
             var value = valueInput ? parseFloat(valueInput.value) || 0 : 0;
-
+            
+            // Format sesuai database (gunakan Uom, Default, Value)
             uomData.push({
-                Uom: unit,
-                unit: unit,
+                Uom: unit,           // untuk kolom di database
+                unit: unit,          // untuk internal JS
                 Default: isDefault ? 1 : 0,
                 is_default: isDefault ? 'Checked' : 'Unchecked',
                 Value: value,
@@ -1704,59 +1276,76 @@ function applyUOMSelection() {
             });
         }
     }
-
-    if (uomData.length > 0 && !uomData.some(function(u) {
-        return u.Default === 1;
-    })) {
-        uomData[0].Default = 1;
-        uomData[0].is_default = 'Checked';
+    
+    // Set default jika belum ada
+    if(uomData.length > 0 && !uomData.some(function(u) { return u.Default === 1; })) { 
+        uomData[0].Default = 1; 
+        uomData[0].is_default = 'Checked'; 
     }
-
+    
     selectedUOMs = uomData;
     document.getElementById('uom_data').value = JSON.stringify(uomData);
-
-    var defaultUOM = uomData.find(function(u) {
-        return u.Default === 1;
-    });
-
+    
+    var defaultUOM = uomData.find(function(u) { return u.Default === 1; });
     document.getElementById('form_uom_pack').value = defaultUOM ? defaultUOM.Uom : '';
-
-    if (bootstrapModalUOM) {
-        bootstrapModalUOM.hide();
-    }
+    
+    if(bootstrapModalUOM) bootstrapModalUOM.hide();
 }
 
-function showModalImportCSV() {
+function showModalImportCSV() { 
     if (typeof bootstrap === 'undefined') {
         alert('Bootstrap JS belum ter-load. Pastikan bootstrap.bundle.min.js sudah dipanggil.');
         return;
     }
-
     var el = document.getElementById('modalImportCSV');
-
     if (!el) {
         alert('Modal Import CSV tidak ditemukan.');
         return;
     }
-
-    var modal = new bootstrap.Modal(el);
-    modal.show();
+    var modal = new bootstrap.Modal(el); 
+    modal.show(); 
 }
-
-function downloadTemplate() {
-    var headers = ['inventory_id', 'inventory_name', 'type', 'category', 'remarks', 'status'];
-    var csv = headers.join(',');
-    var blob = new Blob([csv], {type: 'text/csv'});
-    var link = document.createElement('a');
-
-    link.href = URL.createObjectURL(blob);
-    link.download = 'template_inventory.csv';
-    link.click();
-
-    URL.revokeObjectURL(link.href);
-}
+function downloadTemplate() { var headers = ['inventory_id','inventory_name','type','category','remarks','status']; var csv = headers.join(','); var blob = new Blob([csv], {type:'text/csv'}); var link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'template_inventory.csv'; link.click(); URL.revokeObjectURL(link.href); }
 
 function submitImportCSV() {
+    var fileInput = document.getElementById('csvFile');
+    if(!fileInput || !fileInput.files.length) { alert('Pilih file terlebih dahulu!'); return; }
+    var formData = new FormData(); formData.append('csv_file', fileInput.files[0]);
+    document.getElementById('progressContainer').style.display = 'block';
+    document.getElementById('resultContainer').style.display = 'none';
+    fetch('modul/master/import_inventory_csv.php', {method:'POST', body:formData})
+    .then(function(response) { return response.json(); })
+    .then(function(data) {
+        document.getElementById('progressContainer').style.display = 'none';
+        var resultDiv = document.getElementById('resultContainer');
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div class="alert alert-' + (data.success ? 'success' : 'danger') + '">' + (data.message || (data.success ? 'Import Berhasil' : 'Import Gagal')) + '</div>';
+        if(data.success) setTimeout(function() { location.reload(); }, 2000);
+    })
+    .catch(function(error) {
+        document.getElementById('progressContainer').style.display = 'none';
+        document.getElementById('resultContainer').style.display = 'block';
+        document.getElementById('resultContainer').innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+    });
+}
+// ================================================================
+// PERBAIKAN PENTING:
+// Pastikan semua function yang dipanggil dari onclick="" tersedia
+// di global scope window. Ini mencegah error:
+// Uncaught ReferenceError: showModalTambah is not defined
+// ================================================================
+window.showModalTambah = showModalTambah;
+window.showModalEdit = showModalEdit;
+window.showUOMSelector = showUOMSelector;
+window.addUOMRow = addUOMRow;
+window.removeUOMRow = removeUOMRow;
+window.applyUOMSelection = applyUOMSelection;
+window.showModalImportCSV = showModalImportCSV;
+window.downloadTemplate = downloadTemplate;
+window.submitImportCSV = submitImportCSV;
+
+//khusus import uom
+/*function submitImportCSV() {
     var fileInput = document.getElementById('csvFile');
 
     if (!fileInput || !fileInput.files.length) {
@@ -1770,7 +1359,7 @@ function submitImportCSV() {
     document.getElementById('progressContainer').style.display = 'block';
     document.getElementById('resultContainer').style.display = 'none';
 
-    fetch('modul/master/import_inventory_csv.php', {
+    fetch('modul/master/import_uom_page.php', {
         method: 'POST',
         body: formData
     })
@@ -1783,9 +1372,28 @@ function submitImportCSV() {
         var resultDiv = document.getElementById('resultContainer');
         resultDiv.style.display = 'block';
 
+        var detailHtml = '';
+
+        if (data.errors && data.errors.length > 0) {
+            detailHtml += '<hr><b>Error:</b><ul>';
+            data.errors.forEach(function(err) {
+                detailHtml += '<li>' + err + '</li>';
+            });
+            detailHtml += '</ul>';
+        }
+
+        if (data.warnings && data.warnings.length > 0) {
+            detailHtml += '<hr><b>Warning:</b><ul>';
+            data.warnings.forEach(function(warn) {
+                detailHtml += '<li>' + warn + '</li>';
+            });
+            detailHtml += '</ul>';
+        }
+
         resultDiv.innerHTML =
             '<div class="alert alert-' + (data.success ? 'success' : 'danger') + '">' +
             (data.message || (data.success ? 'Import Berhasil' : 'Import Gagal')) +
+            detailHtml +
             '</div>';
 
         if (data.success) {
@@ -1800,41 +1408,5 @@ function submitImportCSV() {
         document.getElementById('resultContainer').innerHTML =
             '<div class="alert alert-danger">Error: ' + error.message + '</div>';
     });
-}
-
-function exportInventory() {
-    showPageLoading('Sedang menyiapkan file Excel...');
-
-    var startDate = document.getElementById('start_date') ? document.getElementById('start_date').value : '';
-    var endDate = document.getElementById('end_date') ? document.getElementById('end_date').value : '';
-
-    var searchInput = document.querySelector('input[name="search"]');
-    var search = searchInput ? searchInput.value : '';
-
-    var url = 'modul/master/export_inventory.php'
-        + '?start_date=' + encodeURIComponent(startDate)
-        + '&end_date=' + encodeURIComponent(endDate)
-        + '&search=' + encodeURIComponent(search);
-
-    window.location.href = url;
-
-    setTimeout(function() {
-        hidePageLoading();
-    }, 3000);
-}
-
-window.showModalTambah = showModalTambah;
-window.showModalEdit = showModalEdit;
-window.showModalCopy = showModalCopy;
-window.showUOMSelector = showUOMSelector;
-window.addUOMRow = addUOMRow;
-window.removeUOMRow = removeUOMRow;
-window.applyUOMSelection = applyUOMSelection;
-window.showModalImportCSV = showModalImportCSV;
-window.downloadTemplate = downloadTemplate;
-window.submitImportCSV = submitImportCSV;
-window.exportInventory = exportInventory;
+}*/
 </script>
-
-
-
