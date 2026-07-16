@@ -354,6 +354,30 @@ if ($uom_q) {
 .existing-items-info strong {
     color: #0d6efd;
 }
+
+.auto-correct-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    padding: 5px 10px;
+    background: #eaf4ff;
+    border: 1px solid #b6dcff;
+    border-radius: 3px;
+    color: #0d6efd;
+    font-size: 10px;
+    font-weight: bold;
+    cursor: pointer;
+    user-select: none;
+}
+.auto-correct-toggle input {
+    width: auto !important;
+    margin: 0;
+}
+.qty-auto-calculated {
+    background: #eaf4ff !important;
+    font-weight: bold;
+}
 </style>
 
 <div class="so-wrap">
@@ -538,6 +562,10 @@ if ($uom_q) {
                 <span style="font-size:9px;color:#6c757d;margin-left:8px;">
                     <i class="fa fa-info-circle"></i> Klik kolom UoM Detail untuk pilih unit
                 </span>
+                <label class="auto-correct-toggle" title="Jika aktif, Qty, Qty Pack, dan UoM Detail dihitung otomatis berdasarkan nilai konversi m_inventory_uom">
+                    <input type="checkbox" id="chkAutoCorrect" name="allow_auto_correct" value="Checked" checked>
+                    <i class="fa fa-magic"></i> Allow Auto Correct
+                </label>
             </div>
             <div class="detail-table-wrap">
                 <table class="detail-table" id="detailTable">
@@ -721,6 +749,14 @@ function formatDecimalInput(num) {
     return num.toFixed(4).replace(/\.?0+$/, '');
 }
 
+function isAutoCorrectEnabled() {
+    return $('#chkAutoCorrect').is(':checked');
+}
+
+function setAutoCalculatedState(row, active) {
+    $(row).find('.qty, .qty-pack').toggleClass('qty-auto-calculated', !!active);
+}
+
 // ============================================================
 // FUNGSI UOM
 // ============================================================
@@ -801,7 +837,14 @@ function calculatePriceUnitFromPrice(row) {
 // FUNGSI QTY & UOM DETAIL
 // ============================================================
 function updateQtyPackBySelectedUomPack(row) {
+    if (!isAutoCorrectEnabled()) {
+        setAutoCalculatedState(row, false);
+        calculateRow(row);
+        return;
+    }
+
     var $row = $(row);
+    setAutoCalculatedState(row, true);
     var inventoryId = $row.find('.inv-select').val();
     var uomDefault = ($row.find('.inv-uom').val() || '').trim();
     var uomPack = ($row.find('.inv-uom-pack-select').val() || '').trim();
@@ -842,6 +885,8 @@ function updateQtyPackBySelectedUomPack(row) {
 }
 
 function updateUomDetailFromQtyPack(row) {
+    if (!isAutoCorrectEnabled()) return;
+
     var $row = $(row);
     var uomPack = ($row.find('.inv-uom-pack-select').val() || '').trim();
     var uomDefault = ($row.find('.inv-uom').val() || '').trim();
@@ -934,29 +979,52 @@ function closeUomDetailModal() {
 
 function chooseUomDetailFromModal(btn) {
     if (!currentUomDetailRow) return;
+
     var input = $(btn).closest('tr').find('.uom-modal-manual-value');
     var selectedUnit = input.data('unit') || '';
     var masterFactor = parseFloat(input.data('factor')) || 0;
     var manualValue = parseFloat(input.val()) || 0;
-    
-    if (!selectedUnit) { alert('Unit tidak valid.'); return; }
-    if (manualValue <= 0) { alert('Isi value manual terlebih dahulu.'); input.focus(); return; }
-    if (masterFactor <= 0) { alert('Master value UoM belum valid.'); return; }
-    
-    var hasilKonversi = manualValue * masterFactor;
-    
+
+    if (!selectedUnit) {
+        alert('Unit tidak valid.');
+        return;
+    }
+    if (manualValue <= 0) {
+        alert('Isi value manual terlebih dahulu.');
+        input.focus();
+        return;
+    }
+    if (masterFactor <= 0) {
+        alert('Master value UoM belum valid.');
+        return;
+    }
+
     currentUomDetailRow.find('.inv-uom-detail').val(selectedUnit);
     currentUomDetailRow.find('.inv-uom-detail-value').val(formatDecimalInput(manualValue));
     currentUomDetailRow.find('.inv-uom-detail-factor').val(formatDecimalInput(masterFactor));
-    currentUomDetailRow.find('.qty').val(formatDecimalInput(hasilKonversi));
-    
-    updateQtyPackBySelectedUomPack(currentUomDetailRow[0]);
+
+    if (isAutoCorrectEnabled()) {
+        var hasilKonversi = manualValue * masterFactor;
+        currentUomDetailRow.find('.qty').val(formatDecimalInput(hasilKonversi));
+        updateQtyPackBySelectedUomPack(currentUomDetailRow[0]);
+        setAutoCalculatedState(currentUomDetailRow[0], true);
+    } else {
+        setAutoCalculatedState(currentUomDetailRow[0], false);
+    }
+
     calculateRow(currentUomDetailRow[0]);
     closeUomDetailModal();
 }
 
 function recalculateFromUomDetail(row) {
+    if (!isAutoCorrectEnabled()) {
+        setAutoCalculatedState(row, false);
+        calculateRow(row);
+        return;
+    }
+
     var $row = $(row);
+    setAutoCalculatedState(row, true);
     var manualValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
     var factor = parseFloat($row.find('.inv-uom-detail-factor').val()) || 0;
     
@@ -1356,20 +1424,27 @@ $(document).ready(function() {
         updateQtyPackBySelectedUomPack(tr);
         updateUomDetailFromQtyPack(tr);
     });
-
     // Qty Pack input
     $(document).on('input', '.qty-pack', function() {
         var tr = $(this).closest('tr')[0];
+
+        if (!isAutoCorrectEnabled()) {
+            setAutoCalculatedState(tr, false);
+            calculateRow(tr);
+            return;
+        }
+
         var qtyPack = parseFloat($(this).val()) || 0;
         var uomPack = $(tr).find('.inv-uom-pack-select').val() || '';
         var uomDefault = $(tr).find('.inv-uom').val() || '';
         var uomDetail = $(tr).find('.inv-uom-detail').val() || '';
-        
+
         $(tr).find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
         $(tr).find('.inv-uom-detail').val(uomPack);
+
         var factor = getUomFactor($(tr).find('.inv-select').val(), uomPack);
         $(tr).find('.inv-uom-detail-factor').val(formatDecimalInput(factor));
-        
+
         if (uomPack === uomDefault) {
             $(tr).find('.qty').val(formatDecimalInput(qtyPack));
         } else if (uomPack === uomDetail && uomDetail !== uomDefault) {
@@ -1383,7 +1458,29 @@ $(document).ready(function() {
                 $(tr).find('.qty').val(formatDecimalInput(qtyPack * factorConv));
             }
         }
+
+        setAutoCalculatedState(tr, true);
         calculateRow(tr);
+    });
+
+    // Allow Auto Correct toggle
+    $(document).on('change', '#chkAutoCorrect', function() {
+        if (this.checked) {
+            $('#detailBody .detail-row').each(function() {
+                var manualValue = parseFloat($(this).find('.inv-uom-detail-value').val()) || 0;
+                var factor = parseFloat($(this).find('.inv-uom-detail-factor').val()) || 0;
+
+                if (manualValue > 0 && factor > 0) {
+                    recalculateFromUomDetail(this);
+                } else {
+                    updateQtyPackBySelectedUomPack(this);
+                }
+            });
+        } else {
+            $('#detailBody .detail-row').each(function() {
+                setAutoCalculatedState(this, false);
+            });
+        }
     });
 
     // Price Unit input
