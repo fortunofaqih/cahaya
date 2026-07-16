@@ -49,6 +49,48 @@ function sqlNullableString($conn, $value) {
     return "'" . mysqli_real_escape_string($conn, $value) . "'";
 }
 
+
+function normalizeSqlDate($value) {
+    $value = trim((string)$value);
+
+    if ($value === '') {
+        return '';
+    }
+
+    $formats = ['!Y-m-d', '!d-M-Y', '!d-m-Y'];
+
+    foreach ($formats as $format) {
+        $dt = DateTime::createFromFormat($format, $value);
+        if ($dt instanceof DateTime) {
+            return $dt->format('Y-m-d');
+        }
+    }
+
+    $bulanIndonesia = [
+        'Jan' => 'Jan', 'Feb' => 'Feb', 'Mar' => 'Mar', 'Apr' => 'Apr',
+        'Mei' => 'May', 'Jun' => 'Jun', 'Jul' => 'Jul', 'Agu' => 'Aug',
+        'Sep' => 'Sep', 'Okt' => 'Oct', 'Nov' => 'Nov', 'Des' => 'Dec'
+    ];
+
+    $parts = explode('-', $value);
+    if (count($parts) === 3) {
+        $day = trim($parts[0]);
+        $month = trim($parts[1]);
+        $year = trim($parts[2]);
+
+        if (isset($bulanIndonesia[$month])) {
+            $englishDate = $day . '-' . $bulanIndonesia[$month] . '-' . $year;
+            $dt = DateTime::createFromFormat('!d-M-Y', $englishDate);
+
+            if ($dt instanceof DateTime) {
+                return $dt->format('Y-m-d');
+            }
+        }
+    }
+
+    throw new Exception('Format tanggal tidak valid: ' . $value);
+}
+
 function getOrderTolerance($conn, $order_no) {
     $order_no_esc = mysqli_real_escape_string($conn, $order_no);
     $sql = "SELECT COALESCE(tolerance, 10.00) AS tolerance FROM head_sales_order WHERE order_no = '$order_no_esc' LIMIT 1";
@@ -129,10 +171,10 @@ function getPreviouslyShippedExceptCurrent($conn, $order_no, $shipping_no) {
 // Ambil data header dari POST
 $shipping_no = isset($_POST['shipping_no']) ? esc($conn, $_POST['shipping_no']) : '';
 $old_order_no = isset($_POST['old_order_no']) ? esc($conn, $_POST['old_order_no']) : '';
-$shipping_date = isset($_POST['shipping_date']) ? esc($conn, $_POST['shipping_date']) : '';
-$nota_date = isset($_POST['nota_date']) ? esc($conn, $_POST['nota_date']) : '';
+$shipping_date = isset($_POST['shipping_date']) ? normalizeSqlDate($_POST['shipping_date']) : '';
+$nota_date = isset($_POST['nota_date']) ? normalizeSqlDate($_POST['nota_date']) : '';
 $order_no = isset($_POST['order_no']) ? esc($conn, $_POST['order_no']) : '';
-$order_date = isset($_POST['order_date']) ? esc($conn, $_POST['order_date']) : '';
+$order_date = isset($_POST['order_date']) ? normalizeSqlDate($_POST['order_date']) : '';
 $customer_id = isset($_POST['customer_id']) ? esc($conn, $_POST['customer_id']) : '';
 $customer_name = isset($_POST['customer_name']) ? esc($conn, $_POST['customer_name']) : '';
 $customer_address = isset($_POST['customer_address']) ? esc($conn, $_POST['customer_address']) : '';
