@@ -62,6 +62,30 @@ function countShippingDetails(mysqli $conn, string $shipping_no): int {
     return (int)($row['total'] ?? 0);
 }
 
+
+function countInvoiceByShippingNo(mysqli $conn, string $shipping_no): int {
+    $stmt = mysqli_prepare($conn, "SELECT COUNT(*) AS total FROM det_invoice WHERE shipping_no = ?");
+
+    if (!$stmt) {
+        throw new Exception('Gagal prepare cek invoice: ' . mysqli_error($conn));
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $shipping_no);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+
+    return (int)($row['total'] ?? 0);
+}
+
+function getDeleteCsrfToken(): string {
+    if (empty($_SESSION['delete_shipping_csrf'])) {
+        $_SESSION['delete_shipping_csrf'] = bin2hex(random_bytes(32));
+    }
+    return (string)$_SESSION['delete_shipping_csrf'];
+}
+
 function deleteByShippingNo(mysqli $conn, string $table, string $shipping_no): void {
     // Nama tabel sengaja whitelist supaya tidak bisa diinjeksi lewat parameter.
     $allowedTables = [
@@ -91,8 +115,8 @@ function deleteByShippingNo(mysqli $conn, string $table, string $shipping_no): v
     mysqli_stmt_close($stmt);
 }
 
-$shipping_no = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
-$confirm = isset($_GET['confirm']) ? trim((string)$_GET['confirm']) : '';
+$shipping_no = isset($_POST['shipping_no']) ? trim((string)$_POST['shipping_no']) : (isset($_GET['id']) ? trim((string)$_GET['id']) : '');
+$confirm = isset($_POST['confirm_delete']) ? trim((string)$_POST['confirm_delete']) : '';
 
 if ($shipping_no === '') {
     redirectWithAlert('danger', 'Shipping No tidak ditemukan!');
@@ -135,7 +159,21 @@ if (strcasecmp($status, 'Close') === 0 || strcasecmp($status, 'Closed') === 0) {
 
 $detail_count = countShippingDetails($conn, $shipping_no);
 
+try {
+    $invoice_count = countInvoiceByShippingNo($conn, $shipping_no);
+} catch (Exception $e) {
+    redirectWithAlert('danger', 'Error: ' . $e->getMessage());
+}
+
+if ($invoice_count > 0) {
+    redirectWithAlert(
+        'warning',
+        'Shipping ' . $shipping_no . ' sudah digunakan pada invoice dan tidak dapat dihapus!'
+    );
+}
+
 if ($confirm !== 'yes') {
+    $csrf_token = getDeleteCsrfToken();
     $safe_shipping_no = htmlspecialchars($shipping_no, ENT_QUOTES, 'UTF-8');
     $safe_order_no = htmlspecialchars($shipping_data['order_no'] ?? '-', ENT_QUOTES, 'UTF-8');
     $safe_customer_name = htmlspecialchars($shipping_data['customer_name'] ?? '-', ENT_QUOTES, 'UTF-8');
@@ -143,39 +181,36 @@ if ($confirm !== 'yes') {
     $safe_status = htmlspecialchars($status, ENT_QUOTES, 'UTF-8');
     $safe_approval_status = htmlspecialchars($approval_status, ENT_QUOTES, 'UTF-8');
     $safe_detail_count = htmlspecialchars((string)$detail_count, ENT_QUOTES, 'UTF-8');
-    $confirm_url = 'index.php?page=delete_shipping&id=' . urlencode($shipping_no) . '&confirm=yes';
     ?>
-    <!DOCTYPE html>
-    <html lang="id">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Konfirmasi Hapus Shipping</title>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
-        <style>
-            body {
+    <style>
+            .delete-shipping-page {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 background: #f0f2f5;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                min-height: 100vh;
-                margin: 0;
-                padding: 20px;
+                min-height: calc(100vh - 120px);
+                padding: 24px 16px;
             }
             .confirm-box {
                 background: #fff;
-                border-radius: 8px;
-                box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-                padding: 30px;
-                max-width: 540px;
+                border: 1px solid #dee2e6;
+                border-radius: 10px;
+                box-shadow: 0 8px 26px rgba(0,0,0,0.10);
+                padding: 28px;
+                max-width: 680px;
                 width: 100%;
+                margin: 0 auto;
                 text-align: center;
             }
             .confirm-box .icon {
-                font-size: 58px;
-                color: #dc3545;
-                margin-bottom: 18px;
+                width: 64px;
+                height: 64px;
+                margin: 0 auto 16px;
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 28px;
+                color: #fff;
+                background: #dc3545;
             }
             .confirm-box h3 {
                 color: #333;
@@ -250,8 +285,7 @@ if ($confirm !== 'yes') {
                 line-height: 1.5;
             }
         </style>
-    </head>
-    <body>
+    <div class="delete-shipping-page">
         <div class="confirm-box">
             <div class="icon"><i class="fa fa-exclamation-triangle"></i></div>
             <h3>Konfirmasi Hapus Data</h3>
@@ -280,6 +314,10 @@ if ($confirm !== 'yes') {
                         <td><?= $safe_detail_count ?> item</td>
                     </tr>
                     <tr>
+                        <td>Invoice Terkait</td>
+                        <td>0</td>
+                    </tr>
+                    <tr>
                         <td>Status</td>
                         <td><span class="badge"><?= $safe_status ?></span></td>
                     </tr>
@@ -299,17 +337,43 @@ if ($confirm !== 'yes') {
                 <a href="index.php?page=shipping" class="btn btn-secondary">
                     <i class="fa fa-times"></i> Batal
                 </a>
-                <a href="<?= htmlspecialchars($confirm_url, ENT_QUOTES, 'UTF-8') ?>"
-                   class="btn btn-danger"
-                   onclick="return confirm('Hapus shipping <?= addslashes($shipping_no) ?> secara permanen?')">
-                    <i class="fa fa-trash"></i> Hapus Permanen
-                </a>
+                <form method="POST" action="index.php?page=delete_shipping" id="deleteShippingForm" style="margin:0;">
+                    <input type="hidden" name="shipping_no" value="<?= $safe_shipping_no ?>">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf_token, ENT_QUOTES, 'UTF-8') ?>">
+                    <input type="hidden" name="confirm_delete" value="yes">
+                    <button type="submit" class="btn btn-danger" id="btnDeleteShipping">
+                        <i class="fa fa-trash"></i> Hapus Permanen
+                    </button>
+                </form>
             </div>
         </div>
-    </body>
-    </html>
+    </div>
+
+    <script>
+    (function () {
+        var form = document.getElementById('deleteShippingForm');
+        var button = document.getElementById('btnDeleteShipping');
+        if (!form || !button) return;
+
+        form.addEventListener('submit', function (event) {
+            if (!window.confirm('Hapus shipping <?= addslashes($shipping_no) ?> secara permanen?')) {
+                event.preventDefault();
+                return false;
+            }
+            button.disabled = true;
+            button.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Menghapus...';
+        });
+    })();
+    </script>
     <?php
     exit;
+}
+
+$posted_csrf = isset($_POST['csrf_token']) ? (string)$_POST['csrf_token'] : '';
+$session_csrf = isset($_SESSION['delete_shipping_csrf']) ? (string)$_SESSION['delete_shipping_csrf'] : '';
+
+if ($posted_csrf === '' || $session_csrf === '' || !hash_equals($session_csrf, $posted_csrf)) {
+    redirectWithAlert('danger', 'Sesi konfirmasi hapus tidak valid atau sudah kedaluwarsa. Silakan ulangi.');
 }
 
 mysqli_begin_transaction($conn);
@@ -328,12 +392,22 @@ try {
         throw new Exception('Shipping ' . $shipping_no . ' sudah memiliki status Close dan tidak dapat dihapus.');
     }
 
+    if (countInvoiceByShippingNo($conn, $shipping_no) > 0) {
+        throw new Exception('Shipping ' . $shipping_no . ' sudah digunakan pada invoice dan tidak dapat dihapus.');
+    }
+
     // Urutan delete wajib: child paling bawah -> detail -> header.
     deleteByShippingNo($conn, 'det_shipping_uom_detail', $shipping_no);
     deleteByShippingNo($conn, 'det_shipping', $shipping_no);
     deleteByShippingNo($conn, 'hed_shipping', $shipping_no);
 
+    // Pastikan header benar-benar sudah terhapus.
+    if (fetchShippingHeader($conn, $shipping_no) !== null) {
+        throw new Exception('Header shipping masih ditemukan setelah proses hapus.');
+    }
+
     mysqli_commit($conn);
+    unset($_SESSION['delete_shipping_csrf']);
 
     $msg = 'Shipping ' . $shipping_no . ' berhasil dihapus!';
     $_SESSION['alert'] = '<div class="alert alert-success">' . htmlspecialchars($msg, ENT_QUOTES, 'UTF-8') . '</div>';

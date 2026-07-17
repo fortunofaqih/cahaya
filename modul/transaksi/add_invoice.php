@@ -53,10 +53,27 @@ $invoice_date = date('Y-m-d');
 $invoice_date_display = formatDateDisplay($invoice_date);
 
 $customer_rs = mysqli_query($conn, "
-    SELECT customer_id, customer, address, city
-    FROM m_customer
-    WHERE is_active = 'Checked'
-    ORDER BY customer ASC
+    SELECT DISTINCT
+        c.customer_id,
+        c.customer,
+        c.address,
+        c.city,
+        hs.shipping_no,
+        hs.order_no,
+        hs.shipping_date
+    FROM m_customer c
+    INNER JOIN hed_shipping hs
+        ON hs.customer_id = c.customer_id
+    WHERE c.is_active = 'Checked'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM det_invoice di
+          WHERE di.shipping_no = hs.shipping_no
+      )
+    ORDER BY
+        c.customer ASC,
+        hs.shipping_date DESC,
+        hs.shipping_no DESC
 ");
 
 $default_gudang_id = 'FC-02';
@@ -157,18 +174,25 @@ if ($gudang_rs) {
                 <div class="inv-panel-body">
                     <div class="ff">
                         <label>Customer Name <span class="required">*</span></label>
-                        <select name="customer_id" id="customer_id" required>
-                            <option value="">-- Pilih Customer --</option>
+                        <select id="customer_id" required>
+                            <option value="">-- Pilih Customer / Shipping No --</option>
                             <?php while ($c = mysqli_fetch_assoc($customer_rs)): ?>
-                                <option value="<?= h($c['customer_id']) ?>"
+                                <?php $customerShippingKey = $c['customer_id'] . '|' . $c['shipping_no']; ?>
+                                <option value="<?= h($customerShippingKey) ?>"
+                                        data-customer-id="<?= h($c['customer_id']) ?>"
                                         data-customer-name="<?= h($c['customer']) ?>"
                                         data-address="<?= h($c['address']) ?>"
-                                        data-city="<?= h($c['city']) ?>">
-                                    <?= h($c['customer']) ?>
+                                        data-city="<?= h($c['city']) ?>"
+                                        data-shipping-no="<?= h($c['shipping_no']) ?>"
+                                        data-order-no="<?= h($c['order_no']) ?>"
+                                        data-shipping-date="<?= h($c['shipping_date']) ?>">
+                                    <?= h($c['customer']) ?> - <?= h($c['shipping_no']) ?>
                                 </option>
                             <?php endwhile; ?>
                         </select>
+                        <input type="hidden" name="customer_id" id="customer_id_hidden">
                         <input type="hidden" name="customer_name" id="customer_name">
+                        <input type="hidden" name="selected_shipping_no" id="selected_shipping_no">
                     </div>
                     <div class="ff">
                         <label>Customer Address</label>
@@ -353,7 +377,7 @@ function renderShippingDetailTable(items){
     return html;
 }
 
-function loadCustomerOrders(customerId){
+function loadCustomerOrders(customerId, selectedOrderNo, selectedShippingNo){
     $('#order_no').html('<option value="">Loading...</option>');
     $('#shippingBody').html('<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">Pilih Sales Order terlebih dahulu.</td></tr>');
     resetOrderFields();
@@ -365,8 +389,19 @@ function loadCustomerOrders(customerId){
         .then(res => {
             if(res.status !== 'success') throw new Error(res.message || 'Gagal load SO');
             var html = '<option value="">-- Pilih Sales Order --</option>';
-            if(!res.data.length){ html += '<option value="">Tidak ada SO dengan shipping antrian invoice</option>'; }
-            res.data.forEach(function(o){
+            var matchedOrders = res.data;
+
+            if(selectedOrderNo){
+                matchedOrders = res.data.filter(function(o){
+                    return String(o.order_no || '') === String(selectedOrderNo);
+                });
+            }
+
+            if(!matchedOrders.length){
+                html += '<option value="">Sales Order untuk Shipping No ini tidak ditemukan</option>';
+            }
+
+            matchedOrders.forEach(function(o){
                 html += '<option value="'+escHtml(o.order_no)+'" '+
                     'data-order-date="'+escHtml(o.order_date)+'" '+
                     'data-payment-type="'+escHtml(o.payment_type)+'" '+
@@ -377,10 +412,15 @@ function loadCustomerOrders(customerId){
                     'data-grand-total="'+escHtml(o.grand_total)+'" '+
                     'data-down-payment="'+escHtml(o.down_payment)+'" '+
                     'data-remarks="'+escHtml(o.remarks)+'">'+
-                    escHtml(o.order_no)+' | '+fmtDate(o.order_date)+' | Term '+escHtml(o.payment_term || o.days)+' | Rp '+fmtMoney(o.grand_total)+
+                    escHtml(o.order_no)+' | '+fmtDate(o.order_date)+' | '+escHtml(selectedShippingNo || '')+
                     '</option>';
             });
+
             $('#order_no').html(html).trigger('change.select2');
+
+            if(selectedOrderNo && matchedOrders.length){
+                $('#order_no').val(selectedOrderNo).trigger('change');
+            }
         })
         .catch(err => { alert('Gagal load Sales Order: ' + err.message); $('#order_no').html('<option value="">Gagal load SO</option>'); });
 
@@ -416,7 +456,22 @@ function loadOrderShippings(orderNo){
             }
 
             var html = '';
-            res.data.forEach(function(s){
+            var selectedShippingNo = $('#selected_shipping_no').val() || '';
+            var shippingRows = res.data;
+
+            if(selectedShippingNo){
+                shippingRows = res.data.filter(function(s){
+                    return String(s.shipping_no || '') === String(selectedShippingNo);
+                });
+            }
+
+            if(!shippingRows.length){
+                $('#shippingBody').html('<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">Shipping No yang dipilih tidak ditemukan pada Sales Order ini.</td></tr>');
+                recalcTotals();
+                return;
+            }
+
+            shippingRows.forEach(function(s){
                 var subtotal = getShippingSubtotal(s);
                 var total = getShippingTotal(s);
                 var shippingNo = s.shipping_no || '';
@@ -424,7 +479,7 @@ function loadOrderShippings(orderNo){
                 var items = getShippingItems(s);
 
                 html += '<tr class="shipping-main-row" data-shipping-no="'+escHtml(shippingNo)+'">'+
-                    '<td style="text-align:center;"><input type="checkbox" class="ship-check" name="shipping_no[]" value="'+escHtml(shippingNo)+'" data-subtotal="'+escHtml(subtotal)+'" data-total="'+escHtml(total)+'"></td>'+
+                    '<td style="text-align:center;"><input type="checkbox" class="ship-check" name="shipping_no[]" value="'+escHtml(shippingNo)+'" data-subtotal="'+escHtml(subtotal)+'" data-total="'+escHtml(total)+'" '+(selectedShippingNo === shippingNo ? 'checked' : '')+'></td>'+
                     '<td style="text-align:center;"><button type="button" class="expand-btn" data-shipping-no="'+escHtml(shippingNo)+'" data-loaded="'+(items.length ? '1' : '0')+'">+</button></td>'+
                     '<td style="font-weight:bold;color:#0d6efd;">'+escHtml(shippingNo)+'</td>'+
                     '<td>'+escHtml(fmtDate(s.shipping_date))+'<input type="hidden" name="shipping_date_'+escHtml(shippingNo)+'" value="'+escHtml(s.shipping_date)+'"></td>'+
@@ -517,14 +572,21 @@ $(document).ready(function(){
     $('#customer_id').on('change', function(){
         var opt = this.options[this.selectedIndex];
         if(!opt || !this.value){
-            $('#customer_name,#customer_address,#customer_city').val('');
+            $('#customer_id_hidden,#customer_name,#customer_address,#customer_city,#selected_shipping_no').val('');
             loadCustomerOrders('');
             return;
         }
+        var actualCustomerId = opt.getAttribute('data-customer-id') || '';
+        var selectedShippingNo = opt.getAttribute('data-shipping-no') || '';
+        var selectedOrderNo = opt.getAttribute('data-order-no') || '';
+
+        $('#customer_id_hidden').val(actualCustomerId);
         $('#customer_name').val(opt.getAttribute('data-customer-name') || opt.text.trim());
         $('#customer_address').val(opt.getAttribute('data-address') || '');
         $('#customer_city').val(opt.getAttribute('data-city') || '');
-        loadCustomerOrders(this.value);
+        $('#selected_shipping_no').val(selectedShippingNo);
+
+        loadCustomerOrders(actualCustomerId, selectedOrderNo, selectedShippingNo);
     });
 
     $('#order_no').on('change', function(){
@@ -564,8 +626,8 @@ $(document).ready(function(){
     });
 
     $('#formInvoice').on('submit', function(e){
-        if(!$('#customer_id').val()){
-            e.preventDefault(); alert('Customer wajib dipilih.'); return false;
+        if(!$('#customer_id_hidden').val()){
+            e.preventDefault(); alert('Customer / Shipping No wajib dipilih.'); return false;
         }
         if(!$('#order_no').val()){
             e.preventDefault(); alert('Sales Order wajib dipilih.'); return false;

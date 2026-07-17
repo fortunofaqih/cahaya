@@ -425,19 +425,21 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
                             <?php while ($o = mysqli_fetch_assoc($order_rs)): ?>
                                 <option value="<?= htmlspecialchars($o['order_no']) ?>"
                                         data-order-date="<?= htmlspecialchars($o['order_date']) ?>"
+                                        data-order-date-display="<?= htmlspecialchars(formatDateIndonesian($o['order_date'])) ?>"
                                         data-customer-id="<?= htmlspecialchars($o['customer_id']) ?>"
                                         data-customer-name="<?= htmlspecialchars($o['customer_name']) ?>"
                                         data-customer-address="<?= htmlspecialchars($o['customer_address']) ?>"
                                         data-customer-city="<?= htmlspecialchars($o['customer_city']) ?>"
                                         data-tolerance="<?= htmlspecialchars($o['tolerance'] ?? '10.00') ?>">
-                                    <?= htmlspecialchars($o['order_no']) ?> - <?= htmlspecialchars($o['customer_name']) ?>
+                                        <?= htmlspecialchars($o['order_no']) ?> - <?= htmlspecialchars(formatDateIndonesian($o['order_date'])) ?> - <?= htmlspecialchars($o['customer_name']) ?>
                                 </option>
                             <?php endwhile; ?>
                         </select>
                     </div>
                     <div class="ff">
                         <label>Order Date</label>
-                        <input type="text" name="order_date" id="order_date" readonly>
+                        <input type="text" id="order_date_display" readonly placeholder="Akan tampil setelah Order No dipilih">
+                        <input type="hidden" name="order_date" id="order_date">
                     </div>
                     <div class="ff">
                         <label>Gudang <span class="required">*</span></label>
@@ -1150,7 +1152,7 @@ function convertIndoDateToSql($el) {
 $(document).on('change', '#order_no', function() {
     var opt = this.options[this.selectedIndex];
     if (!opt || this.value === '') {
-        $('#order_date, #customer_id, #customer_name, #customer_address, #customer_city').val('');
+        $('#order_date, #order_date_display, #customer_id, #customer_name, #customer_address, #customer_city').val('');
         $('#detailBody').empty();
         rowCounter = 0;
         updateRowNumbers();
@@ -1158,6 +1160,11 @@ $(document).on('change', '#order_no', function() {
     }
 
     $('#order_date').val(opt.getAttribute('data-order-date') || '');
+    $('#order_date_display').val(
+        opt.getAttribute('data-order-date-display') ||
+        opt.getAttribute('data-order-date') ||
+        ''
+    );
     $('#customer_id').val(opt.getAttribute('data-customer-id') || '');
     $('#customer_name').val(opt.getAttribute('data-customer-name') || '');
     $('#customer_address').val(opt.getAttribute('data-customer-address') || '');

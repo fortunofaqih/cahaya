@@ -229,6 +229,7 @@ $customerLines = splitAddressLines(
 
 $vehicleText = safeText($header['transporter'] ?? '');
 $truckNoText = safeText($header['truck_no'] ?? '');
+$remarksShippingText = safeText($header['remarks_shipping'] ?? '');
 
 // Nota fisik mempunyai 10 slot baris.
 $maxRowSlots = 10;
@@ -377,6 +378,19 @@ $maxRowSlots = 10;
             overflow: hidden;
             text-align: left;
             text-overflow: ellipsis;
+        }
+
+        .remarks-shipping-field {
+            position: absolute;
+            left: 89mm;
+            width: 115mm;
+            max-height: 15mm;
+            overflow: hidden;
+            color: #000;
+            font-size: 10pt;
+            line-height: 5mm;
+            white-space: normal;
+            word-wrap: break-word;
         }
 
         .extra-warning {
@@ -546,6 +560,21 @@ $maxRowSlots = 10;
         $usedSlots += $lineCount;
     endforeach;
     ?>
+
+    <?php
+    // Remarks Shipping dicetak 15 mm di bawah baris nama barang terakhir.
+    // Posisi horizontal 35 mm di kanan tepi qtyCol3:
+    // qtyCol3 mulai 39 mm, lebar 15 mm, sehingga tepi kanannya 54 mm.
+    // 54 mm + 35 mm = 89 mm.
+    $remarksTop = $currentTop + 15;
+    ?>
+
+    <?php if ($remarksShippingText !== ''): ?>
+        <div
+            class="remarks-shipping-field"
+            style="top: <?= e($remarksTop) ?>mm;"
+        ><?= nl2br(e($remarksShippingText)) ?></div>
+    <?php endif; ?>
 
     <?php if ($hasMoreRows): ?>
         <div class="extra-warning">
