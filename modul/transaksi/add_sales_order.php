@@ -463,7 +463,7 @@ $no_po    = generatePONumber($conn, $tahun);
                     </div>
                      <div class="ff">
                             <label>No. PO <span class="required">*</span></label>
-                            <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" readonly style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                            <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
                             <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO akan otomatis digenerate</small>
                         </div>
                     <div class="ff">

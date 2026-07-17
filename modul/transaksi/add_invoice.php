@@ -186,7 +186,7 @@ if ($gudang_rs) {
                                         data-shipping-no="<?= h($c['shipping_no']) ?>"
                                         data-order-no="<?= h($c['order_no']) ?>"
                                         data-shipping-date="<?= h($c['shipping_date']) ?>">
-                                    <?= h($c['customer']) ?> - <?= h($c['shipping_no']) ?>
+                                    <?= h($c['customer']) ?> - <?= h($c['shipping_no']) ?> (<?= h(formatDateDisplay($c['shipping_date'])) ?>)
                                 </option>
                             <?php endwhile; ?>
                         </select>
