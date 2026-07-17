@@ -451,8 +451,9 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
     </div>
 
     <form method="POST" action="index.php?page=update_shipping" id="formShipping">
-        <input type="hidden" name="shipping_no" value="<?= h($shipping_no) ?>">
-        <input type="hidden" name="old_order_no" value="<?= h($header['order_no'] ?? '') ?>">
+        
+		 <input type="hidden" name="old_shipping_no" value="<?= h($shipping_no) ?>">
+          <input type="hidden" name="old_order_no" value="<?= h($header['order_no'] ?? '') ?>">
         <!-- Field lama tetap dikirim agar update_shipping.php tidak mengosongkan data existing saat panel transporter/shipment location disembunyikan -->
         <input type="hidden" name="transporter" value="<?= h($header['transporter'] ?? '') ?>">
         <input type="hidden" name="driver_name" value="<?= h($header['driver_name'] ?? '') ?>">
@@ -465,9 +466,17 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                 <div class="shipping-panel-header"><i class="fa-solid fa-truck"></i> Shipping Information</div>
                 <div class="shipping-panel-body">
                     <div class="ff">
-                        <label>Shipping No</label>
-                        <input type="text" value="<?= h($shipping_no) ?>" readonly style="font-weight:bold; color:var(--accent-blue);">
-                    </div>
+						<label>Shipping No <span class="required">*</span></label>
+						<input
+							type="text"
+							name="shipping_no"
+							id="shipping_no"
+							value="<?= h($shipping_no) ?>"
+							required
+							autocomplete="off"
+							style="font-weight:bold; color:var(--accent-blue); text-transform:uppercase;"
+						>
+					</div>
                     <div class="ff">
                         <label>Shipping Date <span class="required">*</span></label>
                         <input type="text" name="shipping_date" class="form-control form-control-sm datepicker" value="<?= $shipping_date_display ?>" required>

@@ -411,7 +411,7 @@ if ($uom_q) {
                     </div>
                     <div class="ff">
                         <label>No. PO</label>
-                        <input type="text" name="no_po" value="<?= htmlspecialchars($no_po) ?>" readonly style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                        <input type="text" name="no_po" value="<?= htmlspecialchars($no_po) ?>" style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
                         <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO tidak dapat diubah</small>
                     </div>
                     <div class="ff">

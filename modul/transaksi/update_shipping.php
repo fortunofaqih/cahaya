@@ -170,6 +170,7 @@ function getPreviouslyShippedExceptCurrent($conn, $order_no, $shipping_no) {
 
 // Ambil data header dari POST
 $shipping_no = isset($_POST['shipping_no']) ? esc($conn, $_POST['shipping_no']) : '';
+$old_shipping_no = isset($_POST['old_shipping_no']) ? esc($conn, $_POST['old_shipping_no']) : $shipping_no;
 $old_order_no = isset($_POST['old_order_no']) ? esc($conn, $_POST['old_order_no']) : '';
 $shipping_date = isset($_POST['shipping_date']) ? normalizeSqlDate($_POST['shipping_date']) : '';
 $nota_date = isset($_POST['nota_date']) ? normalizeSqlDate($_POST['nota_date']) : '';
@@ -212,7 +213,7 @@ if ($shipping_no === '') {
 if ($shipping_date === '') {
     echo "<script>
         alert('Shipping Date tidak boleh kosong!');
-        window.location.href='index.php?page=edit_shipping&id=" . addslashes($shipping_no) . "';
+        window.location.href='index.php?page=edit_shipping&id=" . addslashes($old_shipping_no) . "';
     </script>";
     exit;
 }
@@ -220,7 +221,7 @@ if ($shipping_date === '') {
 if ($order_no === '') {
     echo "<script>
         alert('Order No tidak boleh kosong!');
-        window.location.href='index.php?page=edit_shipping&id=" . addslashes($shipping_no) . "';
+        window.location.href='index.php?page=edit_shipping&id=" . addslashes($old_shipping_no) . "';
     </script>";
     exit;
 }
@@ -321,7 +322,7 @@ for ($i = 0; $i < $total_items; $i++) {
 if (count($items) === 0) {
     echo "<script>
         alert('Minimal harus ada 1 item inventory yang valid!');
-        window.location.href='index.php?page=edit_shipping&id=" . addslashes($shipping_no) . "';
+        window.location.href='index.php?page=edit_shipping&id=" . addslashes($old_shipping_no) . "';
     </script>";
     exit;
 }
@@ -330,6 +331,37 @@ mysqli_begin_transaction($conn);
 
 try {
     $username = isset($_SESSION['username']) ? mysqli_real_escape_string($conn, $_SESSION['username']) : '';
+
+    $old_shipping_no_esc = mysqli_real_escape_string($conn, $old_shipping_no);
+    $shipping_no_esc = mysqli_real_escape_string($conn, $shipping_no);
+
+    $check_current = mysqli_query($conn, "SELECT shipping_no FROM hed_shipping WHERE shipping_no = '$old_shipping_no_esc' LIMIT 1 FOR UPDATE");
+    if (!$check_current) {
+        throw new Exception('Gagal memeriksa Shipping No lama: ' . mysqli_error($conn));
+    }
+    if (mysqli_num_rows($check_current) === 0) {
+        throw new Exception("Shipping No lama $old_shipping_no tidak ditemukan.");
+    }
+
+    if (strcasecmp($shipping_no, $old_shipping_no) !== 0) {
+        $check_duplicate = mysqli_query($conn, "SELECT shipping_no FROM hed_shipping WHERE shipping_no = '$shipping_no_esc' LIMIT 1");
+        if (!$check_duplicate) {
+            throw new Exception('Gagal memeriksa duplikat Shipping No: ' . mysqli_error($conn));
+        }
+        if (mysqli_num_rows($check_duplicate) > 0) {
+            throw new Exception("Shipping No $shipping_no sudah digunakan.");
+        }
+
+        $check_invoice = mysqli_query($conn, "SELECT invoice_no FROM det_invoice WHERE shipping_no = '$old_shipping_no_esc' LIMIT 1");
+        if (!$check_invoice) {
+            throw new Exception('Gagal memeriksa invoice terkait: ' . mysqli_error($conn));
+        }
+        if (mysqli_num_rows($check_invoice) > 0) {
+            $invoice_row = mysqli_fetch_assoc($check_invoice);
+            $invoice_ref = $invoice_row['invoice_no'] ?? '';
+            throw new Exception("Shipping No tidak dapat diubah karena sudah digunakan pada Invoice $invoice_ref.");
+        }
+    }
 
     // Validasi tolerance server-side.
     // Validasi hanya terhadap total input pada dokumen shipping yang sedang diedit.
@@ -386,6 +418,7 @@ try {
 
     // 1. UPDATE hed_shipping
     $query_header = "UPDATE hed_shipping SET
+        shipping_no = " . sqlNullableString($conn, $shipping_no) . ",
         shipping_date = " . sqlNullableString($conn, $shipping_date) . ",
         order_no = " . sqlNullableString($conn, $order_no) . ",
         order_date = " . sqlNullableString($conn, $order_date) . ",
@@ -402,21 +435,22 @@ try {
         nota_date = " . sqlNullableString($conn, $nota_date) . ",
         user_modified = " . sqlNullableString($conn, $username) . ",
         date_modified = NOW()
-    WHERE shipping_no = '" . mysqli_real_escape_string($conn, $shipping_no) . "'";
+    WHERE shipping_no = '" . mysqli_real_escape_string($conn, $old_shipping_no) . "'";
 
     if (!mysqli_query($conn, $query_header)) {
         throw new Exception('Gagal update header shipping: ' . mysqli_error($conn));
     }
 
     // 2. Hapus detail UOM lama dulu, baru hapus detail utama.
+    $old_shipping_no_esc = mysqli_real_escape_string($conn, $old_shipping_no);
     $shipping_no_esc = mysqli_real_escape_string($conn, $shipping_no);
 
-    $query_delete_uom = "DELETE FROM det_shipping_uom_detail WHERE shipping_no = '$shipping_no_esc'";
+    $query_delete_uom = "DELETE FROM det_shipping_uom_detail WHERE shipping_no = '$old_shipping_no_esc'";
     if (!mysqli_query($conn, $query_delete_uom)) {
         throw new Exception('Gagal menghapus detail UOM shipping lama: ' . mysqli_error($conn));
     }
 
-    $query_delete = "DELETE FROM det_shipping WHERE shipping_no = '$shipping_no_esc'";
+    $query_delete = "DELETE FROM det_shipping WHERE shipping_no = '$old_shipping_no_esc'";
     if (!mysqli_query($conn, $query_delete)) {
         throw new Exception('Gagal menghapus detail shipping lama: ' . mysqli_error($conn));
     }
@@ -533,7 +567,7 @@ try {
 
     echo "<script>
         alert('Error: " . addslashes($error_message) . "');
-        window.location.href='index.php?page=edit_shipping&id=" . addslashes($shipping_no) . "';
+        window.location.href='index.php?page=edit_shipping&id=" . addslashes($old_shipping_no) . "';
     </script>";
     exit;
 }
