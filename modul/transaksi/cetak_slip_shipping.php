@@ -194,10 +194,26 @@ function getQtyDisplay($detail) {
         }
     };
 
-    // Pertahankan urutan existing: Pack, Detail, kemudian UoM utama.
-    $addQty($qtyPack, $uomPack);
-    $addQty($qtyDetail, $uomDetail);
-    $addQty($qtyShipping, $uomShipping);
+    /*
+     * Untuk cetak item KERTAS, BOX, atau BIJI/BIJIH, semua UoM KG
+     * tidak ditampilkan karena barang dikirim berdasarkan kemasan
+     * seperti KRG, PAK, IKT, atau LBR, bukan berdasarkan timbangannya.
+     *
+     * Berlaku untuk UoM utama, UoM Pack, dan UoM Detail.
+     * Contoh: 10 KRG | 250 PAK | 250 KG dicetak menjadi
+     * 10 KRG | 250 PAK.
+     */
+    if ($uomPack !== 'KG') {
+        $addQty($qtyPack, $uomPack);
+    }
+
+    if ($uomDetail !== 'KG') {
+        $addQty($qtyDetail, $uomDetail);
+    }
+
+    if ($uomShipping !== 'KG') {
+        $addQty($qtyShipping, $uomShipping);
+    }
 
     $result = [];
 
