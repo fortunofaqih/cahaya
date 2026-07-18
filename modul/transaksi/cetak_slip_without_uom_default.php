@@ -126,24 +126,135 @@ function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 3) {
     return $lines;
 }
 
-function getQtyDisplay($detail) {
-    $qtyPack = (float)($detail['qty_pack_shipping'] ?? 0);
-    $uomPack = safeText($detail['uom_pack_shipping'] ?? '');
+function normalizeUomName($uom) {
+    return strtoupper(trim((string)$uom));
+}
 
-    $qtyDetail = (float)($detail['qty_detail_shipping'] ?? 0);
-    $uomDetail = safeText($detail['uom_detail_shipping'] ?? '');
+function addQtyUomEntry(&$entries, $qty, $uom) {
+    $uom = normalizeUomName($uom);
+
+    if ($uom === '' || !is_numeric(str_replace(',', '.', trim((string)$qty)))) {
+        return;
+    }
+
+    $qty = (float)str_replace(',', '.', trim((string)$qty));
+
+    if ($qty <= 0) {
+        return;
+    }
+
+    /*
+     * Satu UoM hanya ditampilkan satu kali.
+     * Contoh Qty = 10 KG dan Qty Pack = 10 KG:
+     * KG tetap hanya dicetak satu kali.
+     */
+    if (!isset($entries[$uom])) {
+        $entries[$uom] = $qty;
+    }
+}
+
+function parseCombinedQtyUomText($text, &$entries) {
+    $text = safeText($text);
+
+    if ($text === '') {
+        return;
+    }
+
+    /*
+     * Mendukung format:
+     * 1 BAL, 10 ROLL
+     * 1 BAL | 10 ROLL
+     * 1 BAL; 10 ROLL
+     */
+    $parts = preg_split('/\s*(?:\||,|;)\s*/', $text);
+
+    foreach ($parts as $part) {
+        if (preg_match('/^\s*(-?\d+(?:[.,]\d+)?)\s+([A-Za-z]+)\s*$/', $part, $match)) {
+            addQtyUomEntry($entries, $match[1], $match[2]);
+        }
+    }
+}
+
+function addSeparatedDetailUoms($qtyText, $uomText, &$entries) {
+    $qtyText = safeText($qtyText);
+    $uomText = safeText($uomText);
+
+    if ($qtyText === '' || $uomText === '') {
+        return;
+    }
+
+    /*
+     * Mendukung jika quantity dan UoM detail disimpan terpisah:
+     * qty_detail_shipping = "1,10"
+     * uom_detail_shipping = "BAL,ROLL"
+     */
+    $qtyParts = preg_split('/\s*(?:\||,|;)\s*/', $qtyText);
+    $uomParts = preg_split('/\s*(?:\||,|;)\s*/', $uomText);
+
+    if (count($qtyParts) > 1 && count($qtyParts) === count($uomParts)) {
+        foreach ($qtyParts as $index => $qtyPart) {
+            addQtyUomEntry($entries, $qtyPart, $uomParts[$index] ?? '');
+        }
+        return;
+    }
+
+    addQtyUomEntry($entries, $qtyText, $uomText);
+}
+
+function getQtyDisplay($detail) {
+    $entries = [];
+
+    // Ambil rincian asli dari det_shipping_uom_detail terlebih dahulu.
+    $multiUomText = safeText($detail['multi_uom_detail_text'] ?? '');
+    parseCombinedQtyUomText($multiUomText, $entries);
+
+    // Tambahkan Qty Pack dan Qty utama. UoM yang sama otomatis tidak diduplikasi.
+    addQtyUomEntry(
+        $entries,
+        $detail['qty_pack_shipping'] ?? 0,
+        $detail['uom_pack_shipping'] ?? ''
+    );
+
+    addQtyUomEntry(
+        $entries,
+        $detail['qty_shipping'] ?? 0,
+        $detail['uom_shipping'] ?? ''
+    );
+
+    // Hanya gunakan kolom ringkasan lama jika tabel detail tidak memiliki data.
+    // Ini mencegah data 1 BAL + 10 ROLL berubah menjadi 11 BAL.
+    if ($multiUomText === '') {
+        addQtyUomEntry(
+            $entries,
+            $detail['qty_detail_shipping'] ?? 0,
+            $detail['uom_detail_shipping'] ?? ''
+        );
+    }
+
+    $priority = [
+        'BAL'  => 10,
+        'ROLL' => 20,
+        'ROL'  => 20,
+        'KG'   => 30,
+    ];
+
+    uksort($entries, function ($a, $b) use ($priority) {
+        $priorityA = $priority[$a] ?? 100;
+        $priorityB = $priority[$b] ?? 100;
+
+        if ($priorityA === $priorityB) {
+            return strcmp($a, $b);
+        }
+
+        return $priorityA <=> $priorityB;
+    });
 
     $result = [];
-
-    if ($qtyPack > 0 && $uomPack !== '') {
-        $result[] = fmtNumber($qtyPack) . ' ' . $uomPack;
+    foreach ($entries as $entryUom => $entryQty) {
+        $result[] = fmtNumber($entryQty) . ' ' . $entryUom;
     }
 
-    if ($qtyDetail > 0 && $uomDetail !== '') {
-        $result[] = fmtNumber($qtyDetail) . ' ' . $uomDetail;
-    }
-
-    return implode(' | ', $result);
+    return array_slice($result, 0, 3);
 }
 
 // ===============================
@@ -192,7 +303,30 @@ $stmtDetail = mysqli_prepare($conn, "
         ds.uom_pack_shipping,
         ds.qty_detail_shipping,
         ds.uom_detail_shipping,
-        ds.remarks_inventory_shipping
+        ds.remarks_inventory_shipping,
+        (
+            SELECT GROUP_CONCAT(
+                CONCAT(dud.qty_detail, ' ', dud.uom_detail)
+                ORDER BY
+                    CASE UPPER(dud.uom_detail)
+                        WHEN 'BAL' THEN 1
+                        WHEN 'ROLL' THEN 2
+                        WHEN 'ROL' THEN 2
+                        WHEN 'KG' THEN 3
+                        ELSE 99
+                    END,
+                    dud.id ASC
+                SEPARATOR ' | '
+            )
+            FROM det_shipping_uom_detail dud
+            WHERE
+                dud.det_shipping_id = ds.id
+                OR (
+                    dud.det_shipping_id IS NULL
+                    AND dud.shipping_no = ds.shipping_no
+                    AND dud.inventory_id = ds.inventory_id
+                )
+        ) AS multi_uom_detail_text
     FROM det_shipping ds
     LEFT JOIN m_inventory mi
         ON mi.inventory_id = ds.inventory_id
@@ -519,28 +653,27 @@ $maxRowSlots = 10;
             break;
         }
 
-        $qtyDisplay = getQtyDisplay($detail);
-        $qtyParts = explode(' | ', $qtyDisplay);
+        $qtyParts = getQtyDisplay($detail);
 
-        $qtyCol1 = isset($qtyParts[0]) ? $qtyParts[0] : '';
-        $qtyCol2 = isset($qtyParts[1]) ? $qtyParts[1] : '';
-        $qtyCol3 = isset($qtyParts[2]) ? $qtyParts[2] : '';
+        $qtyCol1 = $qtyParts[0] ?? '';
+        $qtyCol2 = $qtyParts[1] ?? '';
+        $qtyCol3 = $qtyParts[2] ?? '';
     ?>
 
         <!--
-            REVISI:
-            Kolom fisik paling kiri menampilkan $qtyCol2.
-            Kolom fisik berikutnya menampilkan $qtyCol1.
+            Urutan kolom quantity dari kiri ke kanan:
+            $qtyCol1, $qtyCol2, $qtyCol3.
+            Contoh: 1 BAL | 10 ROLL | 10 KG.
         -->
         <div
             class="field row-field qty-col-1"
             style="top: <?= e($currentTop) ?>mm;"
-        ><?= e($qtyCol2) ?></div>
+        ><?= e($qtyCol1) ?></div>
 
         <div
             class="field row-field qty-col-2"
             style="top: <?= e($currentTop) ?>mm;"
-        ><?= e($qtyCol1) ?></div>
+        ><?= e($qtyCol2) ?></div>
 
         <div
             class="field row-field qty-col-3"
