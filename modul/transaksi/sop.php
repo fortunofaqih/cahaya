@@ -280,35 +280,39 @@ if (isset($_GET['action'])) {
         }
         
         $items_query = mysqli_query($conn, "SELECT 
-            ds.id, ds.inventory_id, ds.inventory_name, ds.qty, ds.uom, ds.qty_pack, ds.uom_detail, ds.price, ds.shipment_due_date, ds.remarks,
-            COALESCE(mi.category, '') AS inventory_category,
-            COALESCE(mi.l, 0) AS inventory_l,
-            COALESCE(mi.t, 0) AS inventory_t,
-            COALESCE(mi.density, ds.density, 0) AS inventory_density,
-            COALESCE(mi.catalog, '') AS inventory_catalog,
-            COALESCE(mi.colour, '') AS inventory_colour,
-            COALESCE((
-                SELECT CONCAT(REPLACE(FORMAT(miu.Value, 2), ',', ''), ' KG/ROL')
-                FROM m_inventory_uom miu
-                WHERE miu.inventory_id = ds.inventory_id
-                  AND UPPER(TRIM(miu.unit)) IN ('ROLL', 'ROL')
-                ORDER BY 
-                    CASE WHEN UPPER(TRIM(miu.unit)) = 'ROLL' THEN 0 ELSE 1 END,
-                    miu.id ASC
-                LIMIT 1
-            ), '') AS inventory_berat_rol,
-            ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
-            ds.keterangan_potong, ds.no_mesin_potong, ds.nat_warna_potong, 
-            ds.berat_rol_warna, ds.code_potong, ds.jarak_seal,
-            ds.berat_jenis_rol, ds.ukuran_rol, ds.berat_rol, ds.isi_bal_rol, ds.jml_order_rol, ds.treat_rol,
-            ds.nat_warna_rol, ds.bobin_krepyak_rol, ds.kirim_las_rol, ds.standar_cek_rol,
-            ds.gramatur_asli_rol, ds.tebal_asli_rol, ds.spec_rol, ds.gramatur_rol, ds.tebal_rol,
-            ds.keterangan_rol, ds.gramatur_plus_rol, ds.gramatur_min_rol, ds.tebal_plus_rol, ds.tebal_minus_rol,
-            ds.no_mesin_rol, ds.code_rol
-            FROM det_sop ds
-            LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
-            WHERE ds.sop_id = '$sop_id'
-            ORDER BY ds.id ASC");
+        ds.id, ds.inventory_id, ds.inventory_name, ds.qty, ds.uom, ds.qty_pack, ds.uom_detail, ds.price, ds.shipment_due_date, ds.remarks,
+        COALESCE(mi.category, '') AS inventory_category,
+        COALESCE(mi.l, 0) AS inventory_l,
+        COALESCE(mi.t, 0) AS inventory_t,
+        COALESCE(mi.density, ds.density, 0) AS inventory_density,
+        COALESCE(mi.catalog, '') AS inventory_catalog,
+        COALESCE(mi.colour, '') AS inventory_colour,
+        COALESCE((
+            SELECT CONCAT(REPLACE(FORMAT(miu.Value, 2), ',', ''), ' KG/ROL')
+            FROM m_inventory_uom miu
+            WHERE miu.inventory_id = ds.inventory_id
+            AND UPPER(TRIM(miu.unit)) IN ('ROLL', 'ROL')
+            ORDER BY 
+                CASE WHEN UPPER(TRIM(miu.unit)) = 'ROLL' THEN 0 ELSE 1 END,
+                miu.id ASC
+            LIMIT 1
+        ), '') AS inventory_berat_rol,
+        -- TAMBAHKAN JOIN KE m_category
+        mc.categori_id,
+        mc.name AS category_name,
+        ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
+        ds.keterangan_potong, ds.no_mesin_potong, ds.nat_warna_potong, 
+        ds.berat_rol_warna, ds.code_potong, ds.jarak_seal,
+        ds.berat_jenis_rol, ds.ukuran_rol, ds.berat_rol, ds.isi_bal_rol, ds.jml_order_rol, ds.treat_rol,
+        ds.nat_warna_rol, ds.bobin_krepyak_rol, ds.kirim_las_rol, ds.standar_cek_rol,
+        ds.gramatur_asli_rol, ds.tebal_asli_rol, ds.spec_rol, ds.gramatur_rol, ds.tebal_rol,
+        ds.keterangan_rol, ds.gramatur_plus_rol, ds.gramatur_min_rol, ds.tebal_plus_rol, ds.tebal_minus_rol,
+        ds.no_mesin_rol, ds.code_rol
+        FROM det_sop ds
+        LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
+        LEFT JOIN m_category mc ON mi.category = mc.categori_id  -- TAMBAHKAN JOIN INI
+        WHERE ds.sop_id = '$sop_id'
+        ORDER BY ds.id ASC");
         
         $items = [];
         if ($items_query) {
@@ -323,51 +327,56 @@ if (isset($_GET['action'])) {
             'items' => $items
         ]);
         exit;
+        
     }
 
     // ENDPOINT: AMBIL DATA LENGKAP SOP
     if ($_GET['action'] == 'get_sop_detail_complete' && isset($_GET['sop_id'])) {
-        $sop_id = mysqli_real_escape_string($conn, $_GET['sop_id']);
-        
-        $head_query = mysqli_query($conn, "SELECT * FROM head_sop WHERE sop_id = '$sop_id' LIMIT 1");
-        $head = mysqli_fetch_assoc($head_query);
-        
-        if (!$head) {
-            echo json_encode(['error' => 'SOP not found']);
-            exit;
-        }
-        
-        $items_query = mysqli_query($conn, "SELECT 
-            ds.id, ds.sop_id, ds.inventory_id, ds.inventory_name, ds.qty, ds.uom, ds.qty_pack, ds.uom_detail, ds.price, ds.density, ds.remarks,
-            ds.previous_inventory, ds.previous_inventory_name, ds.component, ds.value, ds.shipment_due_date, ds.remarks_shipment,
-            COALESCE(mi.category, '') AS inventory_category,
-            COALESCE(mi.l, 0) AS inventory_l,
-            COALESCE(mi.t, 0) AS inventory_t,
-            COALESCE(mi.density, ds.density, 0) AS inventory_density,
-            COALESCE(mi.catalog, '') AS inventory_catalog,
-            COALESCE(mi.colour, '') AS inventory_colour,
-            COALESCE((
-                SELECT CONCAT(REPLACE(FORMAT(miu.Value, 2), ',', ''), ' KG/ROL')
-                FROM m_inventory_uom miu
-                WHERE miu.inventory_id = ds.inventory_id
-                  AND UPPER(TRIM(miu.unit)) IN ('ROLL', 'ROL')
-                ORDER BY 
-                    CASE WHEN UPPER(TRIM(miu.unit)) = 'ROLL' THEN 0 ELSE 1 END,
-                    miu.id ASC
-                LIMIT 1
-            ), '') AS inventory_berat_rol,
-            ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
-            ds.keterangan_potong, ds.no_mesin_potong, ds.nat_warna_potong, 
-            ds.berat_rol_warna, ds.code_potong, ds.jarak_seal,
-            ds.berat_jenis_rol, ds.ukuran_rol, ds.berat_rol, ds.isi_bal_rol, ds.jml_order_rol, ds.treat_rol,
-            ds.nat_warna_rol, ds.bobin_krepyak_rol, ds.kirim_las_rol, ds.standar_cek_rol,
-            ds.gramatur_asli_rol, ds.tebal_asli_rol, ds.spec_rol, ds.gramatur_rol, ds.tebal_rol,
-            ds.keterangan_rol, ds.gramatur_plus_rol, ds.gramatur_min_rol, ds.tebal_plus_rol, ds.tebal_minus_rol,
-            ds.no_mesin_rol, ds.code_rol
-            FROM det_sop ds
-            LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
-            WHERE ds.sop_id = '$sop_id'
-            ORDER BY ds.id ASC");
+    $sop_id = mysqli_real_escape_string($conn, $_GET['sop_id']);
+    
+    $head_query = mysqli_query($conn, "SELECT * FROM head_sop WHERE sop_id = '$sop_id' LIMIT 1");
+    $head = mysqli_fetch_assoc($head_query);
+    
+    if (!$head) {
+        echo json_encode(['error' => 'SOP not found']);
+        exit;
+    }
+    
+    $items_query = mysqli_query($conn, "SELECT 
+        ds.id, ds.sop_id, ds.inventory_id, ds.inventory_name, ds.qty, ds.uom, ds.qty_pack, ds.uom_detail, ds.price, ds.density, ds.remarks,
+        ds.previous_inventory, ds.previous_inventory_name, ds.component, ds.value, ds.shipment_due_date, ds.remarks_shipment,
+        COALESCE(mi.category, '') AS inventory_category,
+        COALESCE(mi.l, 0) AS inventory_l,
+        COALESCE(mi.t, 0) AS inventory_t,
+        COALESCE(mi.density, ds.density, 0) AS inventory_density,
+        COALESCE(mi.catalog, '') AS inventory_catalog,
+        COALESCE(mi.colour, '') AS inventory_colour,
+        COALESCE((
+            SELECT CONCAT(REPLACE(FORMAT(miu.Value, 2), ',', ''), ' KG/ROL')
+            FROM m_inventory_uom miu
+            WHERE miu.inventory_id = ds.inventory_id
+              AND UPPER(TRIM(miu.unit)) IN ('ROLL', 'ROL')
+            ORDER BY 
+                CASE WHEN UPPER(TRIM(miu.unit)) = 'ROLL' THEN 0 ELSE 1 END,
+                miu.id ASC
+            LIMIT 1
+        ), '') AS inventory_berat_rol,
+        -- TAMBAHKAN JOIN KE m_category
+        mc.categori_id,
+        mc.name AS category_name,
+        ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
+        ds.keterangan_potong, ds.no_mesin_potong, ds.nat_warna_potong, 
+        ds.berat_rol_warna, ds.code_potong, ds.jarak_seal,
+        ds.berat_jenis_rol, ds.ukuran_rol, ds.berat_rol, ds.isi_bal_rol, ds.jml_order_rol, ds.treat_rol,
+        ds.nat_warna_rol, ds.bobin_krepyak_rol, ds.kirim_las_rol, ds.standar_cek_rol,
+        ds.gramatur_asli_rol, ds.tebal_asli_rol, ds.spec_rol, ds.gramatur_rol, ds.tebal_rol,
+        ds.keterangan_rol, ds.gramatur_plus_rol, ds.gramatur_min_rol, ds.tebal_plus_rol, ds.tebal_minus_rol,
+        ds.no_mesin_rol, ds.code_rol
+        FROM det_sop ds
+        LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
+        LEFT JOIN m_category mc ON mi.category = mc.categori_id  -- TAMBAHKAN JOIN INI
+        WHERE ds.sop_id = '$sop_id'
+        ORDER BY ds.id ASC");
         
         $items = [];
         if ($items_query) {
@@ -1937,19 +1946,61 @@ function getRollThicknessValue(item) {
 }
 
 function getRollDivider(item) {
-    let category = getInventoryCategory(item);
-
-    if (/\bPP\b/.test(category) || category.includes('PP')) {
+    // Ambil semua data category yang tersedia
+    let category = String(item.inventory_category || item.category || '').toUpperCase();
+    let categoriId = String(item.categori_id || '').toUpperCase();
+    let categoryName = String(item.category_name || '').toUpperCase();
+    let inventoryName = String(item.inventory_name || item.inv_name || '').toUpperCase();
+    
+    // Gabungkan semua untuk pengecekan
+    let allText = category + ' ' + categoriId + ' ' + categoryName + ' ' + inventoryName;
+    
+    console.log('Category Check:', {
+        category: category,
+        categoriId: categoriId,
+        categoryName: categoryName,
+        inventoryName: inventoryName,
+        allText: allText
+    });
+    
+    // DETEKSI PP
+    // Cek dari text
+    if (/\bPP\b/.test(allText) || allText.includes('PP')) {
+        console.log('Detected PP from text, divider = 17');
         return 17;
     }
-
-    if (/\bPE\b/.test(category) || /\bHD\b/.test(category) || category.includes('PE') || category.includes('HD')) {
+    
+    // Cek dari categori_id PP (CAT029-CAT035)
+    if (categoriId === 'CAT029' || categoriId === 'CAT030' || 
+        categoriId === 'CAT031' || categoriId === 'CAT032' || 
+        categoriId === 'CAT033' || categoriId === 'CAT034' || 
+        categoriId === 'CAT035') {
+        console.log('Detected PP from categori_id, divider = 17');
+        return 17;
+    }
+    
+    // DETEKSI PE
+    if (/\bPE\b/.test(allText) || allText.includes('PE') ||
+        categoriId === 'CAT022' || categoriId === 'CAT023' || 
+        categoriId === 'CAT024' || categoriId === 'CAT025' || 
+        categoriId === 'CAT026' || categoriId === 'CAT027' || 
+        categoriId === 'CAT028') {
+        console.log('Detected PE, divider = 18');
         return 18;
     }
-
-    // Supaya Tebal Asli tidak kosong ketika kategori tidak tersimpan di det_sop/m_inventory,
-    // gunakan default PE/HD = 18. Jika ternyata PP, user masih bisa koreksi data category/inventory name.
-    return 18;
+    
+    // DETEKSI HD
+    if (/\bHD\b/.test(allText) || allText.includes('HD') ||
+        categoriId === 'CAT005' || categoriId === 'CAT006' || 
+        categoriId === 'CAT007' || categoriId === 'CAT008' || 
+        categoriId === 'CAT009' || categoriId === 'CAT010' || 
+        categoriId === 'CAT011' || categoriId === 'CAT012') {
+        console.log('Detected HD, divider = 18');
+        return 18;
+    }
+    
+    console.log('Default divider = 18');
+    return 18;  // Default
 }
 
 function getAutoStandarCekRol(item) {

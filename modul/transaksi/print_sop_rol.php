@@ -184,6 +184,8 @@ function h($value) {
 $tgl_order = !empty($head['sop_date']) ? date('d-M-Y', strtotime($head['sop_date'])) : '-';
 $tgl_kirim = !empty($detail['shipment_due_date']) ? date('d-M-Y', strtotime($detail['shipment_due_date'])) : '-';
 $spec_rol_display = getRollSpecText($detail ?: []);
+$order_no = trim((string)($head['order_no'] ?? ''));
+$order_no_display = $order_no !== '' ? $order_no : '-';
 
 header("Content-Type: text/html; charset=UTF-8");
 ?>
@@ -209,10 +211,10 @@ header("Content-Type: text/html; charset=UTF-8");
         
         body {
             font-family: Arial, Helvetica, sans-serif;
-            font-size: 8pt;
+            font-size: 10.5pt;
             background: white;
             color: #000;
-            line-height: 1.1;
+            line-height: 1.05;
             width: 100%;
         }
         
@@ -227,31 +229,45 @@ header("Content-Type: text/html; charset=UTF-8");
         .sisi-cetak {
             width: 48%;
             display: flex;
+            page-break-inside: avoid;
             flex-direction: column;
         }
         
         /* Header */
         .header {
-            text-align: left;
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+            width: 100%;
             margin-bottom: 3px;
+            white-space: nowrap;
         }
         
         .header h1 {
-            font-size: 9pt;
+            font-size: 11pt;
             font-weight: bold;
             text-decoration: underline;
         }
         
+        .header .order-no {
+            font-size: 10.5pt;
+            font-weight: bold;
+            text-align: right;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+
         /* Info Box / Spesifikasi */
         .info-box {
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 3px;
-            font-size: 8pt;
+            font-size: 10.5pt;
         }
         
         .info-box td {
-            padding: 0.3px 2px;
+            padding: 0 2px;
             vertical-align: top;
         }
         
@@ -276,11 +292,11 @@ header("Content-Type: text/html; charset=UTF-8");
         
         .produksi-table th {
             font-weight: normal;
-            font-size: 6.5pt;
+            font-size: 9pt;
         }
         
         .produksi-table tbody td {
-            height: 16px; /* Disesuaikan agar pas di sisa ruang vertikal */
+            height: 17px; /* Disesuaikan agar pas di sisa ruang vertikal */
         }
         
         /* Kolom khusus Tabel Rol (Kiri) */
@@ -300,7 +316,7 @@ header("Content-Type: text/html; charset=UTF-8");
         .ttd-section {
             margin-top: 8px;
             width: 100%;
-            font-size: 8pt;
+            font-size: 10.5pt;
         }
         
         .print-btn {
@@ -342,7 +358,8 @@ header("Content-Type: text/html; charset=UTF-8");
         
         <div class="sisi-cetak">
             <div class="header">
-                <h1>Surat Perintah Kerja Rol</h1>
+                <h1>Surat Perintah Kerja Rol (CP)</h1>
+                <div class="order-no">Order No: <?= h($order_no_display) ?></div>
             </div>
             
             <table class="info-box">
@@ -407,8 +424,8 @@ header("Content-Type: text/html; charset=UTF-8");
                 </tr>
             </table>
             
-            <div class="footer" style="margin-top: 10px; font-size: 6pt; text-align: center; border-top: 1px solid #ccc; padding-top: 2px;">
-                Dicetak pada: <?= date('d-m-Y H:i:s') ?> | SOP: <?= h($sop_id) ?>
+            <div class="footer" style="margin-top: 10px; font-size: 7pt; text-align: center; border-top: 1px solid #ccc; padding-top: 2px;">
+                Dicetak pada: <?= date('d-m-Y') ?> | SOP: <?= h($sop_id) ?>
             </div>
         </div>
         
