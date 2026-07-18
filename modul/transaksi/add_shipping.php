@@ -45,6 +45,7 @@ $order_rs = mysqli_query($conn, "
         h.customer_address,
         h.customer_city,
         h.tolerance,
+        h.allow_auto_correct,
         h.status,
         h.approval_status
     FROM head_sales_order h
@@ -430,7 +431,8 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
                                         data-customer-name="<?= htmlspecialchars($o['customer_name']) ?>"
                                         data-customer-address="<?= htmlspecialchars($o['customer_address']) ?>"
                                         data-customer-city="<?= htmlspecialchars($o['customer_city']) ?>"
-                                        data-tolerance="<?= htmlspecialchars($o['tolerance'] ?? '10.00') ?>">
+                                        data-tolerance="<?= htmlspecialchars($o['tolerance'] ?? '10.00') ?>"
+                                        data-allow-auto-correct="<?= htmlspecialchars($o['allow_auto_correct'] ?? 'Unchecked') ?>">
                                         <?= htmlspecialchars($o['order_no']) ?> - <?= htmlspecialchars(formatDateIndonesian($o['order_date'])) ?> - <?= htmlspecialchars($o['customer_name']) ?>
                                 </option>
                             <?php endwhile; ?>
@@ -493,7 +495,6 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
             </div>
 
             <div class="detail-toolbar">
-                <button type="button" class="btn-vs btn-primary" onclick="addRow()"><i class="fa fa-plus"></i> Tambah Item Manual</button>
                 <button type="button" class="btn-vs btn-secondary" onclick="deleteSelected()"><i class="fa fa-trash"></i> Hapus Terpilih</button>
                 <button type="button" class="btn-vs btn-warning" onclick="openLoadInventoryModal()"><i class="fa fa-list-check"></i> Load dari Order</button>
                 <span style="font-size:10px; color:#888;">
@@ -549,8 +550,8 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
             <button type="button" class="btn-vs btn-secondary" onclick="closeLoadInventoryModal()"><i class="fa fa-times"></i></button>
         </div>
         <div class="shipping-modal-body">
-            <div class="modal-muted" style="margin-bottom:8px;">
-Centang inventory yang ingin dimasukkan ke daftar shipping. Setelah ditambahkan, Qty diketik manual di tabel shipping.
+            <div class="modal-muted" id="load_inventory_instruction" style="margin-bottom:8px;">
+                Centang inventory yang ingin dimasukkan ke daftar shipping.
             </div>
             <table class="modal-table">
                 <thead>
@@ -614,7 +615,7 @@ var inventoryUomData = {};
 var rowCounter = 0;
 var shippingNoExists = false;
 var checkShippingTimer = null;
-
+var selectedOrderAllowAutoCorrect = false;
 // Ambil data UoM dari database via AJAX
 $.ajax({
     url: 'modul/transaksi/get_inventory_uom.php',
@@ -623,8 +624,12 @@ $.ajax({
     async: false,
     success: function(response) {
         if (response.success) {
-            inventoryUomData = response.data;
+            inventoryUomData = response.data || {};
         }
+    },
+    error: function() {
+        inventoryUomData = {};
+        console.error('Gagal mengambil data m_inventory_uom.');
     }
 });
 
@@ -695,7 +700,10 @@ function getUomOptions(inventoryId, selectedValue, selectDefault, includePlaceho
             var selected = '';
 
             if (selectedValue !== '') {
-                selected = (unit === selectedValue) ? 'selected' : '';
+                selected = (
+                    String(unit).trim().toUpperCase() ===
+                    String(selectedValue).trim().toUpperCase()
+                ) ? 'selected' : '';
             } else if (selectDefault && isDefault) {
                 selected = 'selected';
             }
@@ -760,7 +768,90 @@ function syncUomDetailLegacyFields($row, jsonValue) {
     $row.find('.uom-detail-legacy-uom').val(firstUom);
     $row.find('.qty-detail-legacy-qty').val(formatDecimal(totalQty));
 }
+function applyShippingAutoCorrect($row) {
+    if (!isShippingAutoCorrectEnabled() || !$row || !$row.length) {
+        return true;
+    }
 
+    var inventoryId = $.trim($row.find('.inv-id').val());
+    var uomPack = $.trim($row.find('.inv-uom-pack-select').val());
+    var detailJson = $row.find('.uom-detail-json').val();
+    var details = parseUomDetailJson(detailJson);
+
+    if (!inventoryId || details.length === 0) {
+        return true;
+    }
+
+    var totalQtyKg = 0;
+    var conversionError = [];
+
+    details.forEach(function(item) {
+        var detailUom = $.trim(item.uom || '');
+        var detailQty = parseFloat(item.qty) || 0;
+
+        if (!detailUom || detailQty <= 0) {
+            return;
+        }
+
+        var detailFactor = getUomConversionValue(inventoryId, detailUom);
+
+        if (detailFactor === null || detailFactor <= 0) {
+            conversionError.push(detailUom);
+            return;
+        }
+
+        totalQtyKg += detailQty * detailFactor;
+    });
+
+    if (conversionError.length > 0) {
+        showNotification(
+            'Konversi UoM ' + conversionError.join(', ') +
+            ' untuk inventory ' + inventoryId +
+            ' tidak ditemukan.',
+            'error'
+        );
+
+        return false;
+    }
+
+    if (totalQtyKg <= 0) {
+        showNotification(
+            'Hasil Auto Correct untuk inventory ' + inventoryId + ' tidak valid.',
+            'error'
+        );
+        return false;
+    }
+
+    $row.find('.qty-shipping').val(formatDecimal(totalQtyKg));
+
+    if (!uomPack) {
+        $row.find('.qty-pack-shipping').val(formatDecimal(0));
+        return true;
+    }
+
+    var packFactor = getUomConversionValue(inventoryId, uomPack);
+
+    if (packFactor !== null && packFactor > 0) {
+        $row.find('.qty-pack-shipping').val(
+            formatDecimal(totalQtyKg / packFactor)
+        );
+    } else if (uomPack.toUpperCase() === 'KG') {
+        $row.find('.qty-pack-shipping').val(
+            formatDecimal(totalQtyKg)
+        );
+    } else {
+        showNotification(
+            'Konversi UoM Pack ' + uomPack +
+            ' untuk inventory ' + inventoryId +
+            ' tidak ditemukan.',
+            'error'
+        );
+
+        return false;
+    }
+
+    return true;
+}
 function updateRowNumbers() {
     var rows = document.querySelectorAll('#detailBody .detail-row');
     rows.forEach(function(r, i) {
@@ -813,9 +904,29 @@ function buildRow(data) {
 
 function addRow(data) {
     var $newRow = $(buildRow(data || {}));
+
     $('#detailBody').append($newRow);
-    syncUomDetailLegacyFields($newRow, $newRow.find('.uom-detail-json').val());
+
+    syncUomDetailLegacyFields(
+        $newRow,
+        $newRow.find('.uom-detail-json').val()
+    );
+
+    updateAutoCorrectRowState();
     updateRowNumbers();
+}
+function updateAutoCorrectRowState() {
+    $('#detailBody .detail-row').each(function() {
+        var $row = $(this);
+        var enabled = isShippingAutoCorrectEnabled();
+
+        $row.find('.qty-shipping, .qty-pack-shipping')
+            .prop('readonly', enabled)
+            .css(
+                'background',
+                enabled ? '#eaf4ff' : '#ffffff'
+            );
+    });
 }
 
 function removeRow(btn) {
@@ -846,7 +957,9 @@ function getSelectedOrderTolerance() {
     if (isNaN(tolerance)) tolerance = 10;
     return tolerance;
 }
-
+function isShippingAutoCorrectEnabled() {
+    return selectedOrderAllowAutoCorrect === true;
+}
 function openLoadInventoryModal() {
     var orderNo = $('#order_no').val();
     if (!orderNo) {
@@ -855,6 +968,17 @@ function openLoadInventoryModal() {
     }
 
     $('#modal_order_no').text(' - ' + orderNo);
+
+    if (isShippingAutoCorrectEnabled()) {
+        $('#load_inventory_instruction').text(
+            'Centang inventory yang ingin dimasukkan. Setelah ditambahkan, pilih UoM Detail agar Qty dan Qty Pack dihitung otomatis.'
+        );
+    } else {
+        $('#load_inventory_instruction').text(
+            'Centang inventory yang ingin dimasukkan. Setelah ditambahkan, isi Qty secara manual di tabel shipping.'
+        );
+    }
+
     $('#modalInventoryBody').html('<tr><td colspan="8" style="text-align:center; color:#777;">Loading data inventory...</td></tr>');
     $('#modalSelectAll').prop('checked', false);
     $('#orderInventoryModal').css('display', 'flex');
@@ -937,7 +1061,19 @@ function addSelectedInventoryFromModal() {
         });
     });
 
-    showNotification('Berhasil menambahkan ' + $checked.length + ' item. Qty silakan diisi manual.', 'success');
+    var loadMessage;
+
+    if (isShippingAutoCorrectEnabled()) {
+        loadMessage =
+            'Berhasil menambahkan ' + $checked.length +
+            ' item. Pilih UoM Detail untuk menghitung Qty otomatis.';
+    } else {
+        loadMessage =
+            'Berhasil menambahkan ' + $checked.length +
+            ' item. Qty silakan diisi manual.';
+    }
+
+    showNotification(loadMessage, 'success');
     closeLoadInventoryModal();
 }
 
@@ -950,7 +1086,10 @@ function openUomDetailModal(btn) {
     var currentMap = {};
 
     current.forEach(function(item) {
-        if (item.uom) currentMap[item.uom] = parseFloat(item.qty) || 0;
+        if (item.uom) {
+            currentMap[String(item.uom).trim().toUpperCase()] =
+                parseFloat(item.qty) || 0;
+        }
     });
 
     $('#uom_detail_modal_inventory').text(' - ' + inventoryId);
@@ -961,8 +1100,9 @@ function openUomDetailModal(btn) {
         var html = '';
         inventoryUomData[inventoryId].forEach(function(item) {
             var unit = item.unit || '';
-            var checked = Object.prototype.hasOwnProperty.call(currentMap, unit);
-            var qty = checked ? currentMap[unit] : 0;
+            var unitKey = String(unit).trim().toUpperCase();
+            var checked = Object.prototype.hasOwnProperty.call(currentMap, unitKey);
+            var qty = checked ? currentMap[unitKey] : 0;
 
             html += '<tr>' +
                 '<td style="text-align:center;"><input type="checkbox" class="uom-detail-check" value="' + escAttr(unit) + '" ' + (checked ? 'checked' : '') + '></td>' +
@@ -1008,18 +1148,36 @@ function saveUomDetailModal() {
 
     if (invalid) return;
 
+    if (details.length === 0) {
+        alert('Pilih minimal 1 UoM Detail.');
+        return;
+    }
+
     var json = JSON.stringify(details);
     activeUomDetailRow.find('.uom-detail-json').val(json);
     syncUomDetailLegacyFields(activeUomDetailRow, json);
 
     var summary = getUomDetailSummary(json);
+
     activeUomDetailRow.find('.uom-detail-btn')
         .text(summary)
         .toggleClass('empty', details.length === 0);
 
-    closeUomDetailModal();
-}
+    if (isShippingAutoCorrectEnabled()) {
+        applyShippingAutoCorrect(activeUomDetailRow);
+    }
 
+    closeUomDetailModal();
+
+    
+}
+$(document).on('change', '.inv-uom-pack-select', function() {
+    var $row = $(this).closest('.detail-row');
+
+    if (isShippingAutoCorrectEnabled()) {
+        applyShippingAutoCorrect($row);
+    }
+});
 function validateToleranceBeforeSubmit() {
     var tolerance = getSelectedOrderTolerance();
     var factor = 1 + (tolerance / 100);
@@ -1151,7 +1309,10 @@ function convertIndoDateToSql($el) {
 
 $(document).on('change', '#order_no', function() {
     var opt = this.options[this.selectedIndex];
+
     if (!opt || this.value === '') {
+        selectedOrderAllowAutoCorrect = false;
+
         $('#order_date, #order_date_display, #customer_id, #customer_name, #customer_address, #customer_city').val('');
         $('#detailBody').empty();
         rowCounter = 0;
@@ -1159,12 +1320,18 @@ $(document).on('change', '#order_no', function() {
         return;
     }
 
+    selectedOrderAllowAutoCorrect =
+        String(opt.getAttribute('data-allow-auto-correct') || '')
+            .trim()
+            .toLowerCase() === 'checked';
+
     $('#order_date').val(opt.getAttribute('data-order-date') || '');
     $('#order_date_display').val(
         opt.getAttribute('data-order-date-display') ||
         opt.getAttribute('data-order-date') ||
         ''
     );
+
     $('#customer_id').val(opt.getAttribute('data-customer-id') || '');
     $('#customer_name').val(opt.getAttribute('data-customer-name') || '');
     $('#customer_address').val(opt.getAttribute('data-customer-address') || '');
@@ -1172,6 +1339,7 @@ $(document).on('change', '#order_no', function() {
 
     $('#detailBody').empty();
     rowCounter = 0;
+    updateAutoCorrectRowState();
     updateRowNumbers();
 });
 
@@ -1240,52 +1408,115 @@ $(document).ready(function() {
             return false;
         }
 
-        var validRows = true;
-        $('#detailBody .detail-row').each(function(i) {
-            var invId = $.trim($(this).find('.inv-id').val());
-            var qty = parseFloat($(this).find('.qty-shipping').val()) || 0;
-            var qtyPack = parseFloat($(this).find('.qty-pack-shipping').val()) || 0;
-            var uom = $(this).find('.inv-uom-select').val();
-            var uomPack = $(this).find('.inv-uom-pack-select').val();
-            var uomDetailJson = $(this).find('.uom-detail-json').val();
-            var uomDetailArr = parseUomDetailJson(uomDetailJson);
+       /*
+ * Validasi awal sebelum Auto Correct.
+ * Validasi Qty dilakukan setelah proses Auto Correct selesai.
+ */
+var validRows = true;
 
-            if (invId === '') {
-                alert('Baris ' + (i + 1) + ': Inventory ID kosong. Gunakan Load dari Order atau lengkapi data manual.');
-                validRows = false;
-                return false;
-            }
-            if (qty <= 0 && qtyPack <= 0) {
-                alert('Baris ' + (i + 1) + ': Qty atau Qty Pack harus lebih dari 0.');
-                validRows = false;
-                return false;
-            }
-            if (uom === '') {
-                alert('Baris ' + (i + 1) + ': UoM wajib dipilih.');
-                validRows = false;
-                return false;
-            }
-            if (uomPack === '') {
-                alert('Baris ' + (i + 1) + ': UoM Pack wajib dipilih.');
-                validRows = false;
-                return false;
-            }
-            if (uomDetailArr.length === 0) {
-                alert('Baris ' + (i + 1) + ': UoM Detail wajib dipilih minimal 1.');
-                validRows = false;
-                return false;
-            }
-        });
+$('#detailBody .detail-row').each(function(i) {
+    var $row = $(this);
 
-        if (!validRows) {
-            e.preventDefault();
+    var invId = $.trim($row.find('.inv-id').val());
+    var uom = $row.find('.inv-uom-select').val();
+    var uomPack = $row.find('.inv-uom-pack-select').val();
+    var uomDetailJson = $row.find('.uom-detail-json').val();
+    var uomDetailArr = parseUomDetailJson(uomDetailJson);
+
+    if (invId === '') {
+        alert(
+            'Baris ' + (i + 1) +
+            ': Inventory ID kosong. Gunakan Load dari Order.'
+        );
+        validRows = false;
+        return false;
+    }
+
+    if (uom === '') {
+        alert('Baris ' + (i + 1) + ': UoM wajib dipilih.');
+        validRows = false;
+        return false;
+    }
+
+    if (uomPack === '') {
+        alert('Baris ' + (i + 1) + ': UoM Pack wajib dipilih.');
+        validRows = false;
+        return false;
+    }
+
+    if (uomDetailArr.length === 0) {
+        alert(
+            'Baris ' + (i + 1) +
+            ': UoM Detail wajib dipilih minimal 1.'
+        );
+        validRows = false;
+        return false;
+    }
+});
+
+if (!validRows) {
+    e.preventDefault();
+    return false;
+}
+
+/*
+ * Jika SO menggunakan Allow Auto Correct,
+ * hitung Qty dan Qty Pack terlebih dahulu.
+ */
+if (isShippingAutoCorrectEnabled()) {
+    var autoCorrectValid = true;
+
+    $('#detailBody .detail-row').each(function() {
+        if (!applyShippingAutoCorrect($(this))) {
+            autoCorrectValid = false;
             return false;
         }
+    });
 
-        if (!validateToleranceBeforeSubmit()) {
-            e.preventDefault();
-            return false;
-        }
+    if (!autoCorrectValid) {
+        e.preventDefault();
+
+        alert(
+            'Gagal Simpan: terdapat UoM yang belum memiliki ' +
+            'nilai konversi di m_inventory_uom.'
+        );
+
+        return false;
+    }
+}
+
+/*
+ * Setelah Auto Correct selesai, baru validasi Qty.
+ */
+$('#detailBody .detail-row').each(function(i) {
+    var $row = $(this);
+
+    var qty =
+        parseFloat($row.find('.qty-shipping').val()) || 0;
+
+    var qtyPack =
+        parseFloat($row.find('.qty-pack-shipping').val()) || 0;
+
+    if (qty <= 0 && qtyPack <= 0) {
+        alert(
+            'Baris ' + (i + 1) +
+            ': Qty atau Qty Pack harus lebih dari 0.'
+        );
+
+        validRows = false;
+        return false;
+    }
+});
+
+if (!validRows) {
+    e.preventDefault();
+    return false;
+}
+
+    if (!validateToleranceBeforeSubmit()) {
+        e.preventDefault();
+        return false;
+    }
 
         $('input[name="shipping_date"], input[name="nota_date"]').each(function() {
             convertIndoDateToSql($(this));

@@ -127,6 +127,7 @@ function loadSalesOrderQtyMap(mysqli $conn, $order_no) {
     $stmt = mysqli_prepare($conn, "
         SELECT
             inventory_id,
+            MAX(inventory_name) AS inventory_name,
             COALESCE(SUM(quantity), 0) AS order_qty,
             COALESCE(SUM(quantity_pack), 0) AS order_qty_pack
         FROM detail_sales_order
@@ -140,38 +141,9 @@ function loadSalesOrderQtyMap(mysqli $conn, $order_no) {
     while ($row = mysqli_fetch_assoc($result)) {
         $inventoryId = (string)$row['inventory_id'];
         $map[$inventoryId] = [
+            'inventory_name' => trim((string)($row['inventory_name'] ?? '')),
             'order_qty' => (float)$row['order_qty'],
             'order_qty_pack' => (float)$row['order_qty_pack'],
-        ];
-    }
-
-    mysqli_stmt_close($stmt);
-    return $map;
-}
-
-function loadAlreadyShippedQtyMap(mysqli $conn, $order_no) {
-    $map = [];
-
-    $stmt = mysqli_prepare($conn, "
-        SELECT
-            ds.inventory_id,
-            COALESCE(SUM(ds.qty_shipping), 0) AS shipped_qty,
-            COALESCE(SUM(ds.qty_pack_shipping), 0) AS shipped_qty_pack
-        FROM det_shipping ds
-        INNER JOIN hed_shipping hs ON hs.shipping_no = ds.shipping_no
-        WHERE hs.order_no = ?
-          AND COALESCE(hs.status, '') <> 'Cancelled'
-        GROUP BY ds.inventory_id
-    ");
-    mysqli_stmt_bind_param($stmt, 's', $order_no);
-    mysqli_stmt_execute($stmt);
-    $result = mysqli_stmt_get_result($stmt);
-
-    while ($row = mysqli_fetch_assoc($result)) {
-        $inventoryId = (string)$row['inventory_id'];
-        $map[$inventoryId] = [
-            'shipped_qty' => (float)$row['shipped_qty'],
-            'shipped_qty_pack' => (float)$row['shipped_qty_pack'],
         ];
     }
 
@@ -223,12 +195,162 @@ function parseUomDetailJson($json, &$jsonError = '') {
 
     return $details;
 }
+function loadInventoryUomMap(mysqli $conn, array $inventoryIds) {
+    $map = [];
 
+    $inventoryIds = array_values(array_unique(array_filter(array_map(
+        static function ($id) {
+            return trim((string)$id);
+        },
+        $inventoryIds
+    ))));
+
+    if (empty($inventoryIds)) {
+        return $map;
+    }
+
+    $placeholders = implode(',', array_fill(0, count($inventoryIds), '?'));
+
+    $stmt = mysqli_prepare($conn, "
+        SELECT
+            inventory_id,
+            UPPER(TRIM(unit)) AS unit,
+            COALESCE(`Value`, 0) AS conversion_value
+        FROM m_inventory_uom
+        WHERE inventory_id IN ($placeholders)
+    ");
+
+    $types = str_repeat('s', count($inventoryIds));
+    $bindParams = [$types];
+
+    foreach ($inventoryIds as $key => $inventoryId) {
+        $bindParams[] = &$inventoryIds[$key];
+    }
+
+    call_user_func_array(
+        'mysqli_stmt_bind_param',
+        array_merge([$stmt], $bindParams)
+    );
+
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        $inventoryId = trim((string)$row['inventory_id']);
+        $unit = normalizeUom($row['unit'] ?? '');
+        $value = (float)$row['conversion_value'];
+
+        if ($inventoryId === '' || $unit === null) {
+            continue;
+        }
+
+        if (!isset($map[$inventoryId])) {
+            $map[$inventoryId] = [];
+        }
+
+        $map[$inventoryId][$unit] = $value;
+    }
+
+    mysqli_stmt_close($stmt);
+
+    return $map;
+}
+
+function calculateAutoCorrectShippingQty(
+    string $inventoryId,
+    ?string $uomPack,
+    array $uomDetailRows,
+    array $inventoryUomMap,
+    &$errorMessage = ''
+) {
+    $errorMessage = '';
+
+    if (empty($uomDetailRows)) {
+        $errorMessage = 'UOM Detail wajib diisi untuk menjalankan Allow Auto Correct.';
+        return null;
+    }
+
+    if (!isset($inventoryUomMap[$inventoryId])) {
+        $errorMessage = "Data konversi UOM inventory $inventoryId tidak ditemukan.";
+        return null;
+    }
+
+    $conversionMap = $inventoryUomMap[$inventoryId];
+    $totalQtyDefault = 0;
+
+    foreach ($uomDetailRows as $detailRow) {
+        $detailUom = normalizeUom($detailRow['uom'] ?? '');
+        $detailQty = parseNumber($detailRow['qty'] ?? 0);
+
+        if ($detailUom === null || $detailQty <= 0) {
+            continue;
+        }
+
+        if (
+            isset($conversionMap[$detailUom]) &&
+            (float)$conversionMap[$detailUom] > 0
+        ) {
+            $detailFactor = (float)$conversionMap[$detailUom];
+        } elseif ($detailUom === 'KG') {
+            $detailFactor = 1;
+        } else {
+            $errorMessage =
+                "Nilai konversi UOM $detailUom untuk inventory " .
+                "$inventoryId tidak ditemukan atau bernilai 0.";
+
+            return null;
+        }
+
+        $totalQtyDefault += $detailQty * $detailFactor;
+    }
+
+    if ($totalQtyDefault <= 0) {
+        $errorMessage =
+            "Hasil Auto Correct inventory $inventoryId tidak valid.";
+
+        return null;
+    }
+
+    $normalizedUomPack = normalizeUom($uomPack);
+
+    if ($normalizedUomPack === null) {
+        $errorMessage =
+            "UOM Pack inventory $inventoryId belum dipilih.";
+
+        return null;
+    }
+
+    if (
+        !isset($conversionMap[$normalizedUomPack]) ||
+        (float)$conversionMap[$normalizedUomPack] <= 0
+    ) {
+        /*
+         * KG dapat dianggap memiliki faktor 1 apabila tidak tercatat
+         * di m_inventory_uom.
+         */
+        if ($normalizedUomPack === 'KG') {
+            $packFactor = 1;
+        } else {
+            $errorMessage =
+                "Nilai konversi UOM Pack $normalizedUomPack untuk " .
+                "inventory $inventoryId tidak ditemukan atau bernilai 0.";
+
+            return null;
+        }
+    } else {
+        $packFactor = (float)$conversionMap[$normalizedUomPack];
+    }
+
+    return [
+        'qty_shipping' => $totalQtyDefault,
+        'qty_pack_shipping' => $totalQtyDefault / $packFactor,
+    ];
+}
 try {
     $username = $_SESSION['username'];
 
     // Header
-    $shipping_no = postValue('shipping_no');
+    $shipping_no = strtoupper(postValue('shipping_no'));
     $shipping_date = toDbDate(postValue('shipping_date'));
     $nota_date = toDbDate(postValue('nota_date'));
     $order_no = postValue('order_no');
@@ -279,22 +401,83 @@ try {
         failAndBack("Tabel det_shipping_uom_detail belum ada. Buat tabel detail UOM terlebih dahulu.");
     }
 
-    // Ambil tolerance SO untuk validasi server-side.
-    $tolerance = getSingleValue(
-        $conn,
-        "SELECT COALESCE(tolerance, 10.00) FROM head_sales_order WHERE order_no = ? LIMIT 1",
-        's',
-        [$order_no]
-    );
-    $tolerance = $tolerance === null ? 10.00 : (float)$tolerance;
+    // Ambil konfigurasi SO langsung berdasarkan order_no.
+    // Flag Allow Auto Correct tidak diterima dari browser.
+    $stmtOrderConfig = mysqli_prepare($conn, "
+        SELECT
+            order_date,
+            customer_id,
+            customer_name,
+            customer_address,
+            customer_city,
+            COALESCE(tolerance, 10.00) AS tolerance,
+            COALESCE(allow_auto_correct, 'Unchecked') AS allow_auto_correct,
+            COALESCE(status, '') AS status
+        FROM head_sales_order
+        WHERE order_no = ?
+        LIMIT 1
+    ");
+
+    mysqli_stmt_bind_param($stmtOrderConfig, 's', $order_no);
+    mysqli_stmt_execute($stmtOrderConfig);
+
+    $resultOrderConfig = mysqli_stmt_get_result($stmtOrderConfig);
+    $orderConfig = mysqli_fetch_assoc($resultOrderConfig);
+
+    mysqli_stmt_close($stmtOrderConfig);
+
+    if (!$orderConfig) {
+        failAndBack("Order No $order_no tidak ditemukan di Sales Order.");
+    }
+
+    if (strcasecmp(trim((string)$orderConfig['status']), 'Open') !== 0) {
+        failAndBack("Sales Order $order_no sudah tidak berstatus Open.");
+    }
+
+    // Gunakan data header dari Sales Order sebagai sumber utama.
+    $order_date = toDbDate($orderConfig['order_date'] ?? '');
+    $customer_id = trim((string)($orderConfig['customer_id'] ?? ''));
+    $customer_name = trim((string)($orderConfig['customer_name'] ?? ''));
+    $customer_address = trim((string)($orderConfig['customer_address'] ?? ''));
+    $customer_city = trim((string)($orderConfig['customer_city'] ?? ''));
+
+    $tolerance = (float)$orderConfig['tolerance'];
+
     if ($tolerance < 0) {
         $tolerance = 0;
     }
 
+    $allowAutoCorrect =
+        strcasecmp(
+            trim((string)$orderConfig['allow_auto_correct']),
+            'Checked'
+        ) === 0;
+
     $soQtyMap = loadSalesOrderQtyMap($conn, $order_no);
+
+    $inventoryUomMap = loadInventoryUomMap(
+        $conn,
+        $inventory_ids
+    );
+
     // Validasi hanya terhadap total input pada shipping yang sedang dibuat.
-    // Tidak mengakumulasi shipping sebelumnya, karena kekurangan kirim akan dipantau di report terpisah.
+    // Tidak mengakumulasi shipping sebelumnya.
     $currentShippingMap = [];
+
+    if ($gudang_id === '') {
+        failAndBack('Gudang tidak boleh kosong!');
+    }
+
+    $gudangExists = getSingleValue(
+        $conn,
+        "SELECT COUNT(*) FROM m_gudang WHERE gudang_id = ?",
+        's',
+        [$gudang_id]
+    );
+
+    if ((int)$gudangExists === 0) {
+        failAndBack("Gudang $gudang_id tidak ditemukan.");
+    }
 
     mysqli_begin_transaction($conn);
 
@@ -400,26 +583,119 @@ try {
             continue;
         }
 
-        $jsonError = '';
-        $uomDetailRows = parseUomDetailJson($uomDetailJson, $jsonError);
+       $jsonError = '';
+
+        $uomDetailRows = parseUomDetailJson(
+            $uomDetailJson,
+            $jsonError
+        );
+
         if ($jsonError !== '') {
             mysqli_rollback($conn);
-            failAndBack('Item ke-' . ($i + 1) . ': ' . $jsonError);
+
+            failAndBack(
+                'Item ke-' . ($i + 1) . ': ' . $jsonError
+            );
         }
 
-        // Jika ada JSON multi-UOM, jadikan field lama sebagai ringkasan:
-        // uom_detail_shipping = UOM pertama, qty_detail_shipping = total Qty Detail.
+        if (empty($uomDetailRows)) {
+            mysqli_rollback($conn);
+            failAndBack(
+                'Item ke-' . ($i + 1) .
+                ': UOM Detail wajib dipilih minimal 1.'
+            );
+        }
+
+        if (!isset($soQtyMap[$inventory_id])) {
+            mysqli_rollback($conn);
+
+            failAndBack(
+                'Inventory ' . $inventory_id .
+                ' pada item ke-' . ($i + 1) .
+                ' tidak ditemukan dalam Sales Order ' . $order_no . '.'
+            );
+        }
+
+        // Nama inventory mengikuti detail Sales Order, bukan nilai dari browser.
+        $inventory_name = $soQtyMap[$inventory_id]['inventory_name'] !== ''
+            ? $soQtyMap[$inventory_id]['inventory_name']
+            : $inventory_name;
+
+        // Pastikan seluruh UOM Detail merupakan UOM yang valid untuk inventory.
+        $masterUomMap = $inventoryUomMap[$inventory_id] ?? [];
+
+        foreach ($uomDetailRows as $detailRow) {
+            $detailUom = normalizeUom($detailRow['uom'] ?? '');
+
+            if (
+                $detailUom !== 'KG' &&
+                (
+                    $detailUom === null ||
+                    !isset($masterUomMap[$detailUom])
+                )
+            ) {
+                mysqli_rollback($conn);
+                failAndBack(
+                    'Item ke-' . ($i + 1) .
+                    ': UOM Detail ' . ($detailUom ?? '-') .
+                    ' tidak ditemukan pada master inventory ' .
+                    $inventory_id . '.'
+                );
+            }
+        }
+
+        // Ringkasan untuk kolom lama det_shipping.
         if (!empty($uomDetailRows)) {
             $uom_detail_shipping = $uomDetailRows[0]['uom'];
             $qty_detail_shipping = 0;
+
             foreach ($uomDetailRows as $detailRow) {
                 $qty_detail_shipping += (float)$detailRow['qty'];
             }
         }
 
-        if ($qty_shipping <= 0 && $qty_pack_shipping <= 0 && $qty_detail_shipping <= 0) {
+        // Hitung ulang berdasarkan setting Sales Order.
+        if ($allowAutoCorrect) {
+            $autoCorrectError = '';
+
+            $autoCorrectResult = calculateAutoCorrectShippingQty(
+                $inventory_id,
+                $uom_pack_shipping,
+                $uomDetailRows,
+                $inventoryUomMap,
+                $autoCorrectError
+            );
+
+            if ($autoCorrectResult === null) {
+                mysqli_rollback($conn);
+
+                failAndBack(
+                    'Item ke-' . ($i + 1) .
+                    ' (' . $inventory_id . '): ' .
+                    $autoCorrectError
+                );
+            }
+
+            $qty_shipping =
+                (float)$autoCorrectResult['qty_shipping'];
+
+            $qty_pack_shipping =
+                (float)$autoCorrectResult['qty_pack_shipping'];
+
+            $uom_shipping = 'KG';
+        }
+
+        if (
+            $qty_shipping <= 0 &&
+            $qty_pack_shipping <= 0 &&
+            $qty_detail_shipping <= 0
+        ) {
             mysqli_rollback($conn);
-            failAndBack('Qty item ke-' . ($i + 1) . ' belum diisi. Minimal salah satu Qty harus lebih dari 0.');
+
+            failAndBack(
+                'Qty item ke-' . ($i + 1) .
+                ' belum diisi. Minimal salah satu Qty harus lebih dari 0.'
+            );
         }
 
         if ($qty_shipping > 0 && $uom_shipping === null) {
@@ -436,27 +712,25 @@ try {
             mysqli_rollback($conn);
             failAndBack('UOM Detail item ke-' . ($i + 1) . ' belum dipilih.');
         }
-
         // Validasi tolerance hanya untuk total item pada dokumen shipping yang sedang dibuat.
         // Contoh: order 90 KG tolerance 10% => maksimal input pada dokumen ini 99 KG.
         // Shipping sebelumnya tidak ikut dihitung di sini.
-        if (isset($soQtyMap[$inventory_id])) {
-            $orderQty = (float)$soQtyMap[$inventory_id]['order_qty'];
-            $orderQtyPack = (float)$soQtyMap[$inventory_id]['order_qty_pack'];
-            $maxQty = $orderQty + ($orderQty * $tolerance / 100);
-            $maxQtyPack = $orderQtyPack + ($orderQtyPack * $tolerance / 100);
+        $orderQty = (float)$soQtyMap[$inventory_id]['order_qty'];
+        $orderQtyPack = (float)$soQtyMap[$inventory_id]['order_qty_pack'];
+        $maxQty = $orderQty + ($orderQty * $tolerance / 100);
+        $maxQtyPack = $orderQtyPack + ($orderQtyPack * $tolerance / 100);
 
-            if (!isset($currentShippingMap[$inventory_id])) {
-                $currentShippingMap[$inventory_id] = [
+        if (!isset($currentShippingMap[$inventory_id])) {
+            $currentShippingMap[$inventory_id] = [
                     'qty' => 0,
                     'qty_pack' => 0,
                 ];
-            }
+        }
 
-            $newTotalQty = $currentShippingMap[$inventory_id]['qty'] + $qty_shipping;
-            $newTotalQtyPack = $currentShippingMap[$inventory_id]['qty_pack'] + $qty_pack_shipping;
+        $newTotalQty = $currentShippingMap[$inventory_id]['qty'] + $qty_shipping;
+        $newTotalQtyPack = $currentShippingMap[$inventory_id]['qty_pack'] + $qty_pack_shipping;
 
-            if ($orderQty > 0 && $newTotalQty > ($maxQty + 0.0001)) {
+        if ($orderQty > 0 && $newTotalQty > ($maxQty + 0.0001)) {
                 mysqli_rollback($conn);
                 failAndBack(
                     'Qty shipping inventory ' . $inventory_id . ' melebihi tolerance order. ' .
@@ -467,7 +741,7 @@ try {
                 );
             }
 
-            if ($orderQtyPack > 0 && $newTotalQtyPack > ($maxQtyPack + 0.0001)) {
+        if ($orderQtyPack > 0 && $newTotalQtyPack > ($maxQtyPack + 0.0001)) {
                 mysqli_rollback($conn);
                 failAndBack(
                     'Qty Pack shipping inventory ' . $inventory_id . ' melebihi tolerance order. ' .
@@ -478,9 +752,8 @@ try {
                 );
             }
 
-            $currentShippingMap[$inventory_id]['qty'] = $newTotalQty;
-            $currentShippingMap[$inventory_id]['qty_pack'] = $newTotalQtyPack;
-        }
+        $currentShippingMap[$inventory_id]['qty'] = $newTotalQty;
+        $currentShippingMap[$inventory_id]['qty_pack'] = $newTotalQtyPack;
 
         mysqli_stmt_bind_param(
             $stmtDetail,
