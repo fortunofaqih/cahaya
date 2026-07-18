@@ -2,7 +2,9 @@
 // modul/transaksi/cetak_slip_shipping.php
 // Format cetak untuk Surat Jalan pre-printed Marketing - Mode Default UOM
 // REVISI: koordinat CSS dikalibrasi ulang berdasarkan pengukuran manual pada foto nota fisik
-// REVISI QTY: kolom paling kiri menampilkan $qtyCol2, lalu $qtyCol1
+// REVISI QTY: Qty cetak dibulatkan ke bilangan bulat terdekat.
+ // Contoh 1774,5 menjadi 1775.
+ // Cetak ini khusus inventory dengan nama mengandung KERTAS, BOX, BIJI, atau BIJIH.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -40,6 +42,34 @@ function fmtNumber($number, $decimals = 2) {
     $formatted = rtrim(rtrim($formatted, '0'), ',');
 
     return $formatted;
+}
+
+// Qty pada slip ini selalu dicetak dalam bilangan bulat.
+// PHP_ROUND_HALF_UP memastikan nilai x,5 dibulatkan naik:
+// 1774,5 -> 1775.
+function fmtRoundedQty($number) {
+    $number = (float)$number;
+
+    if (abs($number) < 0.000001) {
+        return '';
+    }
+
+    $rounded = round($number, 0, PHP_ROUND_HALF_UP);
+
+    return number_format($rounded, 0, ',', '.');
+}
+
+// Cetak slip ini hanya digunakan untuk kelompok inventory tertentu.
+function isSpecialSlipInventory($detail) {
+    $inventoryName = safeText($detail['inventory_name'] ?? '');
+    $internalName = safeText($detail['internal_name'] ?? '');
+    $name = strtoupper(trim($inventoryName . ' ' . $internalName));
+
+    if ($name === '') {
+        return false;
+    }
+
+    return preg_match('/\b(KERTAS|BOX|BIJI|BIJIH)\b/i', $name) === 1;
 }
 
 // Format tanggal: DD-MM-YYYY (contoh: 14-07-2026)
@@ -128,20 +158,55 @@ function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 3) {
 }
 
 function getQtyDisplay($detail) {
+    $qtyShipping = (float)($detail['qty_shipping'] ?? 0);
+    $uomShipping = strtoupper(safeText($detail['uom_shipping'] ?? ''));
+
     $qtyPack = (float)($detail['qty_pack_shipping'] ?? 0);
-    $uomPack = safeText($detail['uom_pack_shipping'] ?? '');
+    $uomPack = strtoupper(safeText($detail['uom_pack_shipping'] ?? ''));
 
     $qtyDetail = (float)($detail['qty_detail_shipping'] ?? 0);
-    $uomDetail = safeText($detail['uom_detail_shipping'] ?? '');
+    $uomDetail = strtoupper(safeText($detail['uom_detail_shipping'] ?? ''));
+
+    /*
+     * Gabungkan berdasarkan UoM agar KG tidak tercetak dua kali ketika
+     * Qty dan Qty Pack sama-sama menggunakan KG.
+     *
+     * Nilai terbesar dipakai, bukan dijumlahkan, karena Qty, Qty Pack,
+     * dan Qty Detail merupakan representasi unit yang berbeda dari item
+     * yang sama, bukan kuantitas yang harus ditotal.
+     */
+    $qtyByUom = [];
+    $uomOrder = [];
+
+    $addQty = function ($qty, $uom) use (&$qtyByUom, &$uomOrder) {
+        $uom = strtoupper(trim((string)$uom));
+        $qty = (float)$qty;
+
+        if ($qty <= 0 || $uom === '') {
+            return;
+        }
+
+        if (!array_key_exists($uom, $qtyByUom)) {
+            $qtyByUom[$uom] = $qty;
+            $uomOrder[] = $uom;
+        } elseif ($qty > $qtyByUom[$uom]) {
+            $qtyByUom[$uom] = $qty;
+        }
+    };
+
+    // Pertahankan urutan existing: Pack, Detail, kemudian UoM utama.
+    $addQty($qtyPack, $uomPack);
+    $addQty($qtyDetail, $uomDetail);
+    $addQty($qtyShipping, $uomShipping);
 
     $result = [];
 
-    if ($qtyPack > 0 && $uomPack !== '') {
-        $result[] = fmtNumber($qtyPack) . ' ' . $uomPack;
-    }
+    foreach ($uomOrder as $uom) {
+        $roundedQty = fmtRoundedQty($qtyByUom[$uom]);
 
-    if ($qtyDetail > 0 && $uomDetail !== '') {
-        $result[] = fmtNumber($qtyDetail) . ' ' . $uomDetail;
+        if ($roundedQty !== '') {
+            $result[] = $roundedQty . ' ' . $uom;
+        }
     }
 
     return implode(' | ', $result);
@@ -213,7 +278,10 @@ $resultDetail = mysqli_stmt_get_result($stmtDetail);
 $details = [];
 
 while ($row = mysqli_fetch_assoc($resultDetail)) {
-    $details[] = $row;
+    // Hanya item KERTAS, BOX, BIJI, atau BIJIH yang dicetak pada format ini.
+    if (isSpecialSlipInventory($row)) {
+        $details[] = $row;
+    }
 }
 
 mysqli_stmt_close($stmtDetail);
