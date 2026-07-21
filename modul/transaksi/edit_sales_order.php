@@ -27,6 +27,13 @@ if (!$q_head || mysqli_num_rows($q_head) == 0) {
 }
 $head = mysqli_fetch_assoc($q_head);
 
+// Allow Auto Correct tidak dijadikan default.
+// Checkbox hanya tercentang jika data SO sebelumnya memang bernilai Checked.
+$allow_auto_correct = (
+    isset($head['allow_auto_correct']) &&
+    strcasecmp(trim((string)$head['allow_auto_correct']), 'Checked') === 0
+);
+
 // TAMBAHAN: Ambil no_po dari tabel hed_po
 $q_po = mysqli_query($conn, "SELECT no_po FROM hed_po WHERE no_po = (SELECT po FROM head_sales_order WHERE order_no = '$order_no') LIMIT 1");
 $no_po = '';
@@ -562,8 +569,19 @@ if ($uom_q) {
                 <span style="font-size:9px;color:#6c757d;margin-left:8px;">
                     <i class="fa fa-info-circle"></i> Klik kolom UoM Detail untuk pilih unit
                 </span>
-                <label class="auto-correct-toggle" title="Jika aktif, Qty, Qty Pack, dan UoM Detail dihitung otomatis berdasarkan nilai konversi m_inventory_uom">
-                    <input type="checkbox" id="chkAutoCorrect" name="allow_auto_correct" value="Checked" checked>
+                <label class="auto-correct-toggle" title="Aktifkan secara manual jika Qty, Qty Pack, dan UoM Detail ingin dihitung otomatis berdasarkan nilai konversi m_inventory_uom">
+                    <!--
+                        Hidden input memastikan nilai Unchecked tetap dikirim
+                        ketika checkbox tidak dicentang.
+                    -->
+                    <input type="hidden" name="allow_auto_correct" value="Unchecked">
+                    <input
+                        type="checkbox"
+                        id="chkAutoCorrect"
+                        name="allow_auto_correct"
+                        value="Checked"
+                        <?= $allow_auto_correct ? 'checked' : '' ?>
+                    >
                     <i class="fa fa-magic"></i> Allow Auto Correct
                 </label>
             </div>
