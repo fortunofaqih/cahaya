@@ -58,7 +58,7 @@ $sql = "
         hb.remarks,
         db.invoice_no,
         db.invoice_date,
-       db.invoice_amount,
+        db.invoice_amount,
         db.cash_amount,
         db.titip_amount,
         db.bayar_amount
@@ -68,6 +68,9 @@ $sql = "
     LIMIT 1
 ";
 $stmt = mysqli_prepare($conn, $sql);
+if (!$stmt) {
+    die('Error preparing query: ' . mysqli_error($conn));
+}
 mysqli_stmt_bind_param($stmt, 's', $bayar_no);
 mysqli_stmt_execute($stmt);
 $res = mysqli_stmt_get_result($stmt);
@@ -81,11 +84,14 @@ if (!$data) {
 
 $invoice_no = $data['invoice_no'];
 
+// ============================================================
+// QUERY HITUNG SISA INVOICE - DIPERBAIKI
+// ============================================================
 $sqlSisa = "
     SELECT
         hi.invoice_no,
         CASE
-             WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
+            WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
             WHEN COALESCE(hi.grand_total, 0) > 0 THEN COALESCE(hi.grand_total, 0)
             ELSE COALESCE(hi.subtotal, 0)
         END AS invoice_amount,
@@ -93,14 +99,22 @@ $sqlSisa = "
     FROM head_invoice hi
     LEFT JOIN detail_bayar db ON db.invoice_no = hi.invoice_no
     WHERE hi.invoice_no = ?
-    GROUP BY hi.invoice_no, hi.piutang, hi.payment_balance, hi.grand_total
+    GROUP BY hi.invoice_no, hi.piutang, hi.grand_total, hi.subtotal
     LIMIT 1
 ";
 $stmtSisa = mysqli_prepare($conn, $sqlSisa);
+if (!$stmtSisa) {
+    die('Error preparing query: ' . mysqli_error($conn));
+}
 mysqli_stmt_bind_param($stmtSisa, 'ss', $bayar_no, $invoice_no);
 mysqli_stmt_execute($stmtSisa);
 $resSisa = mysqli_stmt_get_result($stmtSisa);
 $sisaData = mysqli_fetch_assoc($resSisa);
+mysqli_stmt_close($stmtSisa);
+
+// ============================================================
+// QUERY CEK SALDO TITIP
+// ============================================================
 $sqlSaldoTitip = "
     SELECT COALESCE(SUM(balance_amount), 0) AS saldo_titip
     FROM head_titip
@@ -108,6 +122,9 @@ $sqlSaldoTitip = "
       AND balance_amount > 0
 ";
 $stmtSaldoTitip = mysqli_prepare($conn, $sqlSaldoTitip);
+if (!$stmtSaldoTitip) {
+    die('Error preparing query: ' . mysqli_error($conn));
+}
 mysqli_stmt_bind_param($stmtSaldoTitip, 's', $data['customer_id']);
 mysqli_stmt_execute($stmtSaldoTitip);
 $resSaldoTitip = mysqli_stmt_get_result($stmtSaldoTitip);
@@ -116,7 +133,6 @@ mysqli_stmt_close($stmtSaldoTitip);
 
 $current_titip_amount = (float)($data['titip_amount'] ?? 0);
 $saldo_titip_available = (float)($rowSaldoTitip['saldo_titip'] ?? 0) + $current_titip_amount;
-mysqli_stmt_close($stmtSisa);
 
 $invoice_amount = (float)($sisaData['invoice_amount'] ?? $data['invoice_amount']);
 $paid_except_current = (float)($sisaData['paid_except_current'] ?? 0);
@@ -577,7 +593,7 @@ $(document).ready(function () {
         }
     });
 
-   $('#formBayar').on('submit', function (e) {
+    $('#formBayar').on('submit', function (e) {
         const sisa = parseFloat($('#sisa_invoice').val()) || 0;
         const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
         const nominalCash = parseNumber($('#nominal_bayar').val());
@@ -605,24 +621,23 @@ $(document).ready(function () {
         $('#nominal_bayar').val(nominalCash);
         $('#nominal_titip').prop('disabled', false).val(nominalTitip);
     });
-        $('#pakai_titip').on('change', function () {
-            if ($(this).is(':checked')) {
-                $('#nominal_titip').prop('disabled', false);
-            } else {
-                $('#nominal_titip').prop('disabled', true).val('0,00');
-            }
 
-            checkNominal();
-        });
+    $('#pakai_titip').on('change', function () {
+        if ($(this).is(':checked')) {
+            $('#nominal_titip').prop('disabled', false);
+        } else {
+            $('#nominal_titip').prop('disabled', true).val('0,00');
+        }
+        checkNominal();
+    });
 
-        $('#nominal_titip').on('input keyup blur', function () {
-            checkNominal();
-        });
+    $('#nominal_titip').on('input keyup blur', function () {
+        checkNominal();
+    });
 
-        $('#nominal_titip').on('blur', function () {
-            const nominal = parseNumber($(this).val());
-            $(this).val(formatRupiah(nominal));
-        });
+    $('#nominal_titip').on('blur', function () {
+        const nominal = parseNumber($(this).val());
+        $(this).val(formatRupiah(nominal));
+    });
 });
-
 </script>

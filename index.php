@@ -198,6 +198,7 @@ switch ($page) {
     case 'add_bayar':
         include 'modul/transaksi/add_bayar.php';
         break;
+    
     case 'edit_bayar':
         include 'modul/transaksi/edit_bayar.php';
         break;
