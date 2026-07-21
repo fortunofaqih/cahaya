@@ -108,7 +108,12 @@ $payment_type      = mysqli_real_escape_string($conn, $_POST['payment_type'] ?? 
 $days              = intval($_POST['days'] ?? 30);
 $currency          = mysqli_real_escape_string($conn, $_POST['currency'] ?? 'IDR');
 $kurs              = floatval($_POST['kurs'] ?? 1);
-$allow_auto_correct= isset($_POST['allow_auto_correct']) ? 'Checked' : 'Unchecked';
+// Nilai dikirim oleh edit_sales_order.php sebagai Checked atau Unchecked.
+// Jangan gunakan isset(), karena hidden input membuat field ini selalu tersedia.
+$allow_auto_correct_input = trim((string)($_POST['allow_auto_correct'] ?? 'Unchecked'));
+$allow_auto_correct = strcasecmp($allow_auto_correct_input, 'Checked') === 0
+    ? 'Checked'
+    : 'Unchecked';
 $remarks           = mysqli_real_escape_string($conn, trim($_POST['remarks'] ?? ''));
 $status            = mysqli_real_escape_string($conn, $_POST['status'] ?? 'Open');
 $approval_status   = mysqli_real_escape_string($conn, $_POST['approval_status'] ?? 'Pending');
