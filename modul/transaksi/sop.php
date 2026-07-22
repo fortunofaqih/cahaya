@@ -1229,7 +1229,7 @@ $f_so_safe = mysqli_real_escape_string($conn, $f_so);
                                     <tr><td><b>Jumlah Order</b></td><td><input type="text" id="jml_order_rol" class="form-control form-control-sm" placeholder="Jumlah order"></td></tr>
                                     <tr><td><b>Treat/Tdk</b></td><td>
                                         <select id="treat_rol" class="form-select form-select-sm">
-                                            <option value="">-- Pilih --</option>
+                                            <option value=""></option>
                                             <option value="Treat">Treat</option>
                                             <option value="Non Treat">Non Treat</option>
                                         </select>
@@ -2627,8 +2627,8 @@ function populateRollSpec(item) {
         <tr>
             <td><b>Treat/Tdk</b></td>
             <td>
-                <select id="treat_rol" class="form-select form-select-sm">
-                    <option value="">-- Pilih --</option>
+               <select id="treat_rol" class="form-select form-select-sm">
+                    <option value="" ${!item.treat_rol ? 'selected' : ''}></option>
                     <option value="Treat" ${item.treat_rol === 'Treat' ? 'selected' : ''}>Treat</option>
                     <option value="Non Treat" ${item.treat_rol === 'Non Treat' ? 'selected' : ''}>Non Treat</option>
                 </select>
