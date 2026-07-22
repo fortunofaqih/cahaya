@@ -588,7 +588,7 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
         </div>
         <div class="shipping-modal-body">
             <div class="modal-muted" style="margin-bottom:8px;">
-                Centang satu atau lebih UoM, lalu isi Qty untuk masing-masing UoM.
+                UoM Detail bersifat opsional. Centang UoM yang diperlukan lalu isi Qty, atau kosongkan jika tidak digunakan.
             </div>
             <table class="modal-table">
                 <thead>
@@ -779,6 +779,7 @@ function applyShippingAutoCorrect($row) {
     var details = parseUomDetailJson(detailJson);
 
     if (!inventoryId || details.length === 0) {
+        updateAutoCorrectRowState();
         return true;
     }
 
@@ -918,13 +919,17 @@ function addRow(data) {
 function updateAutoCorrectRowState() {
     $('#detailBody .detail-row').each(function() {
         var $row = $(this);
-        var enabled = isShippingAutoCorrectEnabled();
+        var hasUomDetail =
+            parseUomDetailJson($row.find('.uom-detail-json').val()).length > 0;
+
+        var autoCalculated =
+            isShippingAutoCorrectEnabled() && hasUomDetail;
 
         $row.find('.qty-shipping, .qty-pack-shipping')
-            .prop('readonly', enabled)
+            .prop('readonly', autoCalculated)
             .css(
                 'background',
-                enabled ? '#eaf4ff' : '#ffffff'
+                autoCalculated ? '#eaf4ff' : '#ffffff'
             );
     });
 }
@@ -971,7 +976,7 @@ function openLoadInventoryModal() {
 
     if (isShippingAutoCorrectEnabled()) {
         $('#load_inventory_instruction').text(
-            'Centang inventory yang ingin dimasukkan. Setelah ditambahkan, pilih UoM Detail agar Qty dan Qty Pack dihitung otomatis.'
+            'Centang inventory yang ingin dimasukkan. UoM Detail dapat diisi untuk menghitung Qty otomatis, atau dikosongkan agar Qty dan Qty Pack diisi manual.'
         );
     } else {
         $('#load_inventory_instruction').text(
@@ -1066,7 +1071,7 @@ function addSelectedInventoryFromModal() {
     if (isShippingAutoCorrectEnabled()) {
         loadMessage =
             'Berhasil menambahkan ' + $checked.length +
-            ' item. Pilih UoM Detail untuk menghitung Qty otomatis.';
+            ' item. UoM Detail opsional; isi untuk Auto Correct atau masukkan Qty secara manual.';
     } else {
         loadMessage =
             'Berhasil menambahkan ' + $checked.length +
@@ -1148,11 +1153,7 @@ function saveUomDetailModal() {
 
     if (invalid) return;
 
-    if (details.length === 0) {
-        alert('Pilih minimal 1 UoM Detail.');
-        return;
-    }
-
+    // UoM Detail bersifat opsional.
     var json = JSON.stringify(details);
     activeUomDetailRow.find('.uom-detail-json').val(json);
     syncUomDetailLegacyFields(activeUomDetailRow, json);
@@ -1163,10 +1164,11 @@ function saveUomDetailModal() {
         .text(summary)
         .toggleClass('empty', details.length === 0);
 
-    if (isShippingAutoCorrectEnabled()) {
+    if (isShippingAutoCorrectEnabled() && details.length > 0) {
         applyShippingAutoCorrect(activeUomDetailRow);
     }
 
+    updateAutoCorrectRowState();
     closeUomDetailModal();
 
     
@@ -1444,14 +1446,6 @@ $('#detailBody .detail-row').each(function(i) {
         return false;
     }
 
-    if (uomDetailArr.length === 0) {
-        alert(
-            'Baris ' + (i + 1) +
-            ': UoM Detail wajib dipilih minimal 1.'
-        );
-        validRows = false;
-        return false;
-    }
 });
 
 if (!validRows) {

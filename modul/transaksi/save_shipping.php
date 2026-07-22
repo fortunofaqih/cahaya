@@ -265,11 +265,6 @@ function calculateAutoCorrectShippingQty(
 ) {
     $errorMessage = '';
 
-    if (empty($uomDetailRows)) {
-        $errorMessage = 'UOM Detail wajib diisi untuk menjalankan Allow Auto Correct.';
-        return null;
-    }
-
     if (!isset($inventoryUomMap[$inventoryId])) {
         $errorMessage = "Data konversi UOM inventory $inventoryId tidak ditemukan.";
         return null;
@@ -598,14 +593,6 @@ try {
             );
         }
 
-        if (empty($uomDetailRows)) {
-            mysqli_rollback($conn);
-            failAndBack(
-                'Item ke-' . ($i + 1) .
-                ': UOM Detail wajib dipilih minimal 1.'
-            );
-        }
-
         if (!isset($soQtyMap[$inventory_id])) {
             mysqli_rollback($conn);
 
@@ -654,8 +641,9 @@ try {
             }
         }
 
-        // Hitung ulang berdasarkan setting Sales Order.
-        if ($allowAutoCorrect) {
+        // Hitung ulang hanya jika Allow Auto Correct aktif dan UoM Detail diisi.
+        // Jika UoM Detail kosong, gunakan Qty dan Qty Pack input manual.
+        if ($allowAutoCorrect && !empty($uomDetailRows)) {
             $autoCorrectError = '';
 
             $autoCorrectResult = calculateAutoCorrectShippingQty(
