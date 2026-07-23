@@ -101,11 +101,19 @@ $sql = "
         hb.keterangan,
         hb.bank_name,
         db.invoice_no,
+        COALESCE(di.shipping_no, '') AS shipping_no,
         db.cash_amount,
         db.titip_amount,
         db.bayar_amount
     FROM head_bayar hb
     LEFT JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
+    LEFT JOIN (
+        SELECT
+            invoice_no,
+            GROUP_CONCAT(DISTINCT shipping_no ORDER BY shipping_no SEPARATOR ', ') AS shipping_no
+        FROM det_invoice
+        GROUP BY invoice_no
+    ) di ON di.invoice_no = db.invoice_no
     $where
     ORDER BY hb.bayar_date DESC, hb.bayar_no DESC
 ";
@@ -370,6 +378,7 @@ mysqli_stmt_close($stmt);
                     <th>Tanggal</th>
                     <th>No. Bayar</th>
                     <th>No. Inv</th>
+                    <th>Shipping No.</th>
                     <th>Customer ID</th>
                     <th>Nama Customer</th>
                     <th>City</th>
@@ -385,7 +394,7 @@ mysqli_stmt_close($stmt);
             <tbody>
                 <?php if (empty($rows)): ?>
                     <tr>
-                        <td colspan="14" class="text-center" style="padding:15px;color:#777;">
+                        <td colspan="15" class="text-center" style="padding:15px;color:#777;">
                             Tidak ada data pembayaran.
                         </td>
                     </tr>
@@ -396,6 +405,7 @@ mysqli_stmt_close($stmt);
                             <td class="text-center"><?= h(formatDateDisplay($row['bayar_date'])) ?></td>
                             <td class="text-bold"><?= h($row['bayar_no']) ?></td>
                             <td><?= h($row['invoice_no']) ?></td>
+                            <td><?= h($row['shipping_no']) ?></td>
                             <td><?= h($row['customer_id']) ?></td>
                             <td><?= h($row['customer_name']) ?></td>
                             <td><?= h($row['customer_city']) ?></td>
@@ -423,7 +433,7 @@ mysqli_stmt_close($stmt);
             </tbody>
            <tfoot>
             <tr>
-                <td colspan="9" class="text-right">TOTAL</td>
+                <td colspan="10" class="text-right">TOTAL</td>
                 <td class="money-cell">Rp <?= h(formatMoney($total_bayar)) ?></td>
                 <td class="money-cell">Rp <?= h(formatMoney($total_cash)) ?></td>
                 <td class="money-cell">Rp <?= h(formatMoney($total_titip)) ?></td>
