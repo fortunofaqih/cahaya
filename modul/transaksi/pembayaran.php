@@ -100,7 +100,6 @@ $sql = "
         hb.total_bayar,
         hb.keterangan,
         hb.bank_name,
-        db.invoice_no,
         COALESCE(di.shipping_no, '') AS shipping_no,
         db.cash_amount,
         db.titip_amount,
@@ -377,7 +376,6 @@ mysqli_stmt_close($stmt);
                     <th style="width:40px;">No</th>
                     <th>Tanggal</th>
                     <th>No. Bayar</th>
-                    <th>No. Inv</th>
                     <th>Shipping No.</th>
                     <th>Customer ID</th>
                     <th>Nama Customer</th>
@@ -394,7 +392,7 @@ mysqli_stmt_close($stmt);
             <tbody>
                 <?php if (empty($rows)): ?>
                     <tr>
-                        <td colspan="15" class="text-center" style="padding:15px;color:#777;">
+                        <td colspan="14" class="text-center" style="padding:15px;color:#777;">
                             Tidak ada data pembayaran.
                         </td>
                     </tr>
@@ -404,7 +402,6 @@ mysqli_stmt_close($stmt);
                             <td class="text-center"><?= $i + 1 ?></td>
                             <td class="text-center"><?= h(formatDateDisplay($row['bayar_date'])) ?></td>
                             <td class="text-bold"><?= h($row['bayar_no']) ?></td>
-                            <td><?= h($row['invoice_no']) ?></td>
                             <td><?= h($row['shipping_no']) ?></td>
                             <td><?= h($row['customer_id']) ?></td>
                             <td><?= h($row['customer_name']) ?></td>
@@ -433,7 +430,7 @@ mysqli_stmt_close($stmt);
             </tbody>
            <tfoot>
             <tr>
-                <td colspan="10" class="text-right">TOTAL</td>
+                <td colspan="9" class="text-right">TOTAL</td>
                 <td class="money-cell">Rp <?= h(formatMoney($total_bayar)) ?></td>
                 <td class="money-cell">Rp <?= h(formatMoney($total_cash)) ?></td>
                 <td class="money-cell">Rp <?= h(formatMoney($total_titip)) ?></td>

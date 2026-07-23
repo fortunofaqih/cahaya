@@ -157,16 +157,17 @@ mysqli_stmt_close($stmtSaldo);
     $sqlRows = "
         SELECT
             trans_date,
-            invoice_no,
+            shipping_no,
             bayar_no,
             penjualan,
             pembayaran,
-            sort_order
+            sort_order,
+            invoice_no_sort
         FROM
         (
             SELECT
                 hi.invoice_date AS trans_date,
-                hi.invoice_no AS invoice_no,
+                COALESCE(di.shipping_no, '') AS shipping_no,
                 '' AS bayar_no,
                 CASE
                     WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
@@ -174,8 +175,20 @@ mysqli_stmt_close($stmtSaldo);
                     ELSE COALESCE(hi.grand_total, 0)
                 END AS penjualan,
                 0 AS pembayaran,
-                1 AS sort_order
+                1 AS sort_order,
+                hi.invoice_no AS invoice_no_sort
             FROM head_invoice hi
+            LEFT JOIN (
+                SELECT
+                    invoice_no,
+                    GROUP_CONCAT(
+                        DISTINCT shipping_no
+                        ORDER BY shipping_no
+                        SEPARATOR ', '
+                    ) AS shipping_no
+                FROM det_invoice
+                GROUP BY invoice_no
+            ) di ON di.invoice_no = hi.invoice_no
             WHERE hi.customer_id = ?
             AND hi.invoice_date BETWEEN ? AND ?
 
@@ -183,17 +196,34 @@ mysqli_stmt_close($stmtSaldo);
 
             SELECT
                 hb.bayar_date AS trans_date,
-                db.invoice_no AS invoice_no,
+                COALESCE(di.shipping_no, '') AS shipping_no,
                 hb.bayar_no AS bayar_no,
                 0 AS penjualan,
                 db.bayar_amount AS pembayaran,
-                2 AS sort_order
+                2 AS sort_order,
+                db.invoice_no AS invoice_no_sort
             FROM head_bayar hb
             INNER JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
+            LEFT JOIN (
+                SELECT
+                    invoice_no,
+                    GROUP_CONCAT(
+                        DISTINCT shipping_no
+                        ORDER BY shipping_no
+                        SEPARATOR ', '
+                    ) AS shipping_no
+                FROM det_invoice
+                GROUP BY invoice_no
+            ) di ON di.invoice_no = db.invoice_no
             WHERE hb.customer_id = ?
             AND hb.bayar_date BETWEEN ? AND ?
         ) x
-        ORDER BY trans_date ASC, sort_order ASC, invoice_no ASC, bayar_no ASC
+        ORDER BY
+            trans_date ASC,
+            sort_order ASC,
+            shipping_no ASC,
+            invoice_no_sort ASC,
+            bayar_no ASC
     ";
     $stmtRows = mysqli_prepare($conn, $sqlRows);
     mysqli_stmt_bind_param(
@@ -560,7 +590,7 @@ mysqli_stmt_close($stmtSaldo);
                     <tr>
                       <th>SALDO AWAL</th>
                     <th>TANGGAL</th>
-                    <th>NO. INV</th>
+                    <th>SHIPPING NO.</th>
                     <th>NO. BAYAR</th>
                     <th>PENJUALAN</th>
                     <th>PEMBAYARAN</th>
@@ -571,7 +601,7 @@ mysqli_stmt_close($stmtSaldo);
                     <?php if (empty($rows)): ?>
                         <tr>
                             <td colspan="7" class="text-center" style="color:#777;padding:15px;">
-                                Tidak ada data invoice pada periode ini.
+                                Tidak ada data piutang pada periode ini.
                             </td>
                         </tr>
                     <?php else: ?>
@@ -581,7 +611,7 @@ mysqli_stmt_close($stmtSaldo);
                                     <?= $i === 0 ? 'Rp ' . h(formatMoney($saldo_awal)) : '' ?>
                                 </td>
                                 <td class="text-center"><?= h(formatDateDisplay($row['trans_date'])) ?></td>
-                                <td class="text-bold text-blue"><?= h($row['invoice_no']) ?></td>
+                                <td class="text-bold text-blue"><?= h($row['shipping_no']) ?></td>
                                 <td class="text-center"><?= h($row['bayar_no']) ?></td>
                                 <td class="money-cell">
                                     <?= ((float)$row['penjualan'] > 0) ? 'Rp ' . h(formatMoney($row['penjualan'])) : '' ?>

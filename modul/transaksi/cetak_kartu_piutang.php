@@ -130,16 +130,17 @@ mysqli_stmt_close($stmtSaldo);
 $sqlRows = "
     SELECT
         trans_date,
-        invoice_no,
+        shipping_no,
         bayar_no,
         penjualan,
         pembayaran,
-        sort_order
+        sort_order,
+        invoice_no_sort
     FROM
     (
         SELECT
             hi.invoice_date AS trans_date,
-            hi.invoice_no AS invoice_no,
+            COALESCE(di.shipping_no, '') AS shipping_no,
             '' AS bayar_no,
             CASE
                 WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
@@ -147,8 +148,20 @@ $sqlRows = "
                 ELSE COALESCE(hi.grand_total, 0)
             END AS penjualan,
             0 AS pembayaran,
-            1 AS sort_order
+            1 AS sort_order,
+            hi.invoice_no AS invoice_no_sort
         FROM head_invoice hi
+        LEFT JOIN (
+            SELECT
+                invoice_no,
+                GROUP_CONCAT(
+                    DISTINCT shipping_no
+                    ORDER BY shipping_no
+                    SEPARATOR ', '
+                ) AS shipping_no
+            FROM det_invoice
+            GROUP BY invoice_no
+        ) di ON di.invoice_no = hi.invoice_no
         WHERE hi.customer_id = ?
           AND hi.invoice_date BETWEEN ? AND ?
 
@@ -156,17 +169,34 @@ $sqlRows = "
 
         SELECT
             hb.bayar_date AS trans_date,
-            db.invoice_no AS invoice_no,
+            COALESCE(di.shipping_no, '') AS shipping_no,
             hb.bayar_no AS bayar_no,
             0 AS penjualan,
             db.bayar_amount AS pembayaran,
-            2 AS sort_order
+            2 AS sort_order,
+            db.invoice_no AS invoice_no_sort
         FROM head_bayar hb
         INNER JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
+        LEFT JOIN (
+            SELECT
+                invoice_no,
+                GROUP_CONCAT(
+                    DISTINCT shipping_no
+                    ORDER BY shipping_no
+                    SEPARATOR ', '
+                ) AS shipping_no
+            FROM det_invoice
+            GROUP BY invoice_no
+        ) di ON di.invoice_no = db.invoice_no
         WHERE hb.customer_id = ?
           AND hb.bayar_date BETWEEN ? AND ?
     ) x
-    ORDER BY trans_date ASC, sort_order ASC, invoice_no ASC, bayar_no ASC
+    ORDER BY
+        trans_date ASC,
+        sort_order ASC,
+        shipping_no ASC,
+        invoice_no_sort ASC,
+        bayar_no ASC
 ";
 $stmtRows = mysqli_prepare($conn, $sqlRows);
 mysqli_stmt_bind_param(
@@ -210,34 +240,67 @@ $tgl_cetak = date('d-M-Y');
 <html lang="id">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kartu Piutang - <?= h($customerData['customer_id']) ?></title>
     <style>
         @page {
-            /* Untuk folio/F4 */
-            size: 8.5in 13in portrait;
+            size: A4 portrait;
             margin: 10mm;
-
-            /* Jika ingin A4, ganti menjadi:
-               size: A4 portrait;
-            */
         }
 
         * {
             box-sizing: border-box;
         }
 
-       body {
+        body {
             font-family: Arial, Helvetica, sans-serif;
             font-size: 10px;
             color: #000;
             margin: 0;
-            padding: 0;
-            background: #fff;
+            padding: 16px;
+            background: #eef1f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
         }
 
+        /* Toolbar Tombol Cetak */
+        .toolbar {
+            width: 100%;
+            max-width: 210mm;
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 12px;
+        }
+
+        .btn-print {
+            border: none;
+            border-radius: 6px;
+            background: #2b5797;
+            color: #fff;
+            padding: 10px 24px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            transition: 0.2s;
+        }
+
+        .btn-print:hover {
+            background: #1a3f6a;
+            transform: scale(1.02);
+        }
+
+        /* Container Utama - Lebar Terbatas seperti Portrait */
         .print-wrap {
             width: 100%;
+            max-width: 210mm;
             margin: 0 auto;
+            padding: 20px 24px;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            border-radius: 4px;
         }
 
         .title {
@@ -259,15 +322,16 @@ $tgl_cetak = date('d-M-Y');
             width: 100%;
             border-collapse: collapse;
             margin-bottom: 8px;
+            font-size: 10px;
         }
 
         .top-info td {
-            padding: 2px 0;
+            padding: 3px 0;
             vertical-align: top;
         }
 
         .top-info .label {
-            width: 90px;
+            width: 75px;
             font-weight: bold;
         }
 
@@ -277,7 +341,7 @@ $tgl_cetak = date('d-M-Y');
         }
 
         .top-info .right-label {
-            width: 75px;
+            width: 65px;
             font-weight: bold;
         }
 
@@ -290,27 +354,24 @@ $tgl_cetak = date('d-M-Y');
             border-bottom: 1px solid #000;
         }
 
-        /* Header tetap full border */
         .detail-table th {
             border: 1px solid #000;
-            padding: 3px 3px;
+            padding: 4px 3px;
             text-align: center;
             font-weight: bold;
             background: #f2f2f2;
             white-space: nowrap;
         }
 
-        /* Data tidak pakai all border */
         .detail-table tbody td {
             border-left: none;
             border-right: none;
             border-top: none;
             border-bottom: none;
-            padding: 2px 3px;
+            padding: 3px 3px;
             vertical-align: middle;
         }
 
-        /* Supaya sisi kiri dan kanan tabel tetap tertutup */
         .detail-table tbody td:first-child {
             border-left: 1px solid #000;
         }
@@ -319,13 +380,12 @@ $tgl_cetak = date('d-M-Y');
             border-right: 1px solid #000;
         }
 
-        /* Baris total tetap diberi border agar terlihat sebagai penutup */
         .detail-table .summary-row td {
             border-top: 1px solid #000;
             border-bottom: 1px solid #000;
             font-weight: bold;
             background: #f2f2f2;
-            padding: 3px;
+            padding: 4px 3px;
         }
 
         .detail-table .summary-row td:first-child {
@@ -335,12 +395,14 @@ $tgl_cetak = date('d-M-Y');
         .detail-table .summary-row td:last-child {
             border-right: 1px solid #000;
         }
+
         .money-cell {
             text-align: right;
             font-family: Arial, Helvetica, sans-serif;
             font-variant-numeric: tabular-nums;
             white-space: nowrap;
         }
+
         .text-center {
             text-align: center;
         }
@@ -353,36 +415,36 @@ $tgl_cetak = date('d-M-Y');
             font-weight: bold;
         }
 
-        .summary-row td {
-            font-weight: bold;
-            background: #f2f2f2;
-        }
-
         .no-data {
             text-align: center;
             padding: 12px;
             color: #555;
         }
 
-        .print-actions {
-            margin-bottom: 10px;
-            text-align: right;
-        }
-
-        .btn-print {
-            border: none;
-            background: #0d6efd;
-            color: #fff;
-            padding: 7px 14px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: bold;
-        }
-
+        /* Print Styles */
         @media print {
-            .print-actions {
-                display: none;
+            body {
+                padding: 0;
+                background: #fff;
+                display: block;
+                align-items: normal;
+                min-height: auto;
+            }
+
+            .no-print {
+                display: none !important;
+            }
+
+            .print-wrap {
+                max-width: 100%;
+                margin: 0;
+                padding: 8px 10px;
+                box-shadow: none;
+                border-radius: 0;
+            }
+
+            .toolbar {
+                display: none !important;
             }
 
             body {
@@ -390,94 +452,146 @@ $tgl_cetak = date('d-M-Y');
                 print-color-adjust: exact;
             }
         }
+
+        /* Responsive untuk layar kecil */
+        @media screen and (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .toolbar {
+                justify-content: center;
+            }
+
+            .btn-print {
+                width: 100%;
+                padding: 12px;
+                font-size: 14px;
+            }
+
+            .print-wrap {
+                padding: 12px 10px;
+            }
+
+            .top-info {
+                font-size: 9px;
+            }
+
+            .top-info .label,
+            .top-info .right-label {
+                width: 60px;
+            }
+
+            .detail-table {
+                font-size: 7.5px;
+            }
+
+            .detail-table th,
+            .detail-table td {
+                padding: 2px 2px;
+            }
+        }
+
+        /* Untuk layar medium */
+        @media screen and (min-width: 769px) and (max-width: 1024px) {
+            .print-wrap {
+                padding: 16px 18px;
+            }
+        }
     </style>
 </head>
 <body>
-    <div class="print-actions">
-        <button type="button" class="btn-print" onclick="window.print()">Print</button>
+
+<!-- Toolbar Cetak -->
+<div class="toolbar no-print">
+    <button type="button" class="btn-print" onclick="window.print()">
+        🖨️ CETAK
+    </button>
+</div>
+
+<!-- Container Utama -->
+<div class="print-wrap">
+    <div class="title">KARTU PIUTANG CP</div>
+    <div class="period">
+        Periode <?= h(formatDateDisplay($start_date)) ?> s/d <?= h(formatDateDisplay($end_date)) ?>
     </div>
 
-    <div class="print-wrap">
-        <div class="title">KARTU PIUTANG CP</div>
-        <div class="period">
-            Periode <?= h(formatDateDisplay($start_date)) ?> s/d <?= h(formatDateDisplay($end_date)) ?>
-        </div>
+    <table class="top-info">
+        <tr>
+            <td class="label">Dicetak</td>
+            <td class="sep">:</td>
+            <td><?= h($tgl_cetak) ?></td>
 
-        <table class="top-info">
+            <td class="right-label">Area</td>
+            <td class="sep">:</td>
+            <td><?= h($customerData['area_name']) ?></td>
+        </tr>
+        <tr>
+            <td class="label">Customer ID</td>
+            <td class="sep">:</td>
+            <td><?= h($customerData['customer_id']) ?></td>
+
+            <td class="right-label">Customer</td>
+            <td class="sep">:</td>
+            <td><?= h($customerData['customer']) ?></td>
+        </tr>
+    </table>
+
+    <table class="detail-table">
+        <thead>
             <tr>
-                <td class="label">Dicetak</td>
-                <td class="sep">:</td>
-                <td><?= h($tgl_cetak) ?></td>
-
-                <td class="right-label">Area</td>
-                <td class="sep">:</td>
-                <td><?= h($customerData['area_name']) ?></td>
-            </tr>
-            <tr>
-                <td class="label">Customer ID</td>
-                <td class="sep">:</td>
-                <td><?= h($customerData['customer_id']) ?></td>
-
-                <td class="right-label">Customer</td>
-                <td class="sep">:</td>
-                <td><?= h($customerData['customer']) ?></td>
-            </tr>
-        </table>
-
-        <table class="detail-table">
-            <thead>
-                <tr>
-                 <th style="width:14%;">SALDO AWAL</th>
-                <th style="width:10%;">TANGGAL</th>
-                <th style="width:16%;">NO. INV</th>
-                <th style="width:14%;">NO. BAYAR</th>
-                <th style="width:15%;">PENJUALAN</th>
-                <th style="width:15%;">PEMBAYARAN</th>
+                <th style="width:14%;">SALDO AWAL</th>
+                <th style="width:11%;">TANGGAL</th>
+                <th style="width:18%;">SHIPPING NO.</th>
+                <th style="width:13%;">NO. BAYAR</th>
+                <th style="width:14%;">PENJUALAN</th>
+                <th style="width:14%;">PEMBAYARAN</th>
                 <th style="width:16%;">SISA</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php if (empty($rows)): ?>
+                <tr>
+                    <td class="money-cell">Rp <?= h(formatMoney($saldo_awal)) ?></td>
+                    <td colspan="5" class="no-data">Tidak ada data piutang pada periode ini.</td>
+                    <td class="text-right text-bold">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
                 </tr>
-            </thead>
-            <tbody>
-                <?php if (empty($rows)): ?>
+            <?php else: ?>
+                <?php foreach ($rows as $i => $row): ?>
                     <tr>
-                       <td class="money-cell">Rp <?= h(formatMoney($saldo_awal)) ?></td>
-                        <td colspan="5" class="no-data">Tidak ada data invoice pada periode ini.</td>
-                        <td class="text-right text-bold">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
+                        <td class="money-cell">
+                            <?= $i === 0 ? 'Rp ' . h(formatMoney($saldo_awal)) : '' ?>
+                        </td>
+                        <td class="text-center"><?= h(formatDateDisplay($row['trans_date'])) ?></td>
+                        <td><?= h($row['shipping_no']) ?></td>
+                        <td class="text-center"><?= h($row['bayar_no']) ?></td>
+                        <td class="money-cell">
+                            <?= ((float)$row['penjualan'] > 0) ? 'Rp ' . h(formatMoney($row['penjualan'])) : '' ?>
+                        </td>
+                        <td class="money-cell">
+                            <?= ((float)$row['pembayaran'] > 0) ? 'Rp ' . h(formatMoney($row['pembayaran'])) : '' ?>
+                        </td>
+                        <td class="money-cell">Rp <?= h(formatMoney($row['sisa'])) ?></td>
                     </tr>
-                <?php else: ?>
-                    <?php foreach ($rows as $i => $row): ?>
-                        <tr>
-                            <td class="money-cell">
-                                <?= $i === 0 ? 'Rp ' . h(formatMoney($saldo_awal)) : '' ?>
-                            </td>
-                           <td class="text-center"><?= h(formatDateDisplay($row['trans_date'])) ?></td>
-                            <td><?= h($row['invoice_no']) ?></td>
-                            <td class="text-center"><?= h($row['bayar_no']) ?></td>
-                            <td class="money-cell">
-                                <?= ((float)$row['penjualan'] > 0) ? 'Rp ' . h(formatMoney($row['penjualan'])) : '' ?>
-                            </td>
-                            <td class="money-cell">
-                                <?= ((float)$row['pembayaran'] > 0) ? 'Rp ' . h(formatMoney($row['pembayaran'])) : '' ?>
-                            </td>
-                            <td class="money-cell">Rp <?= h(formatMoney($row['sisa'])) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
+                <?php endforeach; ?>
+            <?php endif; ?>
 
-                <tr class="summary-row">
-                    <td colspan="4" class="text-right">TOTAL</td>
-                    <td class="money-cell">Rp <?= h(formatMoney($total_penjualan)) ?></td>
-                    <td class="money-cell">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
-                    <td class="money-cell">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
+            <tr class="summary-row">
+                <td colspan="4" class="text-right">TOTAL</td>
+                <td class="money-cell">Rp <?= h(formatMoney($total_penjualan)) ?></td>
+                <td class="money-cell">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
+                <td class="money-cell">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
 
-    <script>
-        window.addEventListener('load', function () {
-            // Auto print saat halaman cetak dibuka.
-            window.print();
-        });
-    </script>
+<script>
+// Hapus auto print - user klik tombol cetak
+// window.addEventListener('load', function () {
+//     window.print();
+// });
+</script>
+
 </body>
 </html>

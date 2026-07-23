@@ -70,9 +70,6 @@ function getGroupLabel($row, $filterBy) {
         return trim($customerId . ' - ' . $customerName);
     }
 
-    // Untuk report global, kolom Daerah/Kota dikelompokkan berdasarkan city.
-    // Filter "grup" tetap memakai m_customer.area_code pada WHERE,
-    // tetapi hasil baris report ditampilkan dan dijumlahkan per city.
     return $city !== '' ? $city : 'TANPA KOTA';
 }
 
@@ -320,6 +317,7 @@ foreach ($rows as $row) {
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= h($title) ?></title>
     <style>
         @page {
@@ -329,56 +327,108 @@ foreach ($rows as $row) {
 
         * {
             box-sizing: border-box;
+            margin: 0;
+            padding: 0;
         }
 
         body {
             font-family: Arial, Helvetica, sans-serif;
-            font-size: 9px;
+            font-size: 12px;
             color: #000;
-            margin: 0;
-            padding: 0;
-            background: #fff;
+            background: #eef1f5;
+            padding: 16px;
+        }
+
+        /* Toolbar Tombol Cetak */
+        .toolbar {
+            width: 100%;
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 16px;
+        }
+
+        .btn-print {
+            border: none;
+            border-radius: 6px;
+            background: #2b5797;
+            color: #fff;
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            transition: 0.2s;
+        }
+
+        .btn-print:hover {
+            background: #1a3f6a;
+            transform: scale(1.02);
+        }
+
+        /* Container Scroll */
+        .screen-scroll {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: visible;
+            padding-bottom: 12px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .screen-scroll::-webkit-scrollbar {
+            height: 10px;
+        }
+        .screen-scroll::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 5px;
+        }
+        .screen-scroll::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 5px;
+        }
+        .screen-scroll::-webkit-scrollbar-thumb:hover {
+            background: #555;
         }
 
         .print-wrap {
-            width: 100%;
+            width: 1350px;
+            min-width: 1350px;
+            margin: 0 auto;
+            padding: 20px 24px;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            border-radius: 4px;
         }
 
         .title {
             text-align: center;
-            font-size: 15px;
+            font-size: 20px;
             font-weight: bold;
-            margin-bottom: 3px;
+            margin-bottom: 2px;
         }
 
         .subtitle {
             text-align: center;
-            font-size: 10px;
-            margin-bottom: 3px;
+            font-size: 13px;
+            margin-bottom: 2px;
         }
 
         .printed {
             text-align: right;
-            font-size: 8.5px;
-            margin-bottom: 5px;
-        }
-
-        .info-line {
-            font-size: 9px;
-            margin-bottom: 6px;
+            font-size: 11px;
+            margin-bottom: 8px;
+            color: #555;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            table-layout: fixed;
-            font-size: 8px;
+            font-size: 10px;
         }
 
         th {
             border: 1px solid #000;
-            background: #f2f2f2;
-            padding: 4px 3px;
+            background: #e8e8e8;
+            padding: 6px 4px;
             text-align: center;
             font-weight: bold;
             white-space: nowrap;
@@ -387,7 +437,7 @@ foreach ($rows as $row) {
         td {
             border-left: 1px solid #000;
             border-right: 1px solid #000;
-            padding: 3px 3px;
+            padding: 5px 4px;
             vertical-align: middle;
             white-space: nowrap;
         }
@@ -395,127 +445,196 @@ foreach ($rows as $row) {
         tbody tr:first-child td {
             border-top: 1px solid #000;
         }
-
         tbody tr:last-child td {
             border-bottom: 1px solid #000;
         }
 
         tfoot td {
             border: 1px solid #000;
-            background: #f2f2f2;
+            background: #e8e8e8;
             font-weight: bold;
-            padding: 4px 3px;
+            padding: 6px 4px;
         }
 
         .text-center {
             text-align: center;
         }
-
         .text-right {
             text-align: right;
         }
 
         .money-cell {
             text-align: right;
-            font-variant-numeric: tabular-nums;
         }
 
         .label-cell {
             white-space: normal;
-            font-weight: bold;
+            font-weight: 500;
         }
 
-        .small-note {
-            margin-top: 6px;
-            font-size: 8px;
-            line-height: 1.4;
-        }
-
+        /* Print Styles */
         @media print {
+            body {
+                padding: 0;
+                background: #fff;
+            }
+
             .no-print {
+                display: none !important;
+            }
+
+            .screen-scroll {
+                overflow: visible !important;
+                padding: 0;
+            }
+
+            .screen-scroll::-webkit-scrollbar {
                 display: none;
+            }
+
+            .print-wrap {
+                width: 100%;
+                min-width: 0;
+                margin: 0;
+                padding: 8px 10px;
+                box-shadow: none;
+                border-radius: 0;
+            }
+
+            .title {
+                font-size: 15px;
+            }
+            .subtitle {
+                font-size: 10px;
+            }
+            .printed {
+                font-size: 8.5px;
+            }
+
+            table {
+                font-size: 7.4px;
+            }
+
+            th {
+                padding: 3px 2px;
+                background: #f2f2f2 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+
+            td {
+                padding: 2.5px 2px;
+            }
+
+            tfoot td {
+                padding: 3px 2px;
+                background: #f2f2f2 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+        }
+
+        /* Mobile */
+        @media screen and (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .toolbar {
+                justify-content: center;
+            }
+
+            .btn-print {
+                width: 100%;
+                padding: 14px;
+                font-size: 16px;
+            }
+
+            .print-wrap {
+                padding: 12px;
+                min-width: 1200px;
+                width: 1200px;
             }
         }
     </style>
 </head>
-<body onload="window.print()">
+<body>
 
-<div class="print-wrap">
-    <div class="title"><?= h($title) ?></div>
-    <div class="subtitle"><?= h($subtitle) ?></div>
-    <div class="printed">Dicetak: <?= h($printedAt) ?></div>
+<!-- Toolbar Cetak -->
+<div class="toolbar no-print">
+    <button type="button" class="btn-print" onclick="window.print()">
+        🖨️ CETAK LAPORAN
+    </button>
+</div>
 
-    <!--<div class="info-line">
-        Tanggal Cut Off: <b><?= h(formatDateIndo($asOfDate)) ?></b> |
-        Basis Aging: <b>Jatuh Tempo Invoice</b> |
-        Jenis Report: <b>Global</b>
-    </div>-->
+<!-- Container Scroll -->
+<div class="screen-scroll">
+    <div class="print-wrap">
+        <div class="title"><?= h($title) ?></div>
+        <div class="subtitle"><?= h($subtitle) ?></div>
+        <div class="printed">Dicetak: <?= h($printedAt) ?></div>
 
-    <table>
-        <thead>
-            <tr>
-                <th style="width:28px;">No</th>
-                <th style="width:120px;"><?= h($labelColumn) ?></th>
-                <th style="width:74px;">Saldo Awal</th>
-                <th style="width:74px;">Penjualan</th>
-                <th style="width:74px;">Pembayaran</th>
-                <th style="width:74px;">Titip</th>
-                <th style="width:74px;">Saldo Akhir</th>
-                <th style="width:68px;">1 - 30 Hari</th>
-                <th style="width:68px;">31 - 60 Hari</th>
-                <th style="width:68px;">61 - 90 Hari</th>
-                <th style="width:68px;">Lebih</th>
-                <th style="width:78px;">Belum Jatuh Tempo</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (empty($rows)): ?>
+        <table>
+            <thead>
                 <tr>
-                    <td colspan="12" class="text-center" style="padding:12px;">
-                        Tidak ada data aging piutang untuk filter ini.
-                    </td>
+                    <th style="width:32px;">No</th>
+                    <th style="width:145px;"><?= h($labelColumn) ?></th>
+                    <th style="width:85px;">Saldo Awal</th>
+                    <th style="width:85px;">Penjualan</th>
+                    <th style="width:85px;">Pembayaran</th>
+                    <th style="width:85px;">Titip</th>
+                    <th style="width:85px;">Saldo Akhir</th>
+                    <th style="width:78px;">1 - 30 Hari</th>
+                    <th style="width:78px;">31 - 60 Hari</th>
+                    <th style="width:78px;">61 - 90 Hari</th>
+                    <th style="width:78px;">Lebih</th>
+                    <th style="width:88px;">Belum Jatuh Tempo</th>
                 </tr>
-            <?php else: ?>
-                <?php $no = 1; ?>
-                <?php foreach ($rows as $row): ?>
+            </thead>
+            <tbody>
+                <?php if (empty($rows)): ?>
                     <tr>
-                        <td class="text-center"><?= $no++ ?></td>
-                        <td class="label-cell"><?= h($row['label']) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['saldo_awal'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['penjualan'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['pembayaran'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['titip'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['saldo_akhir'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_61_90'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_lebih'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['belum_jatuh_tempo'])) ?></td>
+                        <td colspan="12" class="text-center" style="padding:20px; font-size:13px; color:#999;">
+                            Tidak ada data aging piutang untuk filter ini.
+                        </td>
                     </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-        <tfoot>
-            <tr>
-                <td colspan="2" class="text-right">GRAND TOTAL</td>
-                <td class="money-cell"><?= h(formatMoney($grand['saldo_awal'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['penjualan'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['titip'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['saldo_akhir'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_61_90'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_lebih'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['belum_jatuh_tempo'])) ?></td>
-            </tr>
-        </tfoot>
-    </table>
-
-    <!--<div class="small-note">
-        Catatan: Kolom Titip adalah uang titipan yang diterima pada periode laporan. Titip baru mengurangi piutang jika sudah dipakai pada transaksi pembayaran.
-        Bucket aging dihitung dari saldo invoice yang masih outstanding sampai tanggal cut off.
-    </div>-->
+                <?php else: ?>
+                    <?php $no = 1; ?>
+                    <?php foreach ($rows as $row): ?>
+                        <tr>
+                            <td class="text-center"><?= $no++ ?></td>
+                            <td class="label-cell"><?= h($row['label']) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['saldo_awal'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['penjualan'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['pembayaran'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['titip'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['saldo_akhir'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_61_90'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_lebih'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['belum_jatuh_tempo'])) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan="2" class="text-right">GRAND TOTAL</td>
+                    <td class="money-cell"><?= h(formatMoney($grand['saldo_awal'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['penjualan'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['titip'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['saldo_akhir'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_61_90'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_lebih'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['belum_jatuh_tempo'])) ?></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
 </div>
 
 </body>

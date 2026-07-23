@@ -123,12 +123,6 @@ $whereInvoice = " WHERE hi.invoice_date <= ? ";
 $params = [$endDate, $endDate];
 $types = "ss";
 
-/*
-    Parameter order:
-    1. paid_until_cutoff: hb.bayar_date <= ?
-    2. WHERE hi.invoice_date <= ?
-*/
-
 if ($filterBy === 'grup' && $filterValue !== '') {
     $whereInvoice .= " AND COALESCE(c.area_code, '') = ? ";
     $params[] = $filterValue;
@@ -146,6 +140,7 @@ if ($filterBy === 'grup' && $filterValue !== '') {
 $sql = "
     SELECT
         hi.invoice_no,
+        COALESCE(di.shipping_no, '') AS shipping_no,
         hi.invoice_date,
         DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days, 0) DAY) AS due_date,
         hi.days,
@@ -164,9 +159,21 @@ $sql = "
         ), 0) AS pembayaran_cutoff
     FROM head_invoice hi
     LEFT JOIN m_customer c ON c.customer_id = hi.customer_id
+    LEFT JOIN (
+        SELECT
+            invoice_no,
+            GROUP_CONCAT(
+                DISTINCT shipping_no
+                ORDER BY shipping_no
+                SEPARATOR ', '
+            ) AS shipping_no
+        FROM det_invoice
+        GROUP BY invoice_no
+    ) di ON di.invoice_no = hi.invoice_no
     $whereInvoice
     GROUP BY
         hi.invoice_no,
+        di.shipping_no,
         hi.invoice_date,
         hi.days,
         hi.customer_id,
@@ -205,7 +212,7 @@ while ($row = mysqli_fetch_assoc($res)) {
     $pembayaran = (float)($row['pembayaran_cutoff'] ?? 0);
     $sisaPiutang = $invoiceAmount - $pembayaran;
 
-    if ($sisaPiutang <= 0.0001) { // HAPUS JIKA INVOICE LUNAS INGIN DITAMPILKAN
+    if ($sisaPiutang <= 0.0001) {
         continue;
     }
 
@@ -263,6 +270,7 @@ mysqli_stmt_close($stmt);
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= h($title) ?></title>
     <style>
         @page {
@@ -272,56 +280,108 @@ mysqli_stmt_close($stmt);
 
         * {
             box-sizing: border-box;
+            margin: 0;
+            padding: 0;
         }
 
         body {
             font-family: Arial, Helvetica, sans-serif;
-            font-size: 8px;
+            font-size: 12px;
             color: #000;
-            margin: 0;
-            padding: 0;
-            background: #fff;
+            background: #eef1f5;
+            padding: 16px;
+        }
+
+        /* Toolbar Tombol Cetak */
+        .toolbar {
+            width: 100%;
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 16px;
+        }
+
+        .btn-print {
+            border: none;
+            border-radius: 6px;
+            background: #2b5797;
+            color: #fff;
+            padding: 12px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            transition: 0.2s;
+        }
+
+        .btn-print:hover {
+            background: #1a3f6a;
+            transform: scale(1.02);
+        }
+
+        /* Container Scroll */
+        .screen-scroll {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: visible;
+            padding-bottom: 12px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .screen-scroll::-webkit-scrollbar {
+            height: 10px;
+        }
+        .screen-scroll::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 5px;
+        }
+        .screen-scroll::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 5px;
+        }
+        .screen-scroll::-webkit-scrollbar-thumb:hover {
+            background: #555;
         }
 
         .print-wrap {
-            width: 100%;
+            width: 1480px;
+            min-width: 1480px;
+            margin: 0 auto;
+            padding: 20px 24px;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            border-radius: 4px;
         }
 
         .title {
             text-align: center;
-            font-size: 15px;
+            font-size: 20px;
             font-weight: bold;
-            margin-bottom: 3px;
+            margin-bottom: 2px;
         }
 
         .subtitle {
             text-align: center;
-            font-size: 10px;
-            margin-bottom: 3px;
+            font-size: 13px;
+            margin-bottom: 2px;
         }
 
         .printed {
             text-align: right;
-            font-size: 8px;
-            margin-bottom: 5px;
-        }
-
-        .info-line {
-            font-size: 8.5px;
-            margin-bottom: 5px;
+            font-size: 11px;
+            margin-bottom: 8px;
+            color: #555;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            table-layout: fixed;
-            font-size: 7.4px;
+            font-size: 10px;
         }
 
         th {
             border: 1px solid #000;
-            background: #f2f2f2;
-            padding: 3px 2px;
+            background: #e8e8e8;
+            padding: 6px 4px;
             text-align: center;
             font-weight: bold;
             white-space: nowrap;
@@ -330,7 +390,7 @@ mysqli_stmt_close($stmt);
         td {
             border-left: 1px solid #000;
             border-right: 1px solid #000;
-            padding: 2.5px 2px;
+            padding: 5px 4px;
             vertical-align: middle;
             white-space: nowrap;
         }
@@ -338,29 +398,26 @@ mysqli_stmt_close($stmt);
         tbody tr:first-child td {
             border-top: 1px solid #000;
         }
-
         tbody tr:last-child td {
             border-bottom: 1px solid #000;
         }
 
         tfoot td {
             border: 1px solid #000;
-            background: #f2f2f2;
+            background: #e8e8e8;
             font-weight: bold;
-            padding: 3px 2px;
+            padding: 6px 4px;
         }
 
         .text-center {
             text-align: center;
         }
-
         .text-right {
             text-align: right;
         }
 
         .money-cell {
             text-align: right;
-            font-variant-numeric: tabular-nums;
         }
 
         .label-cell {
@@ -372,106 +429,177 @@ mysqli_stmt_close($stmt);
             font-weight: bold;
         }
 
-        .small-note {
-            margin-top: 5px;
-            font-size: 7.8px;
-            line-height: 1.4;
+        /* Print Styles */
+        @media print {
+            body {
+                padding: 0;
+                background: #fff;
+            }
+
+            .no-print {
+                display: none !important;
+            }
+
+            .screen-scroll {
+                overflow: visible !important;
+                padding: 0;
+            }
+
+            .screen-scroll::-webkit-scrollbar {
+                display: none;
+            }
+
+            .print-wrap {
+                width: 100%;
+                min-width: 0;
+                margin: 0;
+                padding: 8px 10px;
+                box-shadow: none;
+                border-radius: 0;
+            }
+
+            .title {
+                font-size: 15px;
+            }
+            .subtitle {
+                font-size: 10px;
+            }
+            .printed {
+                font-size: 8.5px;
+            }
+
+            table {
+                font-size: 7.4px;
+            }
+
+            th {
+                padding: 3px 2px;
+                background: #f2f2f2 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+
+            td {
+                padding: 2.5px 2px;
+            }
+
+            tfoot td {
+                padding: 3px 2px;
+                background: #f2f2f2 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
         }
 
-        @media print {
-            .no-print {
-                display: none;
+        /* Mobile */
+        @media screen and (max-width: 768px) {
+            body {
+                padding: 8px;
+            }
+
+            .toolbar {
+                justify-content: center;
+            }
+
+            .btn-print {
+                width: 100%;
+                padding: 14px;
+                font-size: 16px;
+            }
+
+            .print-wrap {
+                padding: 12px;
+                min-width: 1200px;
+                width: 1200px;
             }
         }
     </style>
 </head>
-<body onload="window.print()">
+<body>
 
-<div class="print-wrap">
-    <div class="title"><?= h($title) ?></div>
-    <div class="subtitle"><?= h($subtitle) ?></div>
-    <div class="printed">Dicetak: <?= h($printedAt) ?></div>
+<!-- Toolbar Cetak -->
+<div class="toolbar no-print">
+    <button type="button" class="btn-print" onclick="window.print()">
+        🖨️ CETAK LAPORAN
+    </button>
+</div>
 
-    <!--<div class="info-line">
-        Tanggal Cut Off: <b><?= h(formatDateIndo($asOfDate)) ?></b> |
-        Basis Aging: <b>Jatuh Tempo Invoice</b> |
-        Due Date: <b>Invoice Date + Days</b> |
-        Jenis Report: <b>Detail</b>
-    </div>-->
+<!-- Container Scroll -->
+<div class="screen-scroll">
+    <div class="print-wrap">
+        <div class="title"><?= h($title) ?></div>
+        <div class="subtitle"><?= h($subtitle) ?></div>
+        <div class="printed">Dicetak: <?= h($printedAt) ?></div>
 
-    <table>
-        <thead>
-            <tr>
-                <th style="width:24px;">No</th>
-                <th style="width:48px;">Grup</th>
-                <th style="width:55px;">Kota</th>
-                <th style="width:52px;">Cust ID</th>
-                <th style="width:118px;">Nama Customer</th>
-                <th style="width:70px;">No. Invoice</th>
-                <th style="width:55px;">Tgl Inv</th>
-                <th style="width:55px;">Jth Tempo</th>
-                <th style="width:38px;">Umur</th>
-                <th style="width:70px;">Nilai Invoice</th>
-                <th style="width:70px;">Pembayaran</th>
-                <th style="width:70px;">Sisa Piutang</th>
-                <th style="width:66px;">Belum JT</th>
-                <th style="width:62px;">1-30</th>
-                <th style="width:62px;">31-60</th>
-                <th style="width:62px;">61-90</th>
-                <th style="width:62px;">Lebih</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (empty($rows)): ?>
+        <table>
+            <thead>
                 <tr>
-                    <td colspan="17" class="text-center" style="padding:12px;">
-                        Tidak ada data aging piutang detail untuk filter ini.
-                    </td>
+                    <th style="width:28px;">No</th>
+                    <th style="width:50px;">Grup</th>
+                    <th style="width:55px;">Kota</th>
+                    <th style="width:55px;">Cust ID</th>
+                    <th style="width:130px;">Nama Customer</th>
+                    <th style="width:85px;">Shipping No.</th>
+                    <th style="width:62px;">Tgl Inv</th>
+                    <th style="width:62px;">Jth Tempo</th>
+                    <th style="width:38px;">Umur</th>
+                    <th style="width:78px;">Nilai Invoice</th>
+                    <th style="width:78px;">Pembayaran</th>
+                    <th style="width:78px;">Sisa Piutang</th>
+                    <th style="width:72px;">Belum JT</th>
+                    <th style="width:68px;">1-30</th>
+                    <th style="width:68px;">31-60</th>
+                    <th style="width:68px;">61-90</th>
+                    <th style="width:68px;">Lebih</th>
                 </tr>
-            <?php else: ?>
-                <?php $no = 1; ?>
-                <?php foreach ($rows as $row): ?>
+            </thead>
+            <tbody>
+                <?php if (empty($rows)): ?>
                     <tr>
-                        <td class="text-center"><?= $no++ ?></td>
-                        <td class="label-cell"><?= h($row['area_code'] !== '' ? $row['area_code'] : 'TANPA GRUP') ?></td>
-                        <td class="label-cell"><?= h($row['city'] !== '' ? $row['city'] : $row['customer_city']) ?></td>
-                        <td class="text-center"><?= h($row['customer_id']) ?></td>
-                        <td class="customer-cell"><?= h($row['customer_name']) ?></td>
-                        <td class="text-center"><?= h($row['invoice_no']) ?></td>
-                        <td class="text-center"><?= h(formatDateIndo($row['invoice_date'])) ?></td>
-                        <td class="text-center"><?= h(formatDateIndo($row['due_date'])) ?></td>
-                        <td class="text-center"><?= h($row['age_days']) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['invoice_amount_calc'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['pembayaran_calc'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['sisa_piutang'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['belum_jatuh_tempo'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_61_90'])) ?></td>
-                        <td class="money-cell"><?= h(formatMoney($row['b_lebih'])) ?></td>
+                        <td colspan="17" class="text-center" style="padding:20px; font-size:13px; color:#999;">
+                            Tidak ada data aging piutang detail untuk filter ini.
+                        </td>
                     </tr>
-                <?php endforeach; ?>
-            <?php endif; ?>
-        </tbody>
-        <tfoot>
-            <tr>
-                <td colspan="9" class="text-right">GRAND TOTAL</td>
-                <td class="money-cell"><?= h(formatMoney($grand['invoice_amount'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['sisa_piutang'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['belum_jatuh_tempo'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_61_90'])) ?></td>
-                <td class="money-cell"><?= h(formatMoney($grand['b_lebih'])) ?></td>
-            </tr>
-        </tfoot>
-    </table>
-
-    <!--<div class="small-note">
-        Catatan: Laporan ini hanya menampilkan invoice yang masih memiliki sisa piutang sampai tanggal cut off.
-        Nilai invoice tidak memakai payment_balance. Formula memakai piutang atau grand_total/subtotal dikurangi down payment dan titip applied.
-    </div>-->
+                <?php else: ?>
+                    <?php $no = 1; ?>
+                    <?php foreach ($rows as $row): ?>
+                        <tr>
+                            <td class="text-center"><?= $no++ ?></td>
+                            <td class="label-cell"><?= h($row['area_code'] !== '' ? $row['area_code'] : 'TANPA GRUP') ?></td>
+                            <td class="label-cell"><?= h($row['city'] !== '' ? $row['city'] : $row['customer_city']) ?></td>
+                            <td class="text-center"><?= h($row['customer_id']) ?></td>
+                            <td class="customer-cell"><?= h($row['customer_name']) ?></td>
+                            <td class="text-center" style="font-size:9px;"><?= h($row['shipping_no']) ?></td>
+                            <td class="text-center"><?= h(formatDateIndo($row['invoice_date'])) ?></td>
+                            <td class="text-center"><?= h(formatDateIndo($row['due_date'])) ?></td>
+                            <td class="text-center"><?= h($row['age_days']) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['invoice_amount_calc'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['pembayaran_calc'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['sisa_piutang'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['belum_jatuh_tempo'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_61_90'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['b_lebih'])) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan="9" class="text-right">GRAND TOTAL</td>
+                    <td class="money-cell"><?= h(formatMoney($grand['invoice_amount'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['sisa_piutang'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['belum_jatuh_tempo'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_61_90'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['b_lebih'])) ?></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
 </div>
 
 </body>
