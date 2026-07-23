@@ -54,6 +54,16 @@ function displayText($value, $fallback = '-') {
     $value = trim((string)($value ?? ''));
     return $value !== '' ? h($value) : h($fallback);
 }
+
+function displayMultilineText($value, $fallback = '-') {
+    $value = trim((string)($value ?? ''));
+
+    if ($value === '') {
+        return h($fallback);
+    }
+
+    return nl2br(h($value), false);
+}
 function displayTextWithZeroCheck($value, $fallback = '-') {
     $value = trim((string)($value ?? ''));
     
@@ -257,6 +267,11 @@ header("Content-Type: text/html; charset=UTF-8");
     .info-box td.label { width: 30%; }
     .info-box td.titik { width: 3%; }
     .info-box td.val   { width: 67%; }
+    .info-box td.multiline-value {
+        white-space: normal;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+    }
     
     /* Global Table Style */
     .produksi-table {
@@ -356,7 +371,11 @@ header("Content-Type: text/html; charset=UTF-8");
                 <tr><td class="label">Ukuran</td><td class="titik">:</td><td class="val"><?= displayText(($detail['ukuran_potong'] ?? '') !== '' ? $detail['ukuran_potong'] : ($detail['ukuran_rol'] ?? '')) ?></td></tr>
                 <tr><td class="label">Jumlah Order</td><td class="titik">:</td><td class="val"><?= displayOrderPotong($detail['jml_order_potong'] ?? '') ?></td></tr>
                 <tr><td class="label">Isi per pak & Bal</td><td class="titik">:</td><td class="val"><?= displayText($detail['isi_pakbal_potong'] ?? '') ?></td></tr>
-                <tr><td class="label">Keterangan</td><td class="titik">:</td><td class="val"><?= displayText(($detail['keterangan_potong'] ?? '') !== '' ? $detail['keterangan_potong'] : ($detail['keterangan_rol'] ?? '')) ?></td></tr>
+                <tr>
+                    <td class="label">Keterangan</td>
+                    <td class="titik">:</td>
+                    <td class="val multiline-value"><?= displayMultilineText(($detail['keterangan_potong'] ?? '') !== '' ? $detail['keterangan_potong'] : ($detail['keterangan_rol'] ?? '')) ?></td>
+                </tr>
                 <tr><td class="label">Nat/Warna</td><td class="titik">:</td><td class="val"><?= displayText($warna_potong) ?></td></tr>
                 <tr><td class="label">Berat/Rol</td><td class="titik">:</td><td class="val"><?= formatBeratRolPotong($berat_rol_potong) ?></td></tr>
                 <tr><td class="label">Jarak Seal</td><td class="titik">:</td><td class="val"><?= displayTextWithZeroCheck($jarak_seal_potong) ?></td></tr>

@@ -135,6 +135,19 @@ function displayField($value, $fallback = '-') {
     return htmlspecialchars($value !== '' ? $value : $fallback, ENT_QUOTES, 'UTF-8');
 }
 
+function displayMultilineField($value, $fallback = '-') {
+    $value = trim((string)($value ?? ''));
+
+    if ($value === '') {
+        return htmlspecialchars($fallback, ENT_QUOTES, 'UTF-8');
+    }
+
+    return nl2br(
+        htmlspecialchars($value, ENT_QUOTES, 'UTF-8'),
+        false
+    );
+}
+
 function getMaterialPrefixFromInventoryName($inventoryName) {
     $name = strtoupper(trim((string)$inventoryName));
 
@@ -274,6 +287,11 @@ header("Content-Type: text/html; charset=UTF-8");
         .info-box td.label { width: 30%; }
         .info-box td.titik { width: 3%; }
         .info-box td.val   { width: 67%; }
+        .info-box td.multiline-value {
+            white-space: normal;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
         
         /* Global Table Style */
         .produksi-table {
@@ -370,7 +388,7 @@ header("Content-Type: text/html; charset=UTF-8");
                 <tr><td class="label">Berat/Rol</td><td class="titik">:</td><td class="val"><?= formatBeratRol($detail['berat_rol'] ?? '') ?></td></tr>
                 <tr><td class="label">Isi/Bal</td><td class="titik">:</td><td class="val"><?= displayField($detail['isi_bal_rol'] ?? '') ?></td></tr>
                 <tr><td class="label">Jumlah Order</td><td class="titik">:</td><td class="val"><?= displayField($detail['jml_order_rol'] ?? '') ?></td></tr>
-                <tr><td class="label">Treat/Tidak</td><td class="titik">:</td><td class="val"><?= displayField($detail['treat_rol'] ?? '') ?></td></tr>
+                <tr><td class="label">Treat/Tidak</td><td class="titik">:</td><td class="val"><?= displayField($detail['treat_rol'] ?? '', '') ?></td></tr>
                 <tr><td class="label">Nat/Warna</td><td class="titik">:</td><td class="val"><?= displayField(($detail['nat_warna_rol'] ?? '') !== '' ? $detail['nat_warna_rol'] : ($detail['nat_warna_potong'] ?? '')) ?></td></tr>
                 <tr><td class="label">Bobin/Krepyak</td><td class="titik">:</td><td class="val"><?= displayField($detail['bobin_krepyak_rol'] ?? '') ?></td></tr>
                 <tr><td class="label">Kirim/Las</td><td class="titik">:</td><td class="val"><?= displayField($detail['kirim_las_rol'] ?? '') ?></td></tr>
@@ -378,9 +396,13 @@ header("Content-Type: text/html; charset=UTF-8");
                 <tr><td class="label">Gramatur Asli</td><td class="titik">:</td><td class="val"><?= number_format(safeNumber($detail['gramatur_asli_rol'] ?? 0), 2) ?></td></tr>
                 <tr><td class="label">Tebal Asli</td><td class="titik">:</td><td class="val"><?= number_format(safeNumber($detail['tebal_asli_rol'] ?? 0), 2) ?></td></tr>
                 <tr><td class="label">Spesifikasi</td><td class="titik">:</td><td class="val"><?= displayField($spec_rol_display) ?></td></tr>
-                <tr><td class="label">Gramatur</td><td class="titik">:</td><td class="val"><?= formatNumberOrText($detail['gramatur_rol'] ?? '', 2, '0.00') ?></td></tr>
-                <tr><td class="label">Tebal</td><td class="titik">:</td><td class="val"><?= formatNumberOrText($detail['tebal_rol'] ?? '', 2, '0.00') ?></td></tr>
-                <tr><td class="label">Keterangan</td><td class="titik">:</td><td class="val"><?= displayField(($detail['keterangan_rol'] ?? '') !== '' ? $detail['keterangan_rol'] : ($detail['keterangan_potong'] ?? '')) ?></td></tr>
+                <tr><td class="label">Gramatur</td><td class="titik">:</td><td class="val"><?= formatNumberOrText($detail['gramatur_rol'] ?? '', 2, '-') ?></td></tr>
+                <tr><td class="label">Tebal</td><td class="titik">:</td><td class="val"><?= formatNumberOrText($detail['tebal_rol'] ?? '', 2, '-') ?></td></tr>
+                <tr>
+                    <td class="label">Keterangan</td>
+                    <td class="titik">:</td>
+                    <td class="val multiline-value"><?= displayMultilineField(($detail['keterangan_rol'] ?? '') !== '' ? $detail['keterangan_rol'] : ($detail['keterangan_potong'] ?? '')) ?></td>
+                </tr>
                 <tr><td class="label">Kode</td><td class="titik">:</td><td class="val"><?= displayField(($detail['code_rol'] ?? '') !== '' ? $detail['code_rol'] : ($detail['code_potong'] ?? '')) ?></td></tr>
                 <tr><td class="label">Tgl Kirim</td><td class="titik">:</td><td class="val"><?= $tgl_kirim ?></td></tr>
             </table>
