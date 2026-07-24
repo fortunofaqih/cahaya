@@ -82,8 +82,65 @@ function convertFilterDateToMysql($date) {
 }
 
 function isStokanRemark($remark) {
-    $allowedRemarks = ['STOKAN', 'AMBIL STOKAN'];
-    return in_array(strtoupper(trim((string)$remark)), $allowedRemarks, true);
+    // Dianggap STOKAN apabila kata "STOKAN" terdapat di mana pun dalam remarks,
+    // misalnya: "STOKAN", "AMBIL STOKAN", atau "ORDER STOKAN CUSTOMER".
+    return stripos((string)$remark, 'STOKAN') !== false;
+}
+
+/**
+ * Menentukan Order Qty yang boleh masuk ke total.
+ *
+ * Ketentuan:
+ * 1. UoM kosong dan Price = 0 => Order Qty tidak ditotalkan.
+ * 2. Order Qty = 1, UoM = KG, Price = 0 => tidak ditotalkan.
+ * 3. Order Qty = 1, UoM = KG, Price > 1, tanpa STOKAN => ditotalkan.
+ * 4. Order Qty = 1, UoM = KG, Price > 1, dengan STOKAN => tidak ditotalkan.
+ * 5. Item lain yang memiliki remark STOKAN tetap tidak ditotalkan.
+ */
+function getQuantityForTotal($quantity, $uom, $price, $remark) {
+    $quantity = (float)$quantity;
+    $price = (float)$price;
+    $uom = strtoupper(trim((string)$uom));
+    $is_stokan = isStokanRemark($remark);
+
+    // UoM tidak diisi dan Price = 0 tidak masuk Total Order Qty.
+    if ($uom === '' && abs($price) < 0.000001) {
+        return 0;
+    }
+
+    $is_qty_one_kg = abs($quantity - 1.0) < 0.000001 && $uom === 'KG';
+
+    if ($is_qty_one_kg) {
+        // Price 0 (dan nilai sampai dengan 1 sesuai ketentuan sebelumnya)
+        // tidak ikut ditotalkan.
+        if ($price <= 1) {
+            return 0;
+        }
+
+        // Price > 1 hanya ditotalkan apabila tidak ada remark STOKAN.
+        return $is_stokan ? 0 : $quantity;
+    }
+
+    return $is_stokan ? 0 : $quantity;
+}
+
+/**
+ * Menentukan Order Bal yang boleh masuk ke total.
+ *
+ * Jika Order Bal = 1, UoM Pack = KG, dan Price = 0,
+ * Order Bal tidak masuk Total Order Bal.
+ */
+function getQuantityPackForTotal($quantityPack, $uomPack, $price) {
+    $quantityPack = (float)$quantityPack;
+    $price = (float)$price;
+    $uomPack = strtoupper(trim((string)$uomPack));
+
+    $is_excluded =
+        abs($quantityPack - 1.0) < 0.000001 &&
+        $uomPack === 'KG' &&
+        abs($price) < 0.000001;
+
+    return $is_excluded ? 0 : $quantityPack;
 }
 
 // ==========================================
@@ -255,10 +312,22 @@ foreach ($grouped_data as $customer) {
             $header_remarks = trim((string)($order['remarks'] ?? ''));
 
             $remark_for_check = $detail_remarks !== '' ? $detail_remarks : $header_remarks;
-            $is_stokan = isStokanRemark($remark_for_check);
 
-            $grand_total_qty += $is_stokan ? 0 : $quantity;
-            $grand_total_bal += $quantity_pack;
+            $quantity_for_total = getQuantityForTotal(
+                $quantity,
+                $item['uom'] ?? '',
+                $item['price'] ?? 0,
+                $remark_for_check
+            );
+
+            $quantity_pack_for_total = getQuantityPackForTotal(
+                $quantity_pack,
+                $item['uom_pack'] ?? '',
+                $item['price'] ?? 0
+            );
+
+            $grand_total_qty += $quantity_for_total;
+            $grand_total_bal += $quantity_pack_for_total;
             $grand_total_subtotal += $subtotal;
         }
     }
@@ -688,10 +757,21 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
 
                                         // Prioritas remarks detail. Kalau kosong, pakai remarks header.
                                         $remarks_display = $detail_remarks !== '' ? $detail_remarks : $header_remarks;
-                                        $is_stokan = isStokanRemark($remarks_display);
 
-                                        // Kalau STOKAN, Order Qty untuk total dianggap 0
-                                        $quantity_for_total = $is_stokan ? 0 : $quantity;
+                                        // Hitung nilai yang boleh masuk ke Total Order Qty.
+                                        $quantity_for_total = getQuantityForTotal(
+                                            $quantity,
+                                            $item['uom'] ?? '',
+                                            $price,
+                                            $remarks_display
+                                        );
+
+                                        // Hitung nilai yang boleh masuk ke Total Order Bal.
+                                        $quantity_pack_for_total = getQuantityPackForTotal(
+                                            $quantity_pack,
+                                            $item['uom_pack'] ?? '',
+                                            $price
+                                        );
 
                                         // Price KG = subtotal / quantity
                                         $price_kg = 0;
@@ -700,7 +780,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                         }
 
                                         $order_total_qty += $quantity_for_total;
-                                        $order_total_bal += $quantity_pack;
+                                        $order_total_bal += $quantity_pack_for_total;
                                         $order_total_subtotal += $subtotal;
                                     ?>
                                     <tr>
