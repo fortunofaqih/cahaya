@@ -1,5 +1,5 @@
 <?php
-// modul/transaksi/add_bayar.php
+// modul/transaksi/add_bayar_shipping_revisi_lunas_legacy.php
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -58,54 +58,206 @@ function appIcon($name) {
 
 $bayar_no = generateBayarNo($conn);
 
-$invoices = [];
-$sqlInvoice = "
+$shippings = [];
+
+/*
+ * Dropdown pembayaran dihitung per pasangan invoice_no + shipping_no.
+ * Rule:
+ * - Belum pernah dibayar: tampil.
+ * - Sudah dibayar sebagian: tampil dengan sisa terbaru.
+ * - Total pembayaran >= nilai shipping: tidak tampil.
+ */
+$sqlShipping = "
     SELECT
-        hi.invoice_no,
-        hi.invoice_date,
-        hi.customer_id,
-        hi.customer_name,
-        hi.customer_address,
-        hi.customer_city,
+        src.invoice_no,
+        src.invoice_date,
+        src.customer_id,
+        src.customer_name,
+        src.customer_address,
+        src.customer_city,
+        src.shipping_no,
+        src.shipping_date,
+        src.order_no,
+        src.shipping_amount,
+
+        /* Pembayaran yang benar-benar tersimpan untuk Shipping No ini. */
+        COALESCE(pay_shipping.paid_amount, 0) AS paid_amount,
+
+        /*
+         * Penentuan sisa:
+         * 1. Jika invoice secara keseluruhan sudah lunas, sisa = 0.
+         * 2. Jika pembayaran sudah memiliki shipping_no, hitung per shipping.
+         * 3. Untuk data lama tanpa shipping_no dan invoice hanya memiliki satu
+         *    shipping, pembayaran invoice lama dialokasikan ke shipping tersebut.
+         * 4. Jika transaksi terakhir pasangan shipping menyimpan sisa_after <= 0,
+         *    shipping dianggap lunas.
+         */
         CASE
-             WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
-            WHEN COALESCE(hi.grand_total, 0) > 0 THEN COALESCE(hi.grand_total, 0)
-            ELSE COALESCE(hi.subtotal, 0)
-        END AS invoice_amount,
-        COALESCE(SUM(db.bayar_amount), 0) AS paid_amount,
-        (
-            CASE
-                WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
-                WHEN COALESCE(hi.grand_total, 0) > 0 THEN COALESCE(hi.grand_total, 0)
-                ELSE COALESCE(hi.subtotal, 0)
-            END - COALESCE(SUM(db.bayar_amount), 0)
-        ) AS sisa_invoice,
+            WHEN COALESCE(inv_pay.total_paid_invoice, 0) >= src.invoice_amount - 0.01
+                THEN 0
+
+            WHEN COALESCE(last_shipping.sisa_after, 999999999999.99) <= 0.01
+                THEN 0
+
+            WHEN src.shipping_count = 1
+                THEN GREATEST(
+                    src.shipping_amount - COALESCE(inv_pay.total_paid_invoice, 0),
+                    0
+                )
+
+            ELSE GREATEST(
+                src.shipping_amount - COALESCE(pay_shipping.paid_amount, 0),
+                0
+            )
+        END AS sisa_shipping,
+
         COALESCE((
             SELECT SUM(ht.balance_amount)
             FROM head_titip ht
-            WHERE ht.customer_id = hi.customer_id
+            WHERE ht.customer_id = src.customer_id
               AND ht.balance_amount > 0
         ), 0) AS saldo_titip
-    FROM head_invoice hi
-    LEFT JOIN detail_bayar db ON db.invoice_no = hi.invoice_no
-    GROUP BY
-        hi.invoice_no,
-        hi.invoice_date,
-        hi.customer_id,
-        hi.customer_name,
-        hi.customer_address,
-        hi.customer_city,
-        hi.piutang,
-        hi.payment_balance,
-        hi.grand_total
-    HAVING sisa_invoice > 0
-    ORDER BY hi.invoice_date DESC, hi.invoice_no DESC
+
+    FROM
+    (
+        SELECT
+            hi.invoice_no,
+            hi.invoice_date,
+            hi.customer_id,
+            hi.customer_name,
+            hi.customer_address,
+            hi.customer_city,
+            TRIM(di.shipping_no) AS shipping_no,
+            MAX(di.shipping_date) AS shipping_date,
+            MAX(di.order_no) AS order_no,
+
+            SUM(
+                CASE
+                    WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                    ELSE COALESCE(di.subtotal, 0)
+                END
+            ) AS shipping_amount,
+
+            (
+                SELECT COUNT(DISTINCT TRIM(di_count.shipping_no))
+                FROM det_invoice di_count
+                WHERE di_count.invoice_no = hi.invoice_no
+                  AND COALESCE(TRIM(di_count.shipping_no), '') <> ''
+            ) AS shipping_count,
+
+            (
+                SELECT SUM(
+                    CASE
+                        WHEN COALESCE(di_total.total, 0) > 0
+                            THEN COALESCE(di_total.total, 0)
+                        ELSE COALESCE(di_total.subtotal, 0)
+                    END
+                )
+                FROM det_invoice di_total
+                WHERE di_total.invoice_no = hi.invoice_no
+            ) AS invoice_amount
+
+        FROM head_invoice hi
+        INNER JOIN det_invoice di
+            ON di.invoice_no = hi.invoice_no
+        WHERE COALESCE(TRIM(di.shipping_no), '') <> ''
+        GROUP BY
+            hi.invoice_no,
+            hi.invoice_date,
+            hi.customer_id,
+            hi.customer_name,
+            hi.customer_address,
+            hi.customer_city,
+            TRIM(di.shipping_no)
+    ) src
+
+    /* Pembayaran per pasangan invoice_no + shipping_no. */
+    LEFT JOIN
+    (
+        SELECT
+            db.invoice_no,
+            TRIM(db.shipping_no) AS shipping_no,
+            SUM(COALESCE(db.bayar_amount, 0)) AS paid_amount
+        FROM detail_bayar db
+        INNER JOIN head_bayar hb
+            ON hb.bayar_no = db.bayar_no
+        WHERE COALESCE(TRIM(db.shipping_no), '') <> ''
+        GROUP BY
+            db.invoice_no,
+            TRIM(db.shipping_no)
+    ) pay_shipping
+        ON pay_shipping.invoice_no = src.invoice_no
+       AND pay_shipping.shipping_no = src.shipping_no
+
+    /* Semua pembayaran invoice, termasuk data lama yang shipping_no-nya kosong. */
+    LEFT JOIN
+    (
+        SELECT
+            db.invoice_no,
+            SUM(COALESCE(db.bayar_amount, 0)) AS total_paid_invoice
+        FROM detail_bayar db
+        INNER JOIN head_bayar hb
+            ON hb.bayar_no = db.bayar_no
+        GROUP BY db.invoice_no
+    ) inv_pay
+        ON inv_pay.invoice_no = src.invoice_no
+
+    /* Transaksi pembayaran terakhir khusus pasangan invoice + shipping. */
+    LEFT JOIN
+    (
+        SELECT
+            db.invoice_no,
+            TRIM(db.shipping_no) AS shipping_no,
+            db.sisa_after
+        FROM detail_bayar db
+        INNER JOIN
+        (
+            SELECT
+                invoice_no,
+                TRIM(shipping_no) AS shipping_no,
+                MAX(id) AS max_id
+            FROM detail_bayar
+            WHERE COALESCE(TRIM(shipping_no), '') <> ''
+            GROUP BY invoice_no, TRIM(shipping_no)
+        ) last_id
+            ON last_id.max_id = db.id
+    ) last_shipping
+        ON last_shipping.invoice_no = src.invoice_no
+       AND last_shipping.shipping_no = src.shipping_no
+
+    WHERE
+        src.shipping_amount > 0
+        AND (
+            CASE
+                WHEN COALESCE(inv_pay.total_paid_invoice, 0) >= src.invoice_amount - 0.01
+                    THEN 0
+                WHEN COALESCE(last_shipping.sisa_after, 999999999999.99) <= 0.01
+                    THEN 0
+                WHEN src.shipping_count = 1
+                    THEN GREATEST(
+                        src.shipping_amount - COALESCE(inv_pay.total_paid_invoice, 0),
+                        0
+                    )
+                ELSE GREATEST(
+                    src.shipping_amount - COALESCE(pay_shipping.paid_amount, 0),
+                    0
+                )
+            END
+        ) > 0.01
+
+    ORDER BY
+        src.invoice_date DESC,
+        src.shipping_date DESC,
+        src.shipping_no DESC
 ";
-$resInvoice = mysqli_query($conn, $sqlInvoice);
-if ($resInvoice) {
-    while ($row = mysqli_fetch_assoc($resInvoice)) {
-        $invoices[] = $row;
-    }
+
+$resShipping = mysqli_query($conn, $sqlShipping);
+if (!$resShipping) {
+    die('Query dropdown pembayaran gagal: ' . mysqli_error($conn));
+}
+
+while ($row = mysqli_fetch_assoc($resShipping)) {
+    $shippings[] = $row;
 }
 ?>
 
@@ -359,34 +511,36 @@ if ($resInvoice) {
         </a>
     </div>
 
-    <form method="POST" action="modul/transaksi/save_bayar.php" id="formBayar">
+    <form method="POST" action="modul/transaksi/save_bayar_shipping_revisi.php" id="formBayar">
         <div class="form-card">
 
-    <!-- GROUP 1: Invoice & Payment Header -->
+    <!-- GROUP 1: Shipping & Payment Header -->
     <div class="form-section">
-        <div class="form-section-title">Data Invoice & Pembayaran</div>
+        <div class="form-section-title">Data Shipping & Pembayaran</div>
         <div class="form-section-body">
             <div class="form-grid-3">
                 <div class="ff">
-                    <label>No. Invoice</label>
-                    <select name="invoice_no" id="invoice_no" class="select2-invoice" required>
-                        <option value="">-- Pilih No. Invoice --</option>
-                        <?php foreach ($invoices as $inv): ?>
+                    <label>No. Shipping</label>
+                    <select name="shipping_no" id="shipping_no" class="select2-shipping" required>
+                        <option value="">-- Pilih No. Shipping --</option>
+                        <?php foreach ($shippings as $ship): ?>
                             <option
-                                value="<?= h($inv['invoice_no']) ?>"
-                                data-invoice-date="<?= h($inv['invoice_date']) ?>"
-                                data-customer-id="<?= h($inv['customer_id']) ?>"
-                                data-customer-name="<?= h($inv['customer_name']) ?>"
-                                data-customer-address="<?= h($inv['customer_address']) ?>"
-                                data-customer-city="<?= h($inv['customer_city']) ?>"
-                                data-invoice-amount="<?= h($inv['invoice_amount']) ?>"
-                                data-paid-amount="<?= h($inv['paid_amount']) ?>"
-                                data-sisa-invoice="<?= h($inv['sisa_invoice']) ?>"
-                                data-saldo-titip="<?= h($inv['saldo_titip']) ?>">
-                                <?= h($inv['invoice_no'] . ' | ' . formatDateDisplay($inv['invoice_date']) . ' | ' . $inv['customer_name'] . ' | Sisa Rp ' . formatMoney($inv['sisa_invoice'])) ?>
+                                value="<?= h($ship['shipping_no']) ?>"
+                                data-invoice-no="<?= h($ship['invoice_no']) ?>"
+                                data-shipping-date="<?= h($ship['shipping_date']) ?>"
+                                data-customer-id="<?= h($ship['customer_id']) ?>"
+                                data-customer-name="<?= h($ship['customer_name']) ?>"
+                                data-customer-address="<?= h($ship['customer_address']) ?>"
+                                data-customer-city="<?= h($ship['customer_city']) ?>"
+                                data-shipping-amount="<?= h($ship['shipping_amount']) ?>"
+                                data-paid-amount="<?= h($ship['paid_amount']) ?>"
+                                data-sisa-shipping="<?= h($ship['sisa_shipping']) ?>"
+                                data-saldo-titip="<?= h($ship['saldo_titip']) ?>">
+                                <?= h($ship['shipping_no'] . ' | ' . $ship['invoice_no'] . ' | ' . formatDateDisplay($ship['invoice_date']) . ' | ' . $ship['customer_name'] . ' | Sisa Rp ' . formatMoney($ship['sisa_shipping'])) ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
+                    <input type="hidden" name="invoice_no" id="invoice_no" value="">
                 </div>
 
                 <div class="ff">
@@ -460,15 +614,15 @@ if ($resInvoice) {
                 </div>
 
                 <div class="ff">
-                    <label>Sisa Invoice</label>
-                    <input type="text" id="sisa_invoice_display" class="readonly-highlight" readonly>
-                    <input type="hidden" name="sisa_invoice" id="sisa_invoice" value="0">
-                    <input type="hidden" name="invoice_amount" id="invoice_amount" value="0">
+                    <label>Sisa </label>
+                    <input type="text" id="sisa_shipping_display" class="readonly-highlight" readonly>
+                    <input type="hidden" name="sisa_shipping" id="sisa_shipping" value="0">
+                    <input type="hidden" name="shipping_amount" id="shipping_amount" value="0">
                 </div>
 
                 <div class="ff">
-                    <label>Total Bayar ke Invoice</label>
-                    <input type="text" id="total_bayar_invoice_display" class="payment-summary-input" readonly>
+                    <label>Total Bayar</label>
+                    <input type="text" id="total_bayar_shipping_display" class="payment-summary-input" readonly>
                 </div>
 
                 <div class="ff field-full">
@@ -535,7 +689,7 @@ function formatRupiah(value) {
 }
 
 function checkNominal() {
-    const sisa = parseFloat($('#sisa_invoice').val()) || 0;
+    const sisa = parseFloat($('#sisa_shipping').val()) || 0;
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
 
     const nominalCash = parseNumber($('#nominal_bayar').val());
@@ -544,7 +698,7 @@ function checkNominal() {
     const totalBayarInvoice = nominalCash + nominalTitip;
     const warning = $('#warningNominal');
 
-    $('#total_bayar_invoice_display').val('Rp ' + formatRupiah(totalBayarInvoice));
+    $('#total_bayar_shipping_display').val('Rp ' + formatRupiah(totalBayarInvoice));
 
     warning.removeClass('warning-danger warning-info warning-ok').hide();
 
@@ -563,24 +717,24 @@ function checkNominal() {
     if (totalBayarInvoice > sisa) {
         warning
             .addClass('warning-danger')
-            .html('Total bayar melebihi sisa invoice. Sisa invoice: Rp ' + formatRupiah(sisa))
+            .html('Total bayar melebihi sisa shipping. Sisa shipping: Rp ' + formatRupiah(sisa))
             .show();
     } else if (totalBayarInvoice < sisa) {
         warning
             .addClass('warning-info')
-            .html('Pembayaran kurang dari sisa invoice. Sisa setelah bayar: Rp ' + formatRupiah(sisa - totalBayarInvoice))
+            .html('Pembayaran kurang dari sisa shipping. Sisa setelah bayar: Rp ' + formatRupiah(sisa - totalBayarInvoice))
             .show();
     } else {
         warning
             .addClass('warning-ok')
-            .html('Total bayar sama dengan sisa invoice.')
+            .html('Total bayar sama dengan sisa shipping.')
             .show();
     }
 }
 
 $(document).ready(function () {
-    $('.select2-invoice').select2({
-        placeholder: '-- Pilih No. Invoice --',
+    $('.select2-shipping').select2({
+        placeholder: '-- Pilih No. Shipping --',
         allowClear: true,
         width: '100%'
     });
@@ -593,34 +747,36 @@ $(document).ready(function () {
         });
     }
 
-    $('#invoice_no').on('change', function () {
+    $('#shipping_no').on('change', function () {
         const opt = $(this).find(':selected');
 
        const customerId = opt.data('customer-id') || '';
         const customerName = opt.data('customer-name') || '';
         const customerAddress = opt.data('customer-address') || '';
         const customerCity = opt.data('customer-city') || '';
-      const invoiceAmount = parseFloat(opt.data('invoice-amount')) || 0;
-      const sisaInvoice = parseFloat(opt.data('sisa-invoice')) || 0;
+      const invoiceNo = opt.data('invoice-no') || '';
+      const shippingAmount = parseFloat(opt.data('shipping-amount')) || 0;
+      const sisaShipping = parseFloat(opt.data('sisa-shipping')) || 0;
       const saldoTitip = parseFloat(opt.data('saldo-titip')) || 0;
 
         $('#customer_id').val(customerId);
         $('#customer_name').val(customerName);
         $('#customer_address').val(customerAddress);
         $('#customer_city').val(customerCity);
-        $('#invoice_amount').val(invoiceAmount);
-        $('#sisa_invoice').val(sisaInvoice);
-        $('#sisa_invoice_display').val('Rp ' + formatRupiah(sisaInvoice));
+        $('#invoice_no').val(invoiceNo);
+        $('#shipping_amount').val(shippingAmount);
+        $('#sisa_shipping').val(sisaShipping);
+        $('#sisa_shipping_display').val('Rp ' + formatRupiah(sisaShipping));
         $('#saldo_titip').val(saldoTitip);
         $('#saldo_titip_display').val('Rp ' + formatRupiah(saldoTitip));
         $('#pakai_titip').prop('checked', false);
         $('#nominal_titip').prop('disabled', true).val('0,00');
-        $('#total_bayar_invoice_display').val('Rp ' + formatRupiah(sisaInvoice));
+        $('#total_bayar_shipping_display').val('Rp ' + formatRupiah(sisaShipping));
         $('#nominal_bayar').val('');
         $('#warningNominal').hide().removeClass('warning-danger warning-info warning-ok');
 
-        if (sisaInvoice > 0) {
-            $('#nominal_bayar').val(formatRupiah(sisaInvoice));
+        if (sisaShipping > 0) {
+            $('#nominal_bayar').val(formatRupiah(sisaShipping));
             checkNominal();
         }
     });
@@ -643,14 +799,14 @@ $(document).ready(function () {
     });
 
 $('#formBayar').on('submit', function (e) {
-    const sisa = parseFloat($('#sisa_invoice').val()) || 0;
+    const sisa = parseFloat($('#sisa_shipping').val()) || 0;
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const nominalCash = parseNumber($('#nominal_bayar').val());
     const nominalTitip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
     const totalBayarInvoice = nominalCash + nominalTitip;
 
-    if (!$('#invoice_no').val()) {
-        alert('No. Invoice wajib dipilih.');
+    if (!$('#shipping_no').val()) {
+        alert('No. Shipping wajib dipilih.');
         e.preventDefault();
         return false;
     }
@@ -668,7 +824,7 @@ $('#formBayar').on('submit', function (e) {
     }
 
     if (totalBayarInvoice > sisa) {
-        alert('Total bayar tidak boleh lebih dari sisa invoice.');
+        alert('Total bayar tidak boleh lebih dari sisa shipping.');
         e.preventDefault();
         return false;
     }
@@ -678,19 +834,19 @@ $('#formBayar').on('submit', function (e) {
 });
   $('#pakai_titip').on('change', function () {
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
-    const sisaInvoice = parseFloat($('#sisa_invoice').val()) || 0;
+    const sisaShipping = parseFloat($('#sisa_shipping').val()) || 0;
 
     if ($(this).is(':checked')) {
         $('#nominal_titip').prop('disabled', false);
 
-        const defaultTitip = Math.min(saldoTitip, sisaInvoice);
-        const defaultCash = Math.max(sisaInvoice - defaultTitip, 0);
+        const defaultTitip = Math.min(saldoTitip, sisaShipping);
+        const defaultCash = Math.max(sisaShipping - defaultTitip, 0);
 
         $('#nominal_titip').val(formatRupiah(defaultTitip));
         $('#nominal_bayar').val(formatRupiah(defaultCash));
     } else {
         $('#nominal_titip').prop('disabled', true).val('0,00');
-        $('#nominal_bayar').val(formatRupiah(sisaInvoice));
+        $('#nominal_bayar').val(formatRupiah(sisaShipping));
     }
 
     checkNominal();

@@ -1,5 +1,5 @@
 <?php
-// modul/transaksi/save_bayar.php
+// modul/transaksi/save_bayar_shipping_revisi.php
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -18,6 +18,7 @@ function redirectWithAlert($type, $message, $page = 'pembayaran') {
             " . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . "
         </div>
     ";
+
     header("Location: ../../index.php?page=" . urlencode($page));
     exit;
 }
@@ -26,10 +27,15 @@ function parseDateInput($value) {
     $value = trim((string)$value);
     $formats = ['d-M-Y', 'Y-m-d', 'd-m-Y', 'd/m/Y'];
 
-    foreach ($formats as $fmt) {
-        $dt = DateTime::createFromFormat($fmt, $value);
-        if ($dt instanceof DateTime) {
-            return $dt->format('Y-m-d');
+    foreach ($formats as $format) {
+        $date = DateTime::createFromFormat($format, $value);
+        $errors = DateTime::getLastErrors();
+
+        if (
+            $date instanceof DateTime &&
+            ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))
+        ) {
+            return $date->format('Y-m-d');
         }
     }
 
@@ -38,31 +44,48 @@ function parseDateInput($value) {
 
 function parseNumber($value) {
     $value = trim((string)$value);
-    $value = str_replace(['Rp', ' ', '.'], '', $value);
+
+    if ($value === '') {
+        return 0.0;
+    }
+
+    $value = str_ireplace('Rp', '', $value);
+    $value = str_replace([' ', '.'], '', $value);
     $value = str_replace(',', '.', $value);
-    return (float)$value;
+
+    return is_numeric($value) ? (float)$value : 0.0;
 }
 
 function generateBayarNo($conn) {
     $prefix = 'B-';
     $sql = "
-        SELECT bayar_no 
-        FROM head_bayar 
+        SELECT bayar_no
+        FROM head_bayar
         WHERE bayar_no LIKE 'B-%'
         ORDER BY CAST(SUBSTRING(bayar_no, 3) AS UNSIGNED) DESC
         LIMIT 1
         FOR UPDATE
     ";
-    $res = mysqli_query($conn, $sql);
+
+    $result = mysqli_query($conn, $sql);
     $lastNumber = 0;
 
-    if ($res && $row = mysqli_fetch_assoc($res)) {
+    if ($result && $row = mysqli_fetch_assoc($result)) {
         $lastNumber = (int)substr($row['bayar_no'], 2);
     }
 
     return $prefix . str_pad($lastNumber + 1, 9, '0', STR_PAD_LEFT);
 }
-function applyTitipUsage($conn, $customer_id, $customer_name, $bayar_no, $bayar_date, $amount, $username) {
+
+function applyTitipUsage(
+    $conn,
+    $customerId,
+    $customerName,
+    $bayarNo,
+    $bayarDate,
+    $amount,
+    $username
+) {
     if ($amount <= 0) {
         return;
     }
@@ -77,45 +100,48 @@ function applyTitipUsage($conn, $customer_id, $customer_name, $bayar_no, $bayar_
         ORDER BY titip_date ASC, titip_no ASC
         FOR UPDATE
     ";
-    $stmtTitip = mysqli_prepare($conn, $sqlTitip);
-    mysqli_stmt_bind_param($stmtTitip, 's', $customer_id);
-    mysqli_stmt_execute($stmtTitip);
-    $resTitip = mysqli_stmt_get_result($stmtTitip);
 
-    while ($rowTitip = mysqli_fetch_assoc($resTitip)) {
-        if ($remaining <= 0) {
+    $stmtTitip = mysqli_prepare($conn, $sqlTitip);
+    mysqli_stmt_bind_param($stmtTitip, 's', $customerId);
+    mysqli_stmt_execute($stmtTitip);
+    $resultTitip = mysqli_stmt_get_result($stmtTitip);
+
+    while ($rowTitip = mysqli_fetch_assoc($resultTitip)) {
+        if ($remaining <= 0.0001) {
             break;
         }
 
-        $titip_no = $rowTitip['titip_no'];
-        $balance_before = (float)$rowTitip['balance_amount'];
-        $used_now = min($balance_before, $remaining);
-        $balance_after = $balance_before - $used_now;
-
-        $status = $balance_after <= 0 ? 'Closed' : 'Open';
+        $titipNo = $rowTitip['titip_no'];
+        $balanceBefore = (float)$rowTitip['balance_amount'];
+        $usedNow = min($balanceBefore, $remaining);
+        $balanceAfter = $balanceBefore - $usedNow;
+        $status = $balanceAfter <= 0.0001 ? 'Closed' : 'Open';
 
         $sqlUpdateTitip = "
             UPDATE head_titip
             SET
-                used_amount = used_amount + ?,
+                used_amount = COALESCE(used_amount, 0) + ?,
                 balance_amount = balance_amount - ?,
                 status = ?,
                 user_modified = ?,
                 date_modified = NOW()
             WHERE titip_no = ?
         ";
+
         $stmtUpdateTitip = mysqli_prepare($conn, $sqlUpdateTitip);
         mysqli_stmt_bind_param(
             $stmtUpdateTitip,
             'ddsss',
-            $used_now,
-            $used_now,
+            $usedNow,
+            $usedNow,
             $status,
             $username,
-            $titip_no
+            $titipNo
         );
         mysqli_stmt_execute($stmtUpdateTitip);
         mysqli_stmt_close($stmtUpdateTitip);
+
+        $remarksTitip = 'Dipakai untuk pembayaran ' . $bayarNo;
 
         $sqlDetailTitip = "
             INSERT INTO detail_titip
@@ -137,25 +163,25 @@ function applyTitipUsage($conn, $customer_id, $customer_name, $bayar_no, $bayar_
             )
             VALUES (?, ?, ?, ?, 'PAKAI', ?, 0, ?, ?, 'PEMBAYARAN', '', ?, ?, NOW())
         ";
-        $remarksTitip = 'Dipakai untuk pembayaran ' . $bayar_no;
+
         $stmtDetailTitip = mysqli_prepare($conn, $sqlDetailTitip);
         mysqli_stmt_bind_param(
             $stmtDetailTitip,
             'sssssddss',
-            $titip_no,
-            $bayar_date,
-            $customer_id,
-            $customer_name,
-            $bayar_no,
-            $used_now,
-            $balance_after,
+            $titipNo,
+            $bayarDate,
+            $customerId,
+            $customerName,
+            $bayarNo,
+            $usedNow,
+            $balanceAfter,
             $remarksTitip,
             $username
         );
         mysqli_stmt_execute($stmtDetailTitip);
         mysqli_stmt_close($stmtDetailTitip);
 
-        $remaining -= $used_now;
+        $remaining -= $usedNow;
     }
 
     mysqli_stmt_close($stmtTitip);
@@ -169,207 +195,293 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     redirectWithAlert('error', 'Invalid request.');
 }
 
-$invoice_no = trim((string)($_POST['invoice_no'] ?? ''));
-$bayar_date = parseDateInput($_POST['bayar_date'] ?? '');
-$customer_id = trim((string)($_POST['customer_id'] ?? ''));
-$customer_name = trim((string)($_POST['customer_name'] ?? ''));
-$nominal_bayar = parseNumber($_POST['nominal_bayar'] ?? 0);
-$pakai_titip = isset($_POST['pakai_titip']) && $_POST['pakai_titip'] == '1';
-$nominal_titip = $pakai_titip ? parseNumber($_POST['nominal_titip'] ?? 0) : 0;
-$total_bayar_invoice = $nominal_bayar + $nominal_titip;
+$shippingNo = trim((string)($_POST['shipping_no'] ?? ''));
+$postedInvoiceNo = trim((string)($_POST['invoice_no'] ?? ''));
+$bayarDate = parseDateInput($_POST['bayar_date'] ?? '');
+$nominalBayar = parseNumber($_POST['nominal_bayar'] ?? 0);
+$pakaiTitip = isset($_POST['pakai_titip']) && (string)$_POST['pakai_titip'] === '1';
+$nominalTitip = $pakaiTitip ? parseNumber($_POST['nominal_titip'] ?? 0) : 0;
+$totalBayarShipping = $nominalBayar + $nominalTitip;
 $keterangan = trim((string)($_POST['keterangan'] ?? ''));
-$bank_name = trim((string)($_POST['bank_name'] ?? ''));
+$bankName = trim((string)($_POST['bank_name'] ?? ''));
 $remarks = trim((string)($_POST['remarks'] ?? ''));
 $username = $_SESSION['username'] ?? 'system';
 
-if ($invoice_no === '' || !$bayar_date || $total_bayar_invoice <= 0 || $keterangan === '') {
+if (
+    $shippingNo === '' ||
+    $postedInvoiceNo === '' ||
+    !$bayarDate ||
+    $totalBayarShipping <= 0 ||
+    $keterangan === ''
+) {
     redirectWithAlert('error', 'Data pembayaran belum lengkap.', 'add_bayar');
+}
+
+if ($nominalBayar < 0 || $nominalTitip < 0) {
+    redirectWithAlert('error', 'Nominal pembayaran tidak boleh negatif.', 'add_bayar');
 }
 
 mysqli_begin_transaction($conn);
 
 try {
-    $bayar_no = generateBayarNo($conn);
+    $bayarNo = generateBayarNo($conn);
 
-    $sqlInv = "
-    SELECT
-        invoice_no,
-        invoice_date,
-        customer_id,
-        customer_name,
-        customer_address,
-        customer_city,
-        CASE
-            WHEN COALESCE(piutang, 0) > 0 THEN COALESCE(piutang, 0)
-            WHEN COALESCE(payment_balance, 0) > 0 THEN COALESCE(payment_balance, 0)
-            ELSE COALESCE(grand_total, 0)
-        END AS invoice_amount
-    FROM head_invoice
-    WHERE invoice_no = ?
-    LIMIT 1
-";
-    $stmtInv = mysqli_prepare($conn, $sqlInv);
-    mysqli_stmt_bind_param($stmtInv, 's', $invoice_no);
-    mysqli_stmt_execute($stmtInv);
-    $resInv = mysqli_stmt_get_result($stmtInv);
-    $inv = mysqli_fetch_assoc($resInv);
-    mysqli_stmt_close($stmtInv);
+    /*
+     * Ambil data shipping dari relasi head_invoice dan det_invoice.
+     * invoice_no dari form hanya dipakai untuk memvalidasi pasangan invoice-shipping.
+     */
+    $sqlShipping = "
+        SELECT
+            hi.invoice_no,
+            hi.invoice_date,
+            hi.customer_id,
+            hi.customer_name,
+            hi.customer_address,
+            hi.customer_city,
+            di.shipping_no,
+            di.shipping_date,
+            di.order_no,
+            CASE
+                WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                ELSE COALESCE(di.subtotal, 0)
+            END AS shipping_amount
+        FROM head_invoice hi
+        INNER JOIN det_invoice di
+            ON di.invoice_no = hi.invoice_no
+        WHERE hi.invoice_no = ?
+          AND di.shipping_no = ?
+        LIMIT 1
+        FOR UPDATE
+    ";
 
-    if (!$inv) {
-        throw new Exception('Invoice tidak ditemukan.');
+    $stmtShipping = mysqli_prepare($conn, $sqlShipping);
+    mysqli_stmt_bind_param($stmtShipping, 'ss', $postedInvoiceNo, $shippingNo);
+    mysqli_stmt_execute($stmtShipping);
+    $resultShipping = mysqli_stmt_get_result($stmtShipping);
+    $shipping = mysqli_fetch_assoc($resultShipping);
+    mysqli_stmt_close($stmtShipping);
+
+    if (!$shipping) {
+        throw new Exception('No. Shipping tidak ditemukan atau tidak sesuai dengan invoice.');
     }
 
-    $invoice_amount = (float)$inv['invoice_amount'];
+    $invoiceNo = $shipping['invoice_no'];
+    $shippingAmount = (float)$shipping['shipping_amount'];
 
-    $sqlPaid = "
+    if ($shippingAmount <= 0) {
+        throw new Exception('Nilai tagihan Shipping No. ' . $shippingNo . ' tidak valid atau bernilai nol.');
+    }
+
+    /* Total pembayaran sebelumnya khusus shipping yang dipilih. */
+    $sqlPaidShipping = "
         SELECT COALESCE(SUM(bayar_amount), 0) AS paid_amount
         FROM detail_bayar
         WHERE invoice_no = ?
+          AND shipping_no = ?
+        FOR UPDATE
     ";
-    $stmtPaid = mysqli_prepare($conn, $sqlPaid);
-    mysqli_stmt_bind_param($stmtPaid, 's', $invoice_no);
-    mysqli_stmt_execute($stmtPaid);
-    $resPaid = mysqli_stmt_get_result($stmtPaid);
-    $paid = mysqli_fetch_assoc($resPaid);
-    mysqli_stmt_close($stmtPaid);
 
-    $paid_amount = (float)($paid['paid_amount'] ?? 0);
-    $sisa_invoice = $invoice_amount - $paid_amount;
+    $stmtPaidShipping = mysqli_prepare($conn, $sqlPaidShipping);
+    mysqli_stmt_bind_param($stmtPaidShipping, 'ss', $invoiceNo, $shippingNo);
+    mysqli_stmt_execute($stmtPaidShipping);
+    $resultPaidShipping = mysqli_stmt_get_result($stmtPaidShipping);
+    $rowPaidShipping = mysqli_fetch_assoc($resultPaidShipping);
+    mysqli_stmt_close($stmtPaidShipping);
 
-   if ($total_bayar_invoice > $sisa_invoice) {
-    throw new Exception('Total bayar melebihi sisa invoice.');
-}
+    $paidShipping = (float)($rowPaidShipping['paid_amount'] ?? 0);
+    $sisaShipping = $shippingAmount - $paidShipping;
 
-if ($nominal_titip > 0) {
-    $sqlSaldoTitip = "
-        SELECT COALESCE(SUM(balance_amount), 0) AS saldo_titip
-        FROM head_titip
-        WHERE customer_id = ?
-          AND balance_amount > 0
-    ";
-    $stmtSaldoTitip = mysqli_prepare($conn, $sqlSaldoTitip);
-    mysqli_stmt_bind_param($stmtSaldoTitip, 's', $customer_id);
-    mysqli_stmt_execute($stmtSaldoTitip);
-    $resSaldoTitip = mysqli_stmt_get_result($stmtSaldoTitip);
-    $rowSaldoTitip = mysqli_fetch_assoc($resSaldoTitip);
-    mysqli_stmt_close($stmtSaldoTitip);
-
-    $saldo_titip = (float)($rowSaldoTitip['saldo_titip'] ?? 0);
-
-    if ($nominal_titip > $saldo_titip) {
-        throw new Exception('Nominal titip yang dipakai melebihi saldo titip uang.');
+    if ($sisaShipping <= 0.0001) {
+        throw new Exception('No. Shipping ' . $shippingNo . ' sudah lunas.');
     }
-}
 
-$sisa_after = $sisa_invoice - $total_bayar_invoice;
+    if ($totalBayarShipping > ($sisaShipping + 0.0001)) {
+        throw new Exception('Total bayar melebihi sisa tagihan Shipping No. ' . $shippingNo . '.');
+    }
 
-    $customer_id = $inv['customer_id'];
-    $customer_name = $inv['customer_name'];
-    $customer_address = $inv['customer_address'];
-    $customer_city = $inv['customer_city'];
+    $customerId = $shipping['customer_id'];
+    $customerName = $shipping['customer_name'];
+    $customerAddress = $shipping['customer_address'];
+    $customerCity = $shipping['customer_city'];
 
-$sqlHead = "
-    INSERT INTO head_bayar
-    (
-        bayar_no,
-        bayar_date,
-        customer_id,
-        customer_name,
-        customer_address,
-        customer_city,
-        total_bayar,
-        keterangan,
-        bank_name,
-        remarks,
-        create_user,
-        date_created
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-";
+    /* Cek saldo titip berdasarkan customer yang benar dari database. */
+    if ($nominalTitip > 0) {
+        $sqlSaldoTitip = "
+            SELECT COALESCE(SUM(balance_amount), 0) AS saldo_titip
+            FROM head_titip
+            WHERE customer_id = ?
+              AND balance_amount > 0
+            FOR UPDATE
+        ";
+
+        $stmtSaldoTitip = mysqli_prepare($conn, $sqlSaldoTitip);
+        mysqli_stmt_bind_param($stmtSaldoTitip, 's', $customerId);
+        mysqli_stmt_execute($stmtSaldoTitip);
+        $resultSaldoTitip = mysqli_stmt_get_result($stmtSaldoTitip);
+        $rowSaldoTitip = mysqli_fetch_assoc($resultSaldoTitip);
+        mysqli_stmt_close($stmtSaldoTitip);
+
+        $saldoTitip = (float)($rowSaldoTitip['saldo_titip'] ?? 0);
+
+        if ($nominalTitip > ($saldoTitip + 0.0001)) {
+            throw new Exception('Nominal titip yang dipakai melebihi saldo titip uang customer.');
+        }
+    }
+
+    $sisaShippingAfter = max($sisaShipping - $totalBayarShipping, 0);
+
+    $sqlHead = "
+        INSERT INTO head_bayar
+        (
+            bayar_no,
+            bayar_date,
+            customer_id,
+            customer_name,
+            customer_address,
+            customer_city,
+            total_bayar,
+            keterangan,
+            bank_name,
+            remarks,
+            create_user,
+            date_created
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+    ";
+
     $stmtHead = mysqli_prepare($conn, $sqlHead);
-  mysqli_stmt_bind_param(
-    $stmtHead,
-    'ssssssdssss',
-    $bayar_no,
-    $bayar_date,
-    $customer_id,
-    $customer_name,
-    $customer_address,
-    $customer_city,
-    $total_bayar_invoice,
-    $keterangan,
-    $bank_name,
-    $remarks,
-    $username
-);
+    mysqli_stmt_bind_param(
+        $stmtHead,
+        'ssssssdssss',
+        $bayarNo,
+        $bayarDate,
+        $customerId,
+        $customerName,
+        $customerAddress,
+        $customerCity,
+        $totalBayarShipping,
+        $keterangan,
+        $bankName,
+        $remarks,
+        $username
+    );
     mysqli_stmt_execute($stmtHead);
     mysqli_stmt_close($stmtHead);
 
-  $sqlDetail = "
-    INSERT INTO detail_bayar
-    (
-        bayar_no,
-        invoice_no,
-        invoice_date,
-        invoice_amount,
-        cash_amount,
-        titip_amount,
-        bayar_amount,
-        sisa_after,
-        remarks,
-        create_user,
-        date_created
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-";
+    $sqlDetail = "
+        INSERT INTO detail_bayar
+        (
+            bayar_no,
+            invoice_no,
+            shipping_no,
+            invoice_date,
+            invoice_amount,
+            cash_amount,
+            titip_amount,
+            bayar_amount,
+            sisa_after,
+            remarks,
+            create_user,
+            date_created
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+    ";
 
-$stmtDetail = mysqli_prepare($conn, $sqlDetail);
-mysqli_stmt_bind_param(
-    $stmtDetail,
-    'sssdddddss',
-    $bayar_no,
-    $invoice_no,
-    $inv['invoice_date'],
-    $invoice_amount,
-    $nominal_bayar,
-    $nominal_titip,
-    $total_bayar_invoice,
-    $sisa_after,
-    $remarks,
-    $username
-);
-mysqli_stmt_execute($stmtDetail);
-mysqli_stmt_close($stmtDetail);
-applyTitipUsage(
-    $conn,
-    $customer_id,
-    $customer_name,
-    $bayar_no,
-    $bayar_date,
-    $nominal_titip,
-    $username
-);
+    $stmtDetail = mysqli_prepare($conn, $sqlDetail);
+    mysqli_stmt_bind_param(
+        $stmtDetail,
+        'ssssdddddss',
+        $bayarNo,
+        $invoiceNo,
+        $shippingNo,
+        $shipping['invoice_date'],
+        $shippingAmount,
+        $nominalBayar,
+        $nominalTitip,
+        $totalBayarShipping,
+        $sisaShippingAfter,
+        $remarks,
+        $username
+    );
+    mysqli_stmt_execute($stmtDetail);
+    mysqli_stmt_close($stmtDetail);
 
-    $newStatus = $sisa_after <= 0 ? 'Paid' : 'Partial';
+    applyTitipUsage(
+        $conn,
+        $customerId,
+        $customerName,
+        $bayarNo,
+        $bayarDate,
+        $nominalTitip,
+        $username
+    );
+
+    /*
+     * Hitung ulang saldo invoice dari seluruh shipping di invoice tersebut.
+     * Ini mencegah satu shipping yang lunas langsung membuat seluruh invoice Paid.
+     */
+    $sqlInvoiceBalance = "
+        SELECT
+            COALESCE((
+                SELECT SUM(
+                    CASE
+                        WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                        ELSE COALESCE(di.subtotal, 0)
+                    END
+                )
+                FROM det_invoice di
+                WHERE di.invoice_no = ?
+            ), 0) AS invoice_amount,
+            COALESCE((
+                SELECT SUM(db.bayar_amount)
+                FROM detail_bayar db
+                WHERE db.invoice_no = ?
+            ), 0) AS paid_amount
+    ";
+
+    $stmtInvoiceBalance = mysqli_prepare($conn, $sqlInvoiceBalance);
+    mysqli_stmt_bind_param($stmtInvoiceBalance, 'ss', $invoiceNo, $invoiceNo);
+    mysqli_stmt_execute($stmtInvoiceBalance);
+    $resultInvoiceBalance = mysqli_stmt_get_result($stmtInvoiceBalance);
+    $rowInvoiceBalance = mysqli_fetch_assoc($resultInvoiceBalance);
+    mysqli_stmt_close($stmtInvoiceBalance);
+
+    $invoiceAmount = (float)($rowInvoiceBalance['invoice_amount'] ?? 0);
+    $invoicePaid = (float)($rowInvoiceBalance['paid_amount'] ?? 0);
+    $invoiceBalance = max($invoiceAmount - $invoicePaid, 0);
+
+    $newStatus = $invoiceBalance <= 0.0001 ? 'Paid' : 'Partial';
+
     $sqlUpdateInvoice = "
         UPDATE head_invoice
-        SET 
+        SET
             payment_balance = ?,
             status = ?,
             user_modified = ?,
             date_modified = NOW()
         WHERE invoice_no = ?
     ";
+
     $stmtUpdateInvoice = mysqli_prepare($conn, $sqlUpdateInvoice);
-    mysqli_stmt_bind_param($stmtUpdateInvoice, 'dsss', $sisa_after, $newStatus, $username, $invoice_no);
+    mysqli_stmt_bind_param(
+        $stmtUpdateInvoice,
+        'dsss',
+        $invoiceBalance,
+        $newStatus,
+        $username,
+        $invoiceNo
+    );
     mysqli_stmt_execute($stmtUpdateInvoice);
     mysqli_stmt_close($stmtUpdateInvoice);
 
     mysqli_commit($conn);
 
-    redirectWithAlert('success', 'Pembayaran berhasil disimpan dengan No. Bayar ' . $bayar_no . '.', 'pembayaran');
-
-} catch (Exception $e) {
+    redirectWithAlert(
+        'success',
+        'Pembayaran Shipping No. ' . $shippingNo . ' berhasil disimpan dengan No. Bayar ' . $bayarNo . '.',
+        'pembayaran'
+    );
+} catch (Throwable $e) {
     mysqli_rollback($conn);
     redirectWithAlert('error', $e->getMessage(), 'add_bayar');
 }
