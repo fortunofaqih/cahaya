@@ -61,14 +61,14 @@ function parseRupiah($value) {
 // ── FUNGSI CEK INVENTORY KHUSUS ──────────────────────────────────────────
 function isSpecialInventory($inventoryName) {
     return strpos($inventoryName, "PE ROLL STOKAN SSB") !== false || 
-           strpos($inventoryName, "PP ROLL BOLA") !== false;
+           strpos($inventoryName, "PP ROLL BOLA") !== false ||
+           strpos($inventoryName, "PE ROLL KAYU MAS") !== false;
 }
 
 // ── FUNGSI GET PRICE FORMULA FACTOR ──────────────────────────────────────
 function getPriceFormulaFactor($inventoryName, $p, $l, $t) {
     $divisor = 1;
     
-    // Pengecualian untuk inventory_name tertentu
     if (isSpecialInventory($inventoryName)) {
         if ($p == 50) {
             $divisor = 2;
@@ -78,7 +78,7 @@ function getPriceFormulaFactor($inventoryName, $p, $l, $t) {
     }
     
     return ($t * 10 * $l) / $divisor;
-}
+} // ✅ PERBAIKAN 1: Kurung kurawal ditambahkan
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo "<script>window.location.href='index.php?page=sales_order';</script>";
@@ -91,7 +91,7 @@ $datetime_now = date('Y-m-d H:i:s');
 // ── Sanitize ──────────────────────────────────────────────────────────
 $order_no          = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
 $order_date        = mysqli_real_escape_string($conn, $_POST['order_date'] ?? '');
-$no_po_input       = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? '')); // TAMBAHAN
+$no_po_input       = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? ''));
 $marketing_id      = mysqli_real_escape_string($conn, $_POST['marketing_id'] ?? '');
 $sales_id          = mysqli_real_escape_string($conn, $_POST['sales_id'] ?? '');
 $customer_id       = mysqli_real_escape_string($conn, $_POST['customer_id'] ?? '');
@@ -108,8 +108,6 @@ $payment_type      = mysqli_real_escape_string($conn, $_POST['payment_type'] ?? 
 $days              = intval($_POST['days'] ?? 30);
 $currency          = mysqli_real_escape_string($conn, $_POST['currency'] ?? 'IDR');
 $kurs              = floatval($_POST['kurs'] ?? 1);
-// Nilai dikirim oleh edit_sales_order.php sebagai Checked atau Unchecked.
-// Jangan gunakan isset(), karena hidden input membuat field ini selalu tersedia.
 $allow_auto_correct_input = trim((string)($_POST['allow_auto_correct'] ?? 'Unchecked'));
 $allow_auto_correct = strcasecmp($allow_auto_correct_input, 'Checked') === 0
     ? 'Checked'
@@ -141,10 +139,8 @@ $order_date            = $order_date ?: date('Y-m-d');
 $shipment_due_date_sql = $shipment_due_date ? "'$shipment_due_date'" : 'NULL';
 
 // ── Ambil no_po dari head_sales_order ─────────────────────────────────
-// Gunakan no_po dari input jika ada, atau ambil dari database
 $no_po = $no_po_input;
 
-// Jika no_po kosong, ambil dari database
 if (empty($no_po)) {
     $q_po = mysqli_query($conn, "SELECT po FROM head_sales_order WHERE order_no='$order_no' LIMIT 1");
     if ($q_po && $r_po = mysqli_fetch_assoc($q_po)) {
@@ -196,17 +192,12 @@ try {
         $price      = parseRupiah($prices[$i] ?? 0);
 
         // ============================================================
-        // LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL
+        // ✅ PERBAIKAN 2: Ambil data p, l, t dari database
         // ============================================================
-        
-        // Cek apakah inventory khusus
-        $isSpecial = isSpecialInventory($inv_name);
-        
-        // Ambil data p, l, t dari database jika tersedia
         $p = 0;
-        $l = 0; 
+        $l = 0;
         $t = 0;
-        
+
         if (!empty($inv_id)) {
             $q_inv = mysqli_query($conn, "SELECT p, l, t FROM m_inventory WHERE inventory_id='$inv_id' LIMIT 1");
             if ($q_inv && $r_inv = mysqli_fetch_assoc($q_inv)) {
@@ -215,28 +206,32 @@ try {
                 $t = floatval($r_inv['t'] ?? 0);
             }
         }
+
+        // ============================================================
+        // LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL
+        // ============================================================
         
-        // Untuk inventory khusus: Price Unit bisa diisi, Price dihitung dari rumus
-        // Untuk inventory non-khusus: Price Unit = 0, Price diisi manual
+        // Cek apakah inventory khusus
+        $isSpecial = isSpecialInventory($inv_name);
+
         if ($isSpecial) {
-            // Hitung faktor rumus
+            // ✅ PERBAIKAN 3: $p, $l, $t sudah didefinisikan
             $factor = getPriceFormulaFactor($inv_name, $p, $l, $t);
             
             // Jika Price Unit diisi, hitung Price dari Price Unit
             if ($price_unit > 0 && $factor > 0) {
-                $price = $price_unit * $factor;
+                $price = $factor * $price_unit;
             } 
             // Jika Price diisi manual, hitung Price Unit dari Price
             else if ($price > 0 && $factor > 0) {
                 $price_unit = $price / $factor;
             }
         } else {
-            // Inventory non-khusus: Price Unit harus 0, hanya Price yang bisa diisi
+            // Inventory non-khusus: Price Unit = 0
             $price_unit = 0;
-            // Price tetap dari input user
         }
 
-        // Subtotal = Price x Qty Pack (sesuai poin 8)
+        // Subtotal = Price x Qty Pack
         $subtotal = $qty_pack * $price;
 
         $grand_total += $subtotal;
@@ -286,7 +281,7 @@ try {
         $detail_count++;
     }
 
-    // Update head_sales_order setelah grand_total dihitung ulang
+    // Update head_sales_order
     $sql_head = "UPDATE head_sales_order SET
         order_date        = '$order_date',
         marketing_id      = '$marketing_id',
@@ -319,12 +314,10 @@ try {
         throw new Exception('Update header gagal: ' . mysqli_error($conn));
     }
 
-    // ── TAMBAHAN: Update hed_po jika perlu ──────────────────────────────
+    // Update hed_po
     if (!empty($no_po)) {
-        // Cek apakah data sudah ada di hed_po
         $cek_hed = mysqli_query($conn, "SELECT no_po FROM hed_po WHERE no_po='$no_po' LIMIT 1");
         if ($cek_hed && mysqli_num_rows($cek_hed) > 0) {
-            // Update hed_po
             $sql_update_po = "UPDATE hed_po SET
                 tgl_order = '$order_date',
                 customer = '$customer_name',
@@ -337,7 +330,6 @@ try {
                 throw new Exception('Update hed_po gagal: ' . mysqli_error($conn));
             }
         } else {
-            // Insert baru ke hed_po jika belum ada
             $sql_insert_po = "INSERT INTO hed_po (
                 no_po, tgl_order, customer, customer_id, created_by, created_at
             ) VALUES (

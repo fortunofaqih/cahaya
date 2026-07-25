@@ -71,7 +71,7 @@ $year_now     = date('Y');
 $order_no           = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
 $order_date         = mysqli_real_escape_string($conn, $_POST['order_date'] ?? date('Y-m-d'));
 $po_input           = mysqli_real_escape_string($conn, trim($_POST['po'] ?? ''));
-$no_po_input        = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? '')); // TAMBAHAN: ambil no_po dari form
+$no_po_input        = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? ''));
 
 $marketing_id       = mysqli_real_escape_string($conn, $_POST['marketing_id'] ?? '');
 $sales_id           = mysqli_real_escape_string($conn, $_POST['sales_id'] ?? '');
@@ -145,20 +145,20 @@ if ($cek_po && mysqli_num_rows($cek_po) > 0) {
 }
 
 // ════════════════════════════════════════════════════════════
-// FUNGSI CEK INVENTORY KHUSUS
+// ✅ PERBAIKAN 1: FUNGSI CEK INVENTORY KHUSUS - SAMA DENGAN update_sales_order
 // ════════════════════════════════════════════════════════════
 function isSpecialInventory($inventoryName) {
     return strpos($inventoryName, "PE ROLL STOKAN SSB") !== false || 
-           strpos($inventoryName, "PP ROLL BOLA") !== false;
+           strpos($inventoryName, "PP ROLL BOLA") !== false ||
+           strpos($inventoryName, "PE ROLL KAYU MAS") !== false;
 }
 
 // ════════════════════════════════════════════════════════════
-// FUNGSI GET PRICE FORMULA FACTOR
+// ✅ PERBAIKAN 2: FUNGSI GET PRICE FORMULA FACTOR - SAMA DENGAN update_sales_order
 // ════════════════════════════════════════════════════════════
 function getPriceFormulaFactor($inventoryName, $p, $l, $t) {
     $divisor = 1;
     
-    // Pengecualian untuk inventory_name tertentu
     if (isSpecialInventory($inventoryName)) {
         if ($p == 50) {
             $divisor = 2;
@@ -201,13 +201,8 @@ for ($i = 0; $i < count($inventory_ids); $i++) {
     $price      = parseRupiah($prices[$i] ?? 0);
 
     // ============================================================
-    // LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL
+    // AMBIL DATA P, L, T DARI DATABASE
     // ============================================================
-    
-    // Cek apakah inventory khusus
-    $isSpecial = isSpecialInventory($inv_name);
-    
-    // Ambil data p, l, t dari database jika tersedia
     $p = 0;
     $l = 0; 
     $t = 0;
@@ -220,28 +215,33 @@ for ($i = 0; $i < count($inventory_ids); $i++) {
             $t = floatval($r_inv['t'] ?? 0);
         }
     }
+
+    // ============================================================
+    // ✅ PERBAIKAN 3: LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL - SAMA DENGAN update_sales_order
+    // ============================================================
     
-    // Untuk inventory khusus: Price Unit bisa diisi, Price dihitung dari rumus
-    // Untuk inventory non-khusus: Price Unit = 0, Price diisi manual
+    // Cek apakah inventory khusus
+    $isSpecial = isSpecialInventory($inv_name);
+
     if ($isSpecial) {
         // Hitung faktor rumus
         $factor = getPriceFormulaFactor($inv_name, $p, $l, $t);
         
         // Jika Price Unit diisi, hitung Price dari Price Unit
         if ($price_unit > 0 && $factor > 0) {
-            $price = $price_unit * $factor;
+            $price = $factor * $price_unit;
         } 
         // Jika Price diisi manual, hitung Price Unit dari Price
         else if ($price > 0 && $factor > 0) {
             $price_unit = $price / $factor;
         }
     } else {
-        // Inventory non-khusus: Price Unit harus 0, hanya Price yang bisa diisi
+        // Inventory non-khusus: Price Unit = 0
         $price_unit = 0;
         // Price tetap dari input user
     }
 
-    // Subtotal = Price x Qty Pack (sesuai poin 8)
+    // Subtotal = Price x Qty Pack
     $subtotal = $qty_pack * $price;
 
     $calculated_grand_total += $subtotal;
@@ -300,7 +300,6 @@ try {
     }
 
     // ── INSERT HEAD PO ─────────────────────────────────────────────
-    // MODIFIKASI: Gunakan no_po yang sudah di-generate
     $sql_po = "INSERT INTO hed_po (
         no_po, tgl_order, customer, customer_id, created_by, created_at
     ) VALUES (
@@ -346,8 +345,7 @@ try {
             throw new Exception('Gagal simpan detail SO: ' . mysqli_error($conn));
         }
 
-        // MODIFIKASI: Insert ke det_po dengan no_po yang sudah di-generate
-        // Untuk det_po, harga pakai price (karena subtotal = qty_pack * price)
+        // Insert ke det_po
         $harga_po = $det['price'] > 0 ? $det['price'] : $det['price_unit'];
 
         $sql_det_po = "INSERT INTO det_po (
@@ -394,4 +392,3 @@ try {
 }
 
 exit;
-?>

@@ -46,7 +46,17 @@ if (empty($no_po) && !empty($head['po'])) {
 }
 
 // Ambil data detail untuk ditampilkan (readonly)
-$q_det = mysqli_query($conn, "SELECT * FROM detail_sales_order WHERE order_no = '$order_no' ORDER BY id ASC");
+// Ambil data detail untuk ditampilkan (readonly)
+$q_det = mysqli_query($conn, "
+    SELECT d.*, 
+           COALESCE(i.p, 0) as p, 
+           COALESCE(i.l, 0) as l, 
+           COALESCE(i.t, 0) as t
+    FROM detail_sales_order d
+    LEFT JOIN m_inventory i ON d.inventory_id = i.inventory_id
+    WHERE d.order_no = '$order_no' 
+    ORDER BY d.id ASC
+");
 $details = [];
 while ($d = mysqli_fetch_assoc($q_det)) $details[] = $d;
 
@@ -790,7 +800,9 @@ function getUomFactor(inventoryId, unit) {
 }
 
 function isSpecialInventory(inventoryName) {
-    return inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA");
+    return inventoryName.includes("PE ROLL STOKAN SSB") || 
+           inventoryName.includes("PP ROLL BOLA") ||
+           inventoryName.includes("PE ROLL KAYU MAS");
 }
 
 function getPriceFormulaFactor(row) {
@@ -802,13 +814,16 @@ function getPriceFormulaFactor(row) {
     var inventoryName = $row.find('.inv-name-hidden').val() || '';
     
     if (isSpecialInventory(inventoryName)) {
-        if (p === 50) divisor = 2;
-        else if (p === 25) divisor = 4;
+        if (p === 50) {
+            divisor = 2;
+        } else if (p === 25) {
+            divisor = 4;
+        }
     }
     
+    // Kembalikan (t × 10 × l) / divisor
     return (t * 10 * l) / divisor;
 }
-
 // ============================================================
 // FUNGSI PRICE
 // ============================================================
@@ -1502,14 +1517,50 @@ $(document).ready(function() {
     });
 
     // Price Unit input
-    $(document).on('input', '.price-unit', function() {
-        var tr = $(this).closest('tr')[0];
-        if (isSpecialInventory($(tr).find('.inv-name-hidden').val() || '')) {
-            this.value = formatRupiahTyping(this.value);
-            this.selectionStart = this.selectionEnd = this.value.length;
-            calculatePriceFromPriceUnit(tr);
+    //$(document).on('input', '.price-unit', function() {
+        //var tr = $(this).closest('tr')[0];
+        //if (isSpecialInventory($(tr).find('.inv-name-hidden').val() || '')) {
+          //  this.value = formatRupiahTyping(this.value);
+          //  this.selectionStart = this.selectionEnd = this.value.length;
+          //  calculatePriceFromPriceUnit(tr);
+       // }
+    //});
+	// Price Unit input - PERBAIKAN
+	// Price Unit input
+$(document).on('input', '.price-unit', function() {
+    var tr = $(this).closest('tr')[0];
+    var inventoryName = $(tr).find('.inv-name-hidden').val() || '';
+    
+    if (isSpecialInventory(inventoryName)) {
+        // Format input Rupiah
+        this.value = formatRupiahTyping(this.value);
+        this.selectionStart = this.selectionEnd = this.value.length;
+        
+        var priceUnit = parseRupiah(this.value);
+        var factor = getPriceFormulaFactor(tr); // (t × 10 × l) / divisor
+        var qtyPack = parseFloat($(tr).find('.qty-pack').val()) || 0;
+        
+        console.log('=== DEBUG ===');
+        console.log('Inventory:', inventoryName);
+        console.log('Price Unit:', priceUnit);
+        console.log('Factor:', factor);
+        console.log('Qty Pack:', qtyPack);
+        
+        if (priceUnit > 0 && factor > 0) {
+            // Price = factor × price_unit
+            var price = factor * priceUnit;
+            console.log('Price:', price);
+            $(tr).find('.price').val(formatRupiahInput(price));
+            
+            // Subtotal = Price × Qty Pack
+            var subtotal = price * qtyPack;
+            console.log('Subtotal:', subtotal);
+            $(tr).find('.subtotal').val(formatRupiahInput(subtotal));
         }
-    });
+        
+        calculateGrandTotal();
+    }
+});
 
     // Price input
     $(document).on('input', '.price', function() {
@@ -1596,4 +1647,11 @@ $(document).ready(function() {
         return true;
     });
 });
+console.log('=== DATA FROM PHP ===');
+console.log('existingDetails:', existingDetails);
+if (existingDetails && existingDetails.length > 0) {
+    console.log('p:', existingDetails[0].p);
+    console.log('l:', existingDetails[0].l);
+    console.log('t:', existingDetails[0].t);
+}
 </script>

@@ -86,18 +86,19 @@ if ($uom_q) {
         ];
     }
 }
+
 // Simpan data inventory ke array JavaScript
 $inventory_options = [];
 while ($inv = mysqli_fetch_assoc($inventory_rs)) {
-  $inventory_options[] = [
-    'id' => $inv['inventory_id'],
-    'name' => $inv['inventory_name'],
-    'uom' => 'KG',
-    'uom_pack' => $inv['uom_pack'],
-    'p' => (float)$inv['p'],
-    'l' => (float)$inv['l'],
-    't' => (float)$inv['t']
-];
+    $inventory_options[] = [
+        'id' => $inv['inventory_id'],
+        'name' => $inv['inventory_name'],
+        'uom' => 'KG',
+        'uom_pack' => $inv['uom_pack'],
+        'p' => (float)$inv['p'],
+        'l' => (float)$inv['l'],
+        't' => (float)$inv['t']
+    ];
 }
 
 // Ambil semua data inventory_uom untuk dropdown options
@@ -447,7 +448,7 @@ $no_po    = generatePONumber($conn, $tahun);
 
     <form method="POST" action="index.php?page=save_sales_order" id="formSO">
         <input type="hidden" name="po" value="<?= htmlspecialchars($no_po) ?>">
-         <input type="hidden" name="no_po" value="<?= htmlspecialchars($no_po) ?>">
+        <input type="hidden" name="no_po" value="<?= htmlspecialchars($no_po) ?>">
         <!-- PANEL 1: Order Information -->
         <div class="panel-row">
             <div class="so-panel">
@@ -461,11 +462,11 @@ $no_po    = generatePONumber($conn, $tahun);
                         <label>Order Date</label>
                         <input type="text" name="order_date" class="form-control form-control-sm datepicker" value="<?= $order_date_display ?>">
                     </div>
-                     <div class="ff">
-                            <label>No. PO <span class="required">*</span></label>
-                            <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
-                            <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO akan otomatis digenerate</small>
-                        </div>
+                    <div class="ff">
+                        <label>No. PO <span class="required">*</span></label>
+                        <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                        <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO akan otomatis digenerate</small>
+                    </div>
                     <div class="ff">
                         <label>Marketing <span class="required">*</span></label>
                         <select name="marketing_id" id="marketing_id" required>
@@ -610,7 +611,7 @@ $no_po    = generatePONumber($conn, $tahun);
                         </tr>
                     </thead>
                     <tbody id="detailBody"></tbody>
-                   <tfoot>
+                    <tfoot>
                         <tr>
                             <td colspan="10" style="text-align:right; font-weight:bold; color:var(--accent-blue); padding:8px;">
                                 Total Gross:
@@ -648,6 +649,7 @@ $no_po    = generatePONumber($conn, $tahun);
         </div>
     </form>
 </div>
+
 <div class="uom-modal-backdrop" id="uomDetailBackdrop"></div>
 
 <div class="uom-modal" id="uomDetailModal">
@@ -738,130 +740,20 @@ function updateRowNumbers() {
     document.getElementById('row_count_label').textContent = '// ' + rows.length + ' Item Terdaftar';
 }
 
-function buildRow(data) {
-    var idx = rowCounter++;
-    data = data || {};
-
-    var selectedInventoryId = data.inventory_id || '';
-
-    var optionsHtml = '<option value="">-- Pilih Inventory --</option>';
-
-    for (var i = 0; i < inventoryData.length; i++) {
-        var inv = inventoryData[i];
-        var selectedAttr = selectedInventoryId === inv.id ? 'selected' : '';
-
-        optionsHtml += '<option value="' + escHtml(inv.id) + '" ' +
-            selectedAttr + ' ' +
-            'data-inv-name="' + escHtml(inv.name) + '" ' +
-            'data-uom="KG" ' +
-            'data-uom-pack="' + escHtml(inv.uom_pack) + '" ' +
-            'data-p="' + escHtml(inv.p || 0) + '" ' +
-            'data-l="' + escHtml(inv.l || 0) + '" ' +
-            'data-t="' + escHtml(inv.t || 0) + '">' +
-            escHtml(inv.id) + ' — ' + escHtml(inv.name) +
-            '</option>';
-    }
-
-    return `<tr class="detail-row" data-idx="${idx}">
-        <td style="text-align:center;">
-            <input type="checkbox" class="rowCheckbox">
-        </td>
-
-        <td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"></td>
-
-        <td>
-            <select name="inventory_id[]" class="inv-select" style="width:100%;">
-                ${optionsHtml}
-            </select>
-            <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="${escHtml(data.inventory_name || '')}">
-            <input type="hidden" class="inv-p" value="${data.p || 0}">
-            <input type="hidden" class="inv-l" value="${data.l || 0}">
-            <input type="hidden" class="inv-t" value="${data.t || 0}">
-        </td>
-
-        <td>
-            <input type="number" step="0.0001" name="quantity[]" class="qty" value="${data.quantity || 0}" style="text-align:center;">
-        </td>
-
-        <td>
-            <input type="text" name="uom[]" class="inv-uom" value="${escHtml(data.uom || 'KG')}" readonly style="background:#f1f3f5; text-align:center;">
-        </td>
-
-        <td>
-            <input type="number" step="0.0001" name="quantity_pack[]" class="qty-pack" value="${data.quantity_pack || 0}" style="text-align:center;">
-        </td>
-
-        <td>
-            <select name="uom_pack[]" class="inv-uom-pack-select" style="width:100%;">
-                <option value="">-- Select --</option>
-            </select>
-        </td>
-
-        <td>
-            <div style="display:flex; gap:3px;">
-                <input type="text"
-                       name="uom_detail[]"
-                       class="inv-uom-detail uom-detail-input"
-                       value="${escHtml(data.uom_detail || '')}"
-                       placeholder="Klik pilih"
-                       readonly
-                       style="width:70px; text-align:center;">
-
-                <input type="number"
-                       step="0.0001"
-                       name="uom_detail_value[]"
-                       class="inv-uom-detail-value"
-                       value="${data.uom_detail_value || 0}"
-                       placeholder="Value"
-                       style="width:75px; text-align:right;">
-
-                <input type="hidden"
-                       class="inv-uom-detail-factor"
-                       value="${data.uom_detail_factor || 0}">
-            </div>
-        </td>
-
-        <td>
-            <input type="text" 
-                   name="price_unit[]" 
-                   class="price-unit rupiah-input" 
-                   value="${formatRupiahInput(data.price_unit || 0)}" 
-                   inputmode="numeric" 
-                   style="text-align:right;">
-        </td>
-
-        <td>
-            <input type="text" 
-                   name="price[]" 
-                   class="price rupiah-input" 
-                   value="${formatRupiahInput(data.price || 0)}" 
-                   inputmode="numeric" 
-                   style="text-align:right;">
-        </td>
-
-        <td>
-            <input type="text" 
-                   name="subtotal[]" 
-                   class="subtotal rupiah-input" 
-                   value="${formatRupiahInput(data.subtotal || 0)}" 
-                   readonly 
-                   style="text-align:right; background:#f1f3f5;">
-        </td>
-
-        <td>
-            <input type="text" name="remarks_detail[]" class="inv-remarks" value="${escHtml(data.remarks || '')}" placeholder="Notes...">
-        </td>
-
-        <td style="text-align:center;">
-            <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)">
-                <i class="fa fa-trash"></i>
-            </button>
-        </td>
-    </tr>`;
+// ============================================================
+// PERBAIKAN 1: FUNGSI CEK INVENTORY KHUSUS - SAMA DENGAN edit_sales_order
+// ============================================================
+function isSpecialInventory(row) {
+    var $row = $(row);
+    var inventoryName = $row.find('.inv-name-hidden').val() || '';
+    
+    return inventoryName.includes("PE ROLL STOKAN SSB") || 
+           inventoryName.includes("PP ROLL BOLA") ||
+           inventoryName.includes("PE ROLL KAYU MAS");
 }
 
 // ============================================================
-// PERBAIKAN UTAMA: Fungsi getPriceFormulaFactor
+// PERBAIKAN 2: FUNGSI GET PRICE FORMULA FACTOR - SAMA DENGAN edit_sales_order
 // ============================================================
 function getPriceFormulaFactor(row) {
     var $row = $(row);
@@ -870,97 +762,46 @@ function getPriceFormulaFactor(row) {
     var l = parseFloat($row.find('.inv-l').val()) || 0;
     var t = parseFloat($row.find('.inv-t').val()) || 0;
     var inventoryName = $row.find('.inv-name-hidden').val() || '';
-    var qty = parseFloat($row.find('.qty').val()) || 0;
 
-    // Untuk PP ROLL BOLA dan PE ROLL STOKAN SSB
-    if (inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA")) {
-        // Rumus: (P × L × T) / 1000 
-        // Contoh: PP ROLL BOLA 0.0200X3X100
-        // P = 0.0200, L = 3, T = 100
-        // (0.0200 × 3 × 100) / 1000 = 6 / 1000 = 0.006
-        var factor = (p * l * t) / 1000;
-        
-        // Jika hasil factor = 0 (terlalu kecil), gunakan alternatif
-        if (factor === 0) {
-            // Alternatif: (P × L × T) / 10
-            factor = (p * l * t) / 10;
-            
-            // Jika masih 0, gunakan pendekatan lain
-            if (factor === 0) {
-                // Coba dengan angka yang lebih realistis
-                factor = (t / 100) * (l / 10);
-                if (factor === 0) factor = 0.6; // Default untuk kasus spesifik
-            }
+    if (isSpecialInventory(row)) {
+        var divisor = 1;
+        if (p === 50) {
+            divisor = 2;
+        } else if (p === 25) {
+            divisor = 4;
         }
-        
-        return factor;
+        return (t * 10 * l) / divisor;
     }
 
-    // Untuk inventory lain (default)
-    var divisor = 1;
-    if (p === 50) {
-        divisor = 2;
-    } else if (p === 25) {
-        divisor = 4;
-    }
-
-    var factor = (t * 10 * l) / divisor;
-    return factor;
+    // Untuk inventory non-special
+    return 1;
 }
 
 // ============================================================
-// PERBAIKAN: Fungsi isSpecialInventory
-// ============================================================
-function isSpecialInventory(row) {
-    var $row = $(row);
-    var inventoryName = $row.find('.inv-name-hidden').val() || '';
-    
-    return inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA");
-}
-
-// ============================================================
-// PERBAIKAN: Fungsi calculatePriceFromPriceUnit
+// PERBAIKAN 3: FUNGSI PRICE - SAMA DENGAN edit_sales_order
 // ============================================================
 function calculatePriceFromPriceUnit(row) {
     var $row = $(row);
 
     var priceUnit = parseRupiah($row.find('.price-unit').val());
     var factor = getPriceFormulaFactor(row);
-    var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
-    var qty = parseFloat($row.find('.qty').val()) || 0;
 
     if (priceUnit > 0 && factor > 0) {
-        // Harga per roll = priceUnit × factor
-        var price = priceUnit * factor;
-        
-        // Untuk inventory khusus, price adalah harga per roll × Qty Pack
-        var inventoryName = $row.find('.inv-name-hidden').val() || '';
-        if (inventoryName.includes("PE ROLL STOKAN SSB") || inventoryName.includes("PP ROLL BOLA")) {
-            // Price adalah harga per roll × Qty Pack
-            price = price * qtyPack;
-        }
-        
+        // Price = factor × price_unit
+        var price = factor * priceUnit;
         $row.find('.price').val(formatRupiahInput(price));
     }
 
     calculateRow(row);
 }
 
-// ============================================================
-// PERBAIKAN: Fungsi calculatePriceUnitFromPrice
-// ============================================================
 function calculatePriceUnitFromPrice(row) {
     var $row = $(row);
 
     var price = parseRupiah($row.find('.price').val());
     var factor = getPriceFormulaFactor(row);
-    var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
 
-    if (price > 0 && factor > 0 && qtyPack > 0) {
-        // Price Unit = Price / (factor × Qty Pack)
-        var priceUnit = price / (factor * qtyPack);
-        $row.find('.price-unit').val(formatRupiahInput(priceUnit));
-    } else if (price > 0 && factor > 0) {
+    if (price > 0 && factor > 0) {
         var priceUnit = price / factor;
         $row.find('.price-unit').val(formatRupiahInput(priceUnit));
     }
@@ -969,7 +810,30 @@ function calculatePriceUnitFromPrice(row) {
 }
 
 // ============================================================
-// PERBAIKAN: Fungsi calculateRow
+// PERBAIKAN 4: FUNGSI UPDATE READONLY - SAMA DENGAN edit_sales_order
+// ============================================================
+function updatePriceUnitReadonly(row) {
+    var $row = $(row);
+    var isSpecial = isSpecialInventory(row);
+    var priceUnitInput = $row.find('.price-unit');
+    var priceInput = $row.find('.price');
+    
+    if (isSpecial) {
+        priceUnitInput.prop('readonly', false);
+        priceUnitInput.css('background', '#ffffff');
+        priceInput.prop('readonly', true);
+        priceInput.css('background', '#f1f3f5');
+    } else {
+        priceUnitInput.prop('readonly', true);
+        priceUnitInput.css('background', '#f1f3f5');
+        priceUnitInput.val('0');
+        priceInput.prop('readonly', false);
+        priceInput.css('background', '#ffffff');
+    }
+}
+
+// ============================================================
+// FUNGSI CALCULATE - SAMA DENGAN edit_sales_order
 // ============================================================
 function calculateRow(row) {
     var $row = $(row);
@@ -983,39 +847,6 @@ function calculateRow(row) {
     $row.find('.subtotal').val(formatRupiahInput(subtotal));
 
     calculateGrandTotal();
-}
-
-// ============================================================
-// PERBAIKAN: Fungsi updatePriceUnitReadonly
-// ============================================================
-function updatePriceUnitReadonly(row) {
-    var $row = $(row);
-    var isSpecial = isSpecialInventory(row);
-    var priceUnitInput = $row.find('.price-unit');
-    var priceInput = $row.find('.price');
-    
-    if (isSpecial) {
-        // Untuk inventory khusus: PP ROLL BOLA / PE ROLL STOKAN SSB
-        // Price Unit bisa diinput manual
-        priceUnitInput.prop('readonly', false);
-        priceUnitInput.css('background', '#ffffff');
-        if (parseRupiah(priceUnitInput.val()) === 0) {
-            priceUnitInput.val('0');
-        }
-        
-        // Price otomatis dihitung, readonly
-        priceInput.prop('readonly', true);
-        priceInput.css('background', '#f1f3f5');
-    } else {
-        // Untuk inventory lain: Price Unit = 0 dan readonly
-        priceUnitInput.prop('readonly', true);
-        priceUnitInput.css('background', '#f1f3f5');
-        priceUnitInput.val('0'); // Set ke 0
-        
-        // Price bisa diinput manual
-        priceInput.prop('readonly', false);
-        priceInput.css('background', '#ffffff');
-    }
 }
 
 function calculateGrandTotal() {
@@ -1238,10 +1069,8 @@ function chooseUomDetailFromModal(btn) {
     currentUomDetailRow.find('.inv-uom-detail-factor').val(formatDecimalInput(masterFactor));
 
     if ($('#chkAutoCorrect').is(':checked')) {
-        // Allow Auto Correct hanya berjalan jika user mencentang checkbox.
         applyAutoCorrectToRow(currentUomDetailRow[0]);
     } else {
-        // Default tetap mengikuti ketentuan add_sales_order sebelumnya.
         currentUomDetailRow.find('.qty, .qty-pack').removeClass('qty-auto-calculated');
         currentUomDetailRow.find('.qty').val(formatDecimalInput(hasilKonversi));
         updateQtyPackBySelectedUomPack(currentUomDetailRow[0]);
@@ -1259,7 +1088,6 @@ function recalculateFromUomDetail(row) {
         return;
     }
 
-    // Default tetap mengikuti ketentuan add_sales_order sebelumnya.
     $row.find('.qty, .qty-pack').removeClass('qty-auto-calculated');
 
     var manualValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
@@ -1293,10 +1121,7 @@ function updateQtyPackBySelectedUomPack(row) {
         return;
     }
 
-    // Jika UoM Detail berbeda dengan UoM Pack
     if (uomDetailUnit && uomDetailUnit !== uomPack && uomDetailManualValue > 0) {
-        // Jika user mengisi UoM Detail manual, gunakan nilai itu
-        // Tapi Qty Pack tetap berdasarkan UoM Pack
         var selectedPackFactor = getUomFactor(inventoryId, uomPack);
         if (selectedPackFactor > 0) {
             var convertedQtyPack = qtyDefault / selectedPackFactor;
@@ -1308,7 +1133,6 @@ function updateQtyPackBySelectedUomPack(row) {
         return;
     }
 
-    // Jika UoM Pack sama dengan UoM Default (KG), Qty Pack = Qty
     if (uomPack === uomDefault) {
         $row.find('.qty-pack').val(formatDecimalInput(qtyDefault));
         updateUomDetailFromQtyPack(row);
@@ -1316,7 +1140,6 @@ function updateQtyPackBySelectedUomPack(row) {
         return;
     }
 
-    // Jika UoM Pack sama dengan UoM Detail dan UoM Detail bukan KG
     if (uomPack === uomDetailUnit && uomDetailManualValue > 0) {
         $row.find('.qty-pack').val(formatDecimalInput(uomDetailManualValue));
         updateUomDetailFromQtyPack(row);
@@ -1324,7 +1147,6 @@ function updateQtyPackBySelectedUomPack(row) {
         return;
     }
 
-    // Konversi berdasarkan faktor UoM Pack
     var selectedPackFactor = getUomFactor(inventoryId, uomPack);
 
     if (selectedPackFactor > 0) {
@@ -1347,17 +1169,13 @@ function updateUomDetailFromQtyPack(row) {
     var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
     var inventoryId = $row.find('.inv-select').val();
     
-    // Cek apakah UoM Detail sudah diisi manual oleh user
     var currentUomDetail = ($row.find('.inv-uom-detail').val() || '').trim();
     var currentUomDetailValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
     
-    // Jika UoM Detail sudah diisi dan nilainya > 0, jangan ubah otomatis
     if (currentUomDetail && currentUomDetailValue > 0) {
-        // Tetap pertahankan nilai yang sudah diisi user
         return;
     }
     
-    // Jika UoM Pack = KG, maka UoM Detail Value = Qty Pack
     if (uomPack === uomDefault) {
         $row.find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
         $row.find('.inv-uom-detail').val(uomPack);
@@ -1365,14 +1183,134 @@ function updateUomDetailFromQtyPack(row) {
         return;
     }
     
-    // Jika UoM Pack selain KG, cari faktor konversi
     var factor = getUomFactor(inventoryId, uomPack);
     if (factor > 0) {
-        // UoM Detail Value = Qty Pack (karena UoM Detail sama dengan UoM Pack)
         $row.find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
         $row.find('.inv-uom-detail').val(uomPack);
         $row.find('.inv-uom-detail-factor').val(formatDecimalInput(factor));
     }
+}
+
+function buildRow(data) {
+    var idx = rowCounter++;
+    data = data || {};
+
+    var selectedInventoryId = data.inventory_id || '';
+
+    var optionsHtml = '<option value="">-- Pilih Inventory --</option>';
+
+    for (var i = 0; i < inventoryData.length; i++) {
+        var inv = inventoryData[i];
+        var selectedAttr = selectedInventoryId === inv.id ? 'selected' : '';
+
+        optionsHtml += '<option value="' + escHtml(inv.id) + '" ' +
+            selectedAttr + ' ' +
+            'data-inv-name="' + escHtml(inv.name) + '" ' +
+            'data-uom="KG" ' +
+            'data-uom-pack="' + escHtml(inv.uom_pack) + '" ' +
+            'data-p="' + escHtml(inv.p || 0) + '" ' +
+            'data-l="' + escHtml(inv.l || 0) + '" ' +
+            'data-t="' + escHtml(inv.t || 0) + '">' +
+            escHtml(inv.id) + ' — ' + escHtml(inv.name) +
+            '</option>';
+    }
+
+    return `<tr class="detail-row" data-idx="${idx}">
+        <td style="text-align:center;">
+            <input type="checkbox" class="rowCheckbox">
+        </td>
+
+        <td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"></td>
+
+        <td>
+            <select name="inventory_id[]" class="inv-select" style="width:100%;">
+                ${optionsHtml}
+            </select>
+            <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="${escHtml(data.inventory_name || '')}">
+            <input type="hidden" class="inv-p" value="${data.p || 0}">
+            <input type="hidden" class="inv-l" value="${data.l || 0}">
+            <input type="hidden" class="inv-t" value="${data.t || 0}">
+        </td>
+
+        <td>
+            <input type="number" step="0.0001" name="quantity[]" class="qty" value="${data.quantity || 0}" style="text-align:center;">
+        </td>
+
+        <td>
+            <input type="text" name="uom[]" class="inv-uom" value="${escHtml(data.uom || 'KG')}" readonly style="background:#f1f3f5; text-align:center;">
+        </td>
+
+        <td>
+            <input type="number" step="0.0001" name="quantity_pack[]" class="qty-pack" value="${data.quantity_pack || 0}" style="text-align:center;">
+        </td>
+
+        <td>
+            <select name="uom_pack[]" class="inv-uom-pack-select" style="width:100%;">
+                <option value="">-- Select --</option>
+            </select>
+        </td>
+
+        <td>
+            <div style="display:flex; gap:3px;">
+                <input type="text"
+                       name="uom_detail[]"
+                       class="inv-uom-detail uom-detail-input"
+                       value="${escHtml(data.uom_detail || '')}"
+                       placeholder="Klik pilih"
+                       readonly
+                       style="width:70px; text-align:center;">
+
+                <input type="number"
+                       step="0.0001"
+                       name="uom_detail_value[]"
+                       class="inv-uom-detail-value"
+                       value="${data.uom_detail_value || 0}"
+                       placeholder="Value"
+                       style="width:75px; text-align:right;">
+
+                <input type="hidden"
+                       class="inv-uom-detail-factor"
+                       value="${data.uom_detail_factor || 0}">
+            </div>
+        </td>
+
+        <td>
+            <input type="text" 
+                   name="price_unit[]" 
+                   class="price-unit rupiah-input" 
+                   value="${formatRupiahInput(data.price_unit || 0)}" 
+                   inputmode="numeric" 
+                   style="text-align:right;">
+        </td>
+
+        <td>
+            <input type="text" 
+                   name="price[]" 
+                   class="price rupiah-input" 
+                   value="${formatRupiahInput(data.price || 0)}" 
+                   inputmode="numeric" 
+                   style="text-align:right;">
+        </td>
+
+        <td>
+            <input type="text" 
+                   name="subtotal[]" 
+                   class="subtotal rupiah-input" 
+                   value="${formatRupiahInput(data.subtotal || 0)}" 
+                   readonly 
+                   style="text-align:right; background:#f1f3f5;">
+        </td>
+
+        <td>
+            <input type="text" name="remarks_detail[]" class="inv-remarks" value="${escHtml(data.remarks || '')}" placeholder="Notes...">
+        </td>
+
+        <td style="text-align:center;">
+            <button type="button" class="btn-vs btn-danger" onclick="removeRow(this)">
+                <i class="fa fa-trash"></i>
+            </button>
+        </td>
+    </tr>`;
 }
 
 function addRow(data) {
@@ -1494,7 +1432,6 @@ function initSelect2OnRow($row) {
         updateQtyPackBySelectedUomPack(tr[0]);
         updateUomDetailFromQtyPack(tr[0]);
         
-        // Recalculate price jika inventory khusus
         if (isSpecialInventory(tr[0])) {
             var priceUnit = parseRupiah(tr.find('.price-unit').val());
             if (priceUnit > 0) {
@@ -1503,16 +1440,12 @@ function initSelect2OnRow($row) {
         }
     });
 
-    // Event untuk Qty - jika Qty diisi manual
     $row.find('.qty').on('input', function() {
         var tr = $(this).closest('tr');
         
-        // Update Qty Pack berdasarkan UoM Pack
         updateQtyPackBySelectedUomPack(tr[0]);
-        // Update UoM Detail berdasarkan Qty Pack
         updateUomDetailFromQtyPack(tr[0]);
         
-        // Recalculate price jika inventory khusus
         if (isSpecialInventory(tr[0])) {
             var priceUnit = parseRupiah(tr.find('.price-unit').val());
             if (priceUnit > 0) {
@@ -1523,7 +1456,6 @@ function initSelect2OnRow($row) {
         calculateRow(tr[0]);
     });
 
-    // Event untuk Qty Pack - jika diisi manual
     $row.find('.qty-pack').on('input', function() {
         var tr = $(this).closest('tr');
         var qtyPack = parseFloat($(this).val()) || 0;
@@ -1532,35 +1464,26 @@ function initSelect2OnRow($row) {
         var uomDetail = tr.find('.inv-uom-detail').val() || '';
         var inventoryId = tr.find('.inv-select').val();
         
-        // Update UoM Detail Value otomatis
         tr.find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
         tr.find('.inv-uom-detail').val(uomPack);
         
-        // Cari faktor konversi untuk UoM Pack
         var factor = getUomFactor(inventoryId, uomPack);
         tr.find('.inv-uom-detail-factor').val(formatDecimalInput(factor));
         
-        // Jika UoM Pack sama dengan UoM Default (KG), maka Qty ikut Qty Pack
         if (uomPack === uomDefault) {
             tr.find('.qty').val(formatDecimalInput(qtyPack));
-        } 
-        // Jika UoM Pack sama dengan UoM Detail dan UoM Detail bukan KG
-        else if (uomPack === uomDetail && uomDetail !== uomDefault) {
-            // Qty dihitung dari Qty Pack * faktor konversi
+        } else if (uomPack === uomDetail && uomDetail !== uomDefault) {
             var factorConv = getUomFactor(inventoryId, uomPack);
             if (factorConv > 0) {
                 tr.find('.qty').val(formatDecimalInput(qtyPack * factorConv));
             }
-        }
-        // Selain itu, konversi berdasarkan value dari m_inventory_uom
-        else {
+        } else {
             var factorConv = getUomFactor(inventoryId, uomPack);
             if (factorConv > 0) {
                 tr.find('.qty').val(formatDecimalInput(qtyPack * factorConv));
             }
         }
         
-        // Recalculate price jika inventory khusus
         if (isSpecialInventory(tr[0])) {
             var priceUnit = parseRupiah(tr.find('.price-unit').val());
             if (priceUnit > 0) {
@@ -1572,12 +1495,11 @@ function initSelect2OnRow($row) {
     });
 
     // ============================================================
-    // PERBAIKAN: Event untuk Price Unit (hanya untuk inventory khusus)
+    // PERBAIKAN 5: EVENT PRICE UNIT - SAMA DENGAN edit_sales_order
     // ============================================================
     $row.find('.price-unit').on('input', function() {
         var tr = $(this).closest('tr');
         
-        // Hanya proses jika inventory khusus
         if (isSpecialInventory(tr[0])) {
             var cursorPosition = this.selectionStart;
             var beforeLength = this.value.length;
@@ -1592,12 +1514,11 @@ function initSelect2OnRow($row) {
     });
 
     // ============================================================
-    // PERBAIKAN: Event untuk Price (hanya untuk inventory non-khusus)
+    // PERBAIKAN 6: EVENT PRICE - SAMA DENGAN edit_sales_order
     // ============================================================
     $row.find('.price').on('input', function() {
         var tr = $(this).closest('tr');
         
-        // Hanya proses jika BUKAN inventory khusus
         if (!isSpecialInventory(tr[0])) {
             var cursorPosition = this.selectionStart;
             var beforeLength = this.value.length;
@@ -1648,7 +1569,6 @@ $(document).on('input', '#down_payment', function() {
 
     calculateGrandTotal();
 });
-
 
 $(document).on('change', '#chkAutoCorrect', function() {
     if (this.checked) {

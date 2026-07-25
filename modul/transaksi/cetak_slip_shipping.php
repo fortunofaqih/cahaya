@@ -3,8 +3,8 @@
 // Format cetak untuk Surat Jalan pre-printed Marketing - Mode Default UOM
 // REVISI: koordinat CSS dikalibrasi ulang berdasarkan pengukuran manual pada foto nota fisik
 // REVISI QTY: Qty cetak dibulatkan ke bilangan bulat terdekat.
- // Contoh 1774,5 menjadi 1775.
- // Cetak ini khusus inventory dengan nama mengandung KERTAS, BOX, BIJI, atau BIJIH.
+// Contoh 1774,5 menjadi 1775.
+// Cetak ini khusus inventory dengan nama mengandung KERTAS, BOX, BIJI, atau BIJIH.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -170,10 +170,6 @@ function getQtyDisplay($detail) {
     /*
      * Gabungkan berdasarkan UoM agar KG tidak tercetak dua kali ketika
      * Qty dan Qty Pack sama-sama menggunakan KG.
-     *
-     * Nilai terbesar dipakai, bukan dijumlahkan, karena Qty, Qty Pack,
-     * dan Qty Detail merupakan representasi unit yang berbeda dari item
-     * yang sama, bukan kuantitas yang harus ditotal.
      */
     $qtyByUom = [];
     $uomOrder = [];
@@ -196,12 +192,7 @@ function getQtyDisplay($detail) {
 
     /*
      * Untuk cetak item KERTAS, BOX, atau BIJI/BIJIH, semua UoM KG
-     * tidak ditampilkan karena barang dikirim berdasarkan kemasan
-     * seperti KRG, PAK, IKT, atau LBR, bukan berdasarkan timbangannya.
-     *
-     * Berlaku untuk UoM utama, UoM Pack, dan UoM Detail.
-     * Contoh: 10 KRG | 250 PAK | 250 KG dicetak menjadi
-     * 10 KRG | 250 PAK.
+     * tidak ditampilkan.
      */
     if ($uomPack !== 'KG') {
         $addQty($qtyPack, $uomPack);
@@ -294,7 +285,6 @@ $resultDetail = mysqli_stmt_get_result($stmtDetail);
 $details = [];
 
 while ($row = mysqli_fetch_assoc($resultDetail)) {
-    // Hanya item KERTAS, BOX, BIJI, atau BIJIH yang dicetak pada format ini.
     if (isSpecialSlipInventory($row)) {
         $details[] = $row;
     }
@@ -304,6 +294,7 @@ mysqli_stmt_close($stmtDetail);
 
 // Format tanggal cetak: DD-MM-YYYY
 $shippingDate = formatShippingDate($header['shipping_date'] ?? '');
+$orderNoText = safeText($header['order_no'] ?? '');
 
 $customerLines = splitAddressLines(
     $header['customer_name'] ?? '',
@@ -372,7 +363,6 @@ $maxRowSlots = 10;
             font-size: 12px;
         }
 
-        /* Container halaman fisik kertas F4 portrait. */
         .page {
             position: relative;
             width: 215mm;
@@ -408,6 +398,19 @@ $maxRowSlots = 10;
             left: 130mm;
             top: 45mm;
             width: 80mm;
+            font-size: 11pt;
+        }
+
+        /*
+         * customer-line-2 mulai pada left 130mm.
+         * Order No ditempatkan 100mm (10cm) di sebelah kirinya:
+         * 130mm - 100mm = 30mm.
+         * Posisi vertikal dibuat sama, yaitu top 45mm.
+         */
+        .order-no-field {
+            left: 10mm;
+            top: 30mm;
+            width: 110mm;
             font-size: 11pt;
         }
 
@@ -577,6 +580,7 @@ $maxRowSlots = 10;
     <div class="field date-field"><?= e($shippingDate) ?></div>
 
     <div class="field customer-line-1"><?= e($customerLines[0]) ?></div>
+    <div class="field order-no-field"><?= e($orderNoText) ?></div>
     <div class="field customer-line-2"><?= e($customerLines[1]) ?></div>
     <div class="field customer-line-3"><?= e($customerLines[2]) ?></div>
 
@@ -584,10 +588,7 @@ $maxRowSlots = 10;
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-    // Baris pertama tabel.
     $startTop = 85;
-
-    // Tinggi tiap baris tabel = 5mm.
     $rowHeight = 5.0;
 
     $currentTop = $startTop;
@@ -612,11 +613,6 @@ $maxRowSlots = 10;
         $qtyCol3 = isset($qtyParts[2]) ? $qtyParts[2] : '';
     ?>
 
-        <!--
-            REVISI:
-            Kolom fisik paling kiri menampilkan $qtyCol2.
-            Kolom fisik berikutnya menampilkan $qtyCol1.
-        -->
         <div
             class="field row-field qty-col-1"
             style="top: <?= e($currentTop) ?>mm;"
@@ -646,10 +642,6 @@ $maxRowSlots = 10;
     ?>
 
     <?php
-    // Remarks Shipping dicetak 15 mm di bawah baris nama barang terakhir.
-    // Posisi horizontal 35 mm di kanan tepi qtyCol3:
-    // qtyCol3 mulai 39 mm, lebar 15 mm, sehingga tepi kanannya 54 mm.
-    // 54 mm + 35 mm = 89 mm.
     $remarksTop = $currentTop + 15;
     ?>
 

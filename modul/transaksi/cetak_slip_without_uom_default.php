@@ -222,7 +222,6 @@ function getQtyDisplay($detail) {
     );
 
     // Hanya gunakan kolom ringkasan lama jika tabel detail tidak memiliki data.
-    // Ini mencegah data 1 BAL + 10 ROLL berubah menjadi 11 BAL.
     if ($multiUomText === '') {
         addQtyUomEntry(
             $entries,
@@ -231,16 +230,36 @@ function getQtyDisplay($detail) {
         );
     }
 
-    $priority = [
-        'BAL'  => 10,
-        'ROLL' => 20,
-        'ROL'  => 20,
-        'KG'   => 30,
+    /*
+     * Susunan kolom wajib:
+     * - qtyCol1 selalu BAL
+     * - qtyCol3 selalu KG
+     * - qtyCol2 untuk UoM lainnya
+     */
+    $qtyCol1 = isset($entries['BAL'])
+        ? fmtNumber($entries['BAL']) . ' BAL'
+        : '';
+
+    $qtyCol3 = isset($entries['KG'])
+        ? fmtNumber($entries['KG']) . ' KG'
+        : '';
+
+    $otherPriority = [
+        'ROLL' => 10,
+        'ROL'  => 10,
     ];
 
-    uksort($entries, function ($a, $b) use ($priority) {
-        $priorityA = $priority[$a] ?? 100;
-        $priorityB = $priority[$b] ?? 100;
+    $otherEntries = array_filter(
+        $entries,
+        function ($uom) {
+            return $uom !== 'BAL' && $uom !== 'KG';
+        },
+        ARRAY_FILTER_USE_KEY
+    );
+
+    uksort($otherEntries, function ($a, $b) use ($otherPriority) {
+        $priorityA = $otherPriority[$a] ?? 100;
+        $priorityB = $otherPriority[$b] ?? 100;
 
         if ($priorityA === $priorityB) {
             return strcmp($a, $b);
@@ -249,12 +268,13 @@ function getQtyDisplay($detail) {
         return $priorityA <=> $priorityB;
     });
 
-    $result = [];
-    foreach ($entries as $entryUom => $entryQty) {
-        $result[] = fmtNumber($entryQty) . ' ' . $entryUom;
+    $qtyCol2 = '';
+    foreach ($otherEntries as $entryUom => $entryQty) {
+        $qtyCol2 = fmtNumber($entryQty) . ' ' . $entryUom;
+        break;
     }
 
-    return array_slice($result, 0, 3);
+    return [$qtyCol1, $qtyCol2, $qtyCol3];
 }
 
 // ===============================
@@ -353,6 +373,7 @@ mysqli_stmt_close($stmtDetail);
 
 // Format tanggal cetak: DD-MM-YYYY
 $shippingDate = formatShippingDate($header['shipping_date'] ?? '');
+$orderNoText = safeText($header['order_no'] ?? '');
 
 $customerLines = splitAddressLines(
     $header['customer_name'] ?? '',
@@ -460,6 +481,18 @@ $maxRowSlots = 10;
             font-size: 11pt;
         }
 
+        /*
+         * Order No digeser 20 mm lagi ke kiri dan 15 mm ke atas.
+         * Posisi sebelumnya: left 30mm, top 45mm.
+         * Posisi baru: left 10mm, top 30mm.
+         */
+        .order-no-field {
+            left: 10mm;
+            top: 30mm;
+            width: 110mm;
+            font-size: 11pt;
+        }
+
         .customer-line-3 {
             left: 160mm;
             top: 55mm;
@@ -501,8 +534,11 @@ $maxRowSlots = 10;
 
         .qty-col-3 {
             left: 39mm;
-            width: 15mm;
+            width: 29mm;
+            padding: 0 0.5mm;
             text-align: center;
+            overflow: visible;
+            font-size: 10.5pt;
         }
 
         .name-col {
@@ -626,6 +662,7 @@ $maxRowSlots = 10;
     <div class="field date-field"><?= e($shippingDate) ?></div>
 
     <div class="field customer-line-1"><?= e($customerLines[0]) ?></div>
+    <div class="field order-no-field"><?= e($orderNoText) ?></div>
     <div class="field customer-line-2"><?= e($customerLines[1]) ?></div>
     <div class="field customer-line-3"><?= e($customerLines[2]) ?></div>
 
@@ -658,6 +695,12 @@ $maxRowSlots = 10;
         $qtyCol1 = $qtyParts[0] ?? '';
         $qtyCol2 = $qtyParts[1] ?? '';
         $qtyCol3 = $qtyParts[2] ?? '';
+
+        // Jika kolom kedua adalah UoM ROLL, kolom KG tidak dicetak.
+        // Contoh: 1 BAL | 10 ROLL | 100 KG menjadi 1 BAL | 10 ROLL | kosong.
+        if (preg_match('/\bROLL\b/i', $qtyCol2)) {
+            $qtyCol3 = '';
+        }
     ?>
 
         <!--
