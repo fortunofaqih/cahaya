@@ -224,6 +224,24 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
             text-align: right;
         }
 
+        .total-invoice-label {
+            left: 135mm;
+            width: 34mm;
+            text-align: right;
+            font-size: 10pt;
+            height: 5mm;
+            line-height: 5mm;
+        }
+
+        .total-invoice-value {
+            left: 170mm;
+            width: 30mm;
+            text-align: right;
+            font-size: 10pt;
+            height: 5mm;
+            line-height: 5mm;
+        }
+
         .extra-warning {
             position: absolute;
             left: 10mm;
@@ -296,6 +314,11 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
     $currentTop = $startTop;
     $usedSlots = 0;
     $hasMoreRows = false;
+    $totalInvoice = 0;
+
+    foreach ($items as $totalItem) {
+        $totalInvoice += (float)($totalItem['invoice_subtotal'] ?? 0);
+    }
 
     foreach ($items as $item):
         if ($usedSlots + 1 > $maxRowSlots) {
@@ -314,7 +337,16 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
         $currentTop += $rowHeight;
         $usedSlots += 1;
     endforeach;
+
+    $totalTop = $currentTop + 2;
+    $totalInvoiceText = 'Rp ' . fmtMoney($totalInvoice);
+    $totalInvoiceFontSize = fitFontSize($totalInvoiceText, 30, 10, 6);
     ?>
+
+    
+    <div class="field total-invoice-value" style="top: <?= $totalTop ?>mm; font-size: <?= $totalInvoiceFontSize ?>pt;">
+        <?= e($totalInvoiceText) ?>
+    </div>
 
     <?php if ($hasMoreRows): ?>
         <div class="extra-warning">* Item melebihi kapasitas baris nota. Mohon gunakan lembar tambahan.</div>
