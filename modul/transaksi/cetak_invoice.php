@@ -343,7 +343,7 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
     $totalInvoiceFontSize = fitFontSize($totalInvoiceText, 30, 10, 6);
     ?>
 
-    
+    <div class="field total-invoice-label" style="top: <?= $totalTop ?>mm;">Total :</div>
     <div class="field total-invoice-value" style="top: <?= $totalTop ?>mm; font-size: <?= $totalInvoiceFontSize ?>pt;">
         <?= e($totalInvoiceText) ?>
     </div>
