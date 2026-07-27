@@ -295,53 +295,92 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
                 </tr>
             </thead>
             <tbody>
-            <?php 
-            $no = 1; 
-            $total_harga = 0;
-            
-            for ($i = 0; $i < $total_rows; $i++) {
-                $det_po = $det_po_array[$i];
-                $detail_so = $detail_so_array[$i];
+           <?php
+$no = 1;
+$total_harga = 0;
+$displayed_rows = 0;
 
-                $qty_raw = isset($detail_so['quantity']) ? (float)$detail_so['quantity'] : 0;
-                $qty_pack_raw = isset($detail_so['quantity_pack']) ? (float)$detail_so['quantity_pack'] : 0;
-                $uom_pack_raw = isset($detail_so['uom_pack']) ? trim($detail_so['uom_pack']) : '';
+for ($i = 0; $i < $total_rows; $i++) {
+    $det_po = $det_po_array[$i];
+    $detail_so = $detail_so_array[$i];
 
-                $price_unit_raw = isset($detail_so['price_unit']) ? (float)$detail_so['price_unit'] : 0;
-                $price_raw = isset($detail_so['price']) ? (float)$detail_so['price'] : 0;
-                $subtotal_raw = isset($detail_so['subtotal']) ? (float)$detail_so['subtotal'] : 0;
+    $qty_raw = isset($detail_so['quantity'])
+        ? (float)$detail_so['quantity']
+        : 0;
 
-                $harga = 0;
-                if ($price_unit_raw > 0) {
-                    $harga = $price_unit_raw;
-                } elseif ($price_raw > 0) {
-                    $harga = $price_raw;
-                }
+    $qty_pack_raw = isset($detail_so['quantity_pack'])
+        ? (float)$detail_so['quantity_pack']
+        : 0;
 
-                $harga_kg = 0;
-                if ($qty_raw > 0 && $subtotal_raw > 0) {
-                    $harga_kg = $subtotal_raw / $qty_raw;
-                }
+    $uom_pack_raw = isset($detail_so['uom_pack'])
+        ? trim($detail_so['uom_pack'])
+        : '';
 
-                if ($harga == 0) {
-                    $qty_raw = 0;
-                    $qty_pack_raw = 0;
-                    $uom_pack_raw = '';
-                }
+    $price_unit_raw = isset($detail_so['price_unit'])
+        ? (float)$detail_so['price_unit']
+        : 0;
 
-                $qty = $qty_raw > 0 ? number_format($qty_raw, 2, ',', '.') : '-';
-                $qty_pack = $qty_pack_raw > 0 ? number_format($qty_pack_raw, 2, ',', '.') : '-';
-                $uom_pack = $uom_pack_raw !== '' ? htmlspecialchars($uom_pack_raw) : '-';
+    $price_raw = isset($detail_so['price'])
+        ? (float)$detail_so['price']
+        : 0;
 
-                $ukuran = isset($det_po['ukuran']) && $det_po['ukuran'] !== ''
-                    ? htmlspecialchars($det_po['ukuran'])
-                    : htmlspecialchars($detail_so['inventory_name'] ?? '-');
-                
-                $harga_display = $harga > 0 ? 'Rp ' . number_format($harga, 0, ',', '.') : '-';
-                $harga_kg_display = $harga_kg > 0 ? 'Rp ' . number_format($harga_kg, 0, ',', '.') : '-';
-                
-                $total_harga += $harga;
-            ?>
+    $subtotal_raw = isset($detail_so['subtotal'])
+        ? (float)$detail_so['subtotal']
+        : 0;
+
+    // Tentukan harga.
+    $harga = 0;
+
+    if ($price_unit_raw > 0) {
+        $harga = $price_unit_raw;
+    } elseif ($price_raw > 0) {
+        $harga = $price_raw;
+    }
+
+    // Hitung Harga/Kg.
+    $harga_kg = 0;
+
+    if ($qty_raw > 0 && $subtotal_raw > 0) {
+        $harga_kg = $subtotal_raw / $qty_raw;
+    }
+
+    /*
+     * Jika Harga/Kg = 0 atau 1,
+     * seluruh baris item tidak ditampilkan.
+     */
+    if (
+        $harga_kg <= 0
+        || abs($harga_kg - 1) < 0.00001
+    ) {
+        continue;
+    }
+
+    $qty = $qty_raw > 0
+        ? number_format($qty_raw, 2, ',', '.')
+        : '-';
+
+    $qty_pack = $qty_pack_raw > 0
+        ? number_format($qty_pack_raw, 2, ',', '.')
+        : '-';
+
+    $uom_pack = $uom_pack_raw !== ''
+        ? htmlspecialchars($uom_pack_raw)
+        : '-';
+
+    $ukuran = isset($det_po['ukuran']) && $det_po['ukuran'] !== ''
+        ? htmlspecialchars($det_po['ukuran'])
+        : htmlspecialchars($detail_so['inventory_name'] ?? '-');
+
+    $harga_display = $harga > 0
+        ? 'Rp ' . number_format($harga, 0, ',', '.')
+        : '-';
+
+    $harga_kg_display =
+        'Rp ' . number_format($harga_kg, 0, ',', '.');
+
+    $total_harga += $harga;
+    $displayed_rows++;
+?>
             <tr>
                 <td class="text-center"><?= $no++ ?>.</td>
                 <td><?= $ukuran; ?></td>
@@ -359,8 +398,8 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
             </tr>
             <?php } else { ?>
             <tr class="total-row">
-                <td colspan="5" class="text-right">TOTAL</td>
-                <td class="text-right">Rp <?= number_format($total_harga, 0, ',', '.') ?></td>
+                <td colspan="5" class="text-right"></td>
+                <td class="text-right"></td>
                 <td></td>
             </tr>
             <?php } ?>
@@ -381,7 +420,7 @@ $total_rows = min(count($detail_so_array), count($det_po_array));
     
     <div class="action-buttons">
         <button class="btn-print" onclick="window.print(); return false;">🖨️ Cetak SO</button>
-        <a href="http://localhost/cahaya/index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
+        <a href="http://192.168.31.200/cahaya/index.php?page=sales_order" class="btn-back">← Kembali ke List SO</a>
     </div>
 </body>
 </html>

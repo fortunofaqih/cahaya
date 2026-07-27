@@ -204,24 +204,40 @@ function addSeparatedDetailUoms($qtyText, $uomText, &$entries) {
 function getQtyDisplay($detail) {
     $entries = [];
 
-    // Ambil rincian asli dari det_shipping_uom_detail terlebih dahulu.
-    $multiUomText = safeText($detail['multi_uom_detail_text'] ?? '');
+    /*
+     * Ambil UoM Detail dari det_shipping_uom_detail.
+     * Contoh:
+     * 1 BAL | 10 ROLL
+     */
+    $multiUomText = safeText(
+        $detail['multi_uom_detail_text'] ?? ''
+    );
+
     parseCombinedQtyUomText($multiUomText, $entries);
 
-    // Tambahkan Qty Pack dan Qty utama. UoM yang sama otomatis tidak diduplikasi.
+    /*
+     * Tambahkan Qty Pack Shipping.
+     */
     addQtyUomEntry(
         $entries,
         $detail['qty_pack_shipping'] ?? 0,
         $detail['uom_pack_shipping'] ?? ''
     );
 
+    /*
+     * Tambahkan Qty utama Shipping.
+     * Biasanya berupa KG.
+     */
     addQtyUomEntry(
         $entries,
         $detail['qty_shipping'] ?? 0,
         $detail['uom_shipping'] ?? ''
     );
 
-    // Hanya gunakan kolom ringkasan lama jika tabel detail tidak memiliki data.
+    /*
+     * Fallback ke kolom detail lama jika tabel
+     * det_shipping_uom_detail tidak berisi data.
+     */
     if ($multiUomText === '') {
         addQtyUomEntry(
             $entries,
@@ -231,22 +247,34 @@ function getQtyDisplay($detail) {
     }
 
     /*
-     * Susunan kolom wajib:
-     * - qtyCol1 selalu BAL
-     * - qtyCol3 selalu KG
-     * - qtyCol2 untuk UoM lainnya
+     * Rule ditentukan dari detail_sales_order.uom_pack,
+     * bukan dari det_shipping.uom_pack_shipping.
+     */
+    $soUomPack = normalizeUomName(
+        $detail['so_uom_pack'] ?? ''
+    );
+
+    /*
+     * qtyCol1 selalu khusus BAL.
      */
     $qtyCol1 = isset($entries['BAL'])
         ? fmtNumber($entries['BAL']) . ' BAL'
         : '';
 
-    $qtyCol3 = isset($entries['KG'])
-        ? fmtNumber($entries['KG']) . ' KG'
-        : '';
+    /*
+     * qtyCol2 untuk UoM selain BAL dan KG.
+     */
+    $qtyCol2 = '';
 
     $otherPriority = [
         'ROLL' => 10,
         'ROL'  => 10,
+        'PAK'  => 20,
+        'PACK' => 20,
+        'LBR'  => 30,
+        'IKT'  => 40,
+        'KRG'  => 50,
+        'DUS'  => 60,
     ];
 
     $otherEntries = array_filter(
@@ -257,24 +285,42 @@ function getQtyDisplay($detail) {
         ARRAY_FILTER_USE_KEY
     );
 
-    uksort($otherEntries, function ($a, $b) use ($otherPriority) {
-        $priorityA = $otherPriority[$a] ?? 100;
-        $priorityB = $otherPriority[$b] ?? 100;
+    uksort(
+        $otherEntries,
+        function ($a, $b) use ($otherPriority) {
+            $priorityA = $otherPriority[$a] ?? 100;
+            $priorityB = $otherPriority[$b] ?? 100;
 
-        if ($priorityA === $priorityB) {
-            return strcmp($a, $b);
+            if ($priorityA === $priorityB) {
+                return strcmp($a, $b);
+            }
+
+            return $priorityA <=> $priorityB;
         }
+    );
 
-        return $priorityA <=> $priorityB;
-    });
-
-    $qtyCol2 = '';
     foreach ($otherEntries as $entryUom => $entryQty) {
-        $qtyCol2 = fmtNumber($entryQty) . ' ' . $entryUom;
+        $qtyCol2 =
+            fmtNumber($entryQty) . ' ' . $entryUom;
         break;
     }
 
-    return [$qtyCol1, $qtyCol2, $qtyCol3];
+    /*
+     * qtyCol3 hanya dicetak jika UoM Pack
+     * pada detail_sales_order adalah KG.
+     */
+    $qtyCol3 = '';
+
+    if ($soUomPack === 'KG' && isset($entries['KG'])) {
+        $qtyCol3 =
+            fmtNumber($entries['KG']) . ' KG';
+    }
+
+    return [
+        $qtyCol1,
+        $qtyCol2,
+        $qtyCol3
+    ];
 }
 
 // ===============================
@@ -317,6 +363,7 @@ $stmtDetail = mysqli_prepare($conn, "
         mi.base_uom,
         mi.pack_uom,
         mi.uom,
+
         ds.qty_shipping,
         ds.uom_shipping,
         ds.qty_pack_shipping,
@@ -324,6 +371,9 @@ $stmtDetail = mysqli_prepare($conn, "
         ds.qty_detail_shipping,
         ds.uom_detail_shipping,
         ds.remarks_inventory_shipping,
+
+        dso.uom_pack AS so_uom_pack,
+
         (
             SELECT GROUP_CONCAT(
                 CONCAT(dud.qty_detail, ' ', dud.uom_detail)
@@ -347,13 +397,23 @@ $stmtDetail = mysqli_prepare($conn, "
                     AND dud.inventory_id = ds.inventory_id
                 )
         ) AS multi_uom_detail_text
+
     FROM det_shipping ds
+
+    INNER JOIN hed_shipping hs
+        ON hs.shipping_no = ds.shipping_no
+
     LEFT JOIN m_inventory mi
         ON mi.inventory_id = ds.inventory_id
+
+    LEFT JOIN detail_sales_order dso
+        ON dso.order_no = hs.order_no
+        AND dso.inventory_id = ds.inventory_id
+
     WHERE ds.shipping_no = ?
+
     ORDER BY ds.id ASC
 ");
-
 if (!$stmtDetail) {
     die('Prepare detail gagal: ' . mysqli_error($conn));
 }
@@ -670,7 +730,7 @@ $maxRowSlots = 10;
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-    // Baris pertama tabel.
+     // Baris pertama tabel.
     $startTop = 85;
 
     // Tinggi tiap baris tabel = 5mm.
@@ -679,6 +739,9 @@ $maxRowSlots = 10;
     $currentTop = $startTop;
     $usedSlots = 0;
     $hasMoreRows = false;
+    
+    // Flag untuk menentukan apakah ini barang pertama
+    $isFirstItem = true;
 
     foreach ($details as $detail):
         $itemName = getItemNameWithRemarks($detail);
@@ -696,11 +759,15 @@ $maxRowSlots = 10;
         $qtyCol2 = $qtyParts[1] ?? '';
         $qtyCol3 = $qtyParts[2] ?? '';
 
-        // Jika kolom kedua adalah UoM ROLL, kolom KG tidak dicetak.
-        // Contoh: 1 BAL | 10 ROLL | 100 KG menjadi 1 BAL | 10 ROLL | kosong.
-        if (preg_match('/\bROLL\b/i', $qtyCol2)) {
-            $qtyCol3 = '';
-        }
+        // Tentukan posisi vertikal untuk qtyCol2 dan qtyCol3
+        // Jika ini adalah barang pertama, tidak ada pergeseran
+        // Jika ini adalah barang kedua atau seterusnya, geser 0.5cm ke bawah
+        $topOffset = ($isFirstItem) ? 0 : 0.5;
+        
+        // Untuk qtyCol1 dan nama barang, tetap di posisi normal
+        $qtyTop = $currentTop;
+        $qtyCol2Top = $currentTop + $topOffset;
+        $qtyCol3Top = $currentTop + $topOffset;
     ?>
 
         <!--
@@ -710,17 +777,17 @@ $maxRowSlots = 10;
         -->
         <div
             class="field row-field qty-col-1"
-            style="top: <?= e($currentTop) ?>mm;"
+            style="top: <?= e($qtyTop) ?>mm;"
         ><?= e($qtyCol1) ?></div>
 
         <div
             class="field row-field qty-col-2"
-            style="top: <?= e($currentTop) ?>mm;"
+            style="top: <?= e($qtyCol2Top) ?>mm;"
         ><?= e($qtyCol2) ?></div>
 
         <div
             class="field row-field qty-col-3"
-            style="top: <?= e($currentTop) ?>mm;"
+            style="top: <?= e($qtyCol3Top) ?>mm;"
         ><?= e($qtyCol3) ?></div>
 
         <?php foreach ($nameLines as $lineIdx => $nameLine): ?>
@@ -733,6 +800,9 @@ $maxRowSlots = 10;
     <?php
         $currentTop += $rowHeight * $lineCount;
         $usedSlots += $lineCount;
+        
+        // Setelah iterasi pertama, set flag menjadi false
+        $isFirstItem = false;
     endforeach;
     ?>
 

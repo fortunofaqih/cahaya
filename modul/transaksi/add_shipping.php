@@ -12,6 +12,8 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
+
+
 // AJAX: cek Shipping No manual apakah sudah ada di database
 if (isset($_GET['ajax_check_shipping_no'])) {
     header('Content-Type: application/json; charset=utf-8');
@@ -289,6 +291,28 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
     margin-left: 2px;
 }
 
+
+.auto-number-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 10px;
+    color: #495057;
+}
+.auto-number-wrap input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
+}
+.auto-number-wrap label {
+    display: inline;
+    margin: 0;
+    color: #495057;
+    text-transform: none;
+    cursor: pointer;
+}
+
 /* Modal */
 .shipping-modal-backdrop {
     display: none;
@@ -403,6 +427,11 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
                         <input type="text" name="shipping_no" id="shipping_no" value="" required autocomplete="off" style="font-weight:bold; color:var(--accent-blue); text-transform:uppercase;">
                         <div id="shipping_no_warning" class="warning-text"><i class="fa fa-triangle-exclamation"></i> Shipping No sudah ada di database.</div>
                         <div id="shipping_no_ok" class="success-text"><i class="fa fa-check-circle"></i> Shipping No belum digunakan.</div>
+
+                        <div class="auto-number-wrap">
+                            <input type="checkbox" id="auto_generate_shipping_no" name="auto_generate_shipping_no" value="1">
+                            <label for="auto_generate_shipping_no">Auto Generate Number</label>
+                        </div>
                     </div>
                     <div class="ff">
                         <label>Shipping Date <span class="required">*</span></label>
@@ -616,6 +645,7 @@ var rowCounter = 0;
 var shippingNoExists = false;
 var checkShippingTimer = null;
 var selectedOrderAllowAutoCorrect = false;
+var isAutoGenerateShippingNo = false;
 // Ambil data UoM dari database via AJAX
 $.ajax({
     url: 'modul/transaksi/get_inventory_uom.php',
@@ -1317,6 +1347,75 @@ function showNotification(message, type) {
     }, 3000);
 }
 
+function generateShippingNo() {
+    $('#shipping_no_warning, #shipping_no_ok').hide();
+    shippingNoExists = false;
+
+    $('#shipping_no')
+        .val('Generating...')
+        .prop('readonly', true);
+
+    $.ajax({
+        url: 'modul/transaksi/generate_shipping_no.php',
+        type: 'GET',
+        dataType: 'json',
+        cache: false,
+
+        success: function(response) {
+            if (
+                response &&
+                response.success &&
+                response.shipping_no
+            ) {
+                $('#shipping_no')
+                    .val(response.shipping_no)
+                    .prop('readonly', true);
+
+                checkShippingNo();
+                return;
+            }
+
+            isAutoGenerateShippingNo = false;
+
+            $('#auto_generate_shipping_no')
+                .prop('checked', false);
+
+            $('#shipping_no')
+                .val('')
+                .prop('readonly', false);
+
+            alert(
+                'Gagal generate Shipping No: ' +
+                (
+                    response && response.message
+                        ? response.message
+                        : 'Response tidak valid.'
+                )
+            );
+        },
+
+        error: function(xhr, status, error) {
+            console.log('AJAX status:', status);
+            console.log('AJAX error:', error);
+            console.log('Server response:', xhr.responseText);
+
+            isAutoGenerateShippingNo = false;
+
+            $('#auto_generate_shipping_no')
+                .prop('checked', false);
+
+            $('#shipping_no')
+                .val('')
+                .prop('readonly', false);
+
+            alert(
+                'Gagal mengambil Shipping No otomatis.\n\n' +
+                'Silakan periksa Console atau Network browser.'
+            );
+        }
+    });
+}
+
 function checkShippingNo() {
     var shippingNo = $.trim($('#shipping_no').val());
 
@@ -1425,7 +1524,29 @@ $(document).ready(function() {
         $('#modalInventoryBody .modalRowCheckbox').prop('checked', this.checked);
     });
 
+    $('#auto_generate_shipping_no').on('change', function() {
+        isAutoGenerateShippingNo = this.checked;
+
+        if (isAutoGenerateShippingNo) {
+            generateShippingNo();
+        } else {
+            clearTimeout(checkShippingTimer);
+            shippingNoExists = false;
+
+            $('#shipping_no')
+                .val('')
+                .prop('readonly', false)
+                .focus();
+
+            $('#shipping_no_warning, #shipping_no_ok').hide();
+        }
+    });
+
     $('#shipping_no').on('input blur', function() {
+        if (isAutoGenerateShippingNo) {
+            return;
+        }
+
         var upper = $(this).val().toUpperCase();
         $(this).val(upper);
 

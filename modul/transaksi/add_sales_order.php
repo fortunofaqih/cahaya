@@ -523,7 +523,7 @@ $no_po    = generatePONumber($conn, $tahun);
                         <label>Station</label>
                         <input type="text" name="station" value="FACTORY">
                     </div>
-                    <div class="ff">
+                    <div class="ff" hidden>
                         <label>Shipment Due Date</label>
                         <input type="text" name="shipment_due_date" class="form-control form-control-sm datepicker">
                     </div>
