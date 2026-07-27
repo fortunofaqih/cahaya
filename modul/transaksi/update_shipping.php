@@ -248,6 +248,19 @@ for ($i = 0; $i < $total_items; $i++) {
     $adjustment_shipping = isset($adjustment_shippings[$i]) ? toDecimal($adjustment_shippings[$i]) : 0;
     $remarks_inventory_shipping = isset($remarks_inventory_shippings[$i]) ? cleanInput($remarks_inventory_shippings[$i]) : '';
 
+    /*
+     * Rule sinkronisasi backend:
+     * Jika UoM Pack = KG, Qty dan Qty Pack harus selalu sama.
+     * Prioritas Qty utama jika nilainya lebih dari 0.
+     */
+    if (strtoupper(trim($uom_pack_shipping)) === 'KG') {
+        if ($qty_shipping > 0) {
+            $qty_pack_shipping = $qty_shipping;
+        } elseif ($qty_pack_shipping > 0) {
+            $qty_shipping = $qty_pack_shipping;
+        }
+    }
+
     // Jika UOM belum dipilih dari edit page, simpan NULL, bukan memaksa KG.
     if ($uom_shipping === '-- Pilih UoM --') {
         $uom_shipping = '';

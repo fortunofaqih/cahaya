@@ -1244,7 +1244,7 @@ $f_so_safe = mysqli_real_escape_string($conn, $f_so);
                                     <tr><td><b>Kirim/Las</b></td><td><input type="text" id="kirim_las_rol" class="form-control form-control-sm" placeholder="Kirim/Las"></td></tr>
                                     <tr><td><b>Standar Pengecekan</b></td><td><input type="text" id="standar_cek_rol" class="form-control form-control-sm" placeholder="Standar cek"></td></tr>
                                     <tr><td><b>Gramatur Asli</b></td><td><input type="text" id="gramatur_asli_rol" class="form-control form-control-sm" placeholder="0" value="0"></td></tr>
-                                    <tr><td><b>Tebal Asli</b></td><td><input type="text" id="tebal_asli_rol" class="form-control form-control-sm" placeholder="Tebal asli"></td></tr>
+                                    <tr><td><b>Tebal Asli</b></td><td><input type="text" id="tebal_asli_rol" class="form-control form-control-sm" placeholder="0" value="0"></td></tr>
                                     <tr><td><b>Spesifikasi Roll</b></td><td><input type="text" id="spec_rol" class="form-control form-control-sm bg-light" placeholder="Spesifikasi roll" readonly></td></tr>
                                     <tr><td><b>Gramatur Roll</b></td><td><input type="text" id="gramatur_rol" class="form-control form-control-sm" placeholder="Gramatur roll"></td></tr>
                                     <tr><td><b>Tebal Roll</b></td><td><input type="text" id="tebal_rol" class="form-control form-control-sm" placeholder="Tebal roll"></td></tr>

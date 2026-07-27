@@ -916,6 +916,32 @@ function addRow(data) {
     updateAutoCorrectRowState();
     updateRowNumbers();
 }
+
+/*
+ * Sinkronisasi Qty dan Qty Pack khusus UoM Pack = KG.
+ */
+function isKgPackRow($row) {
+    var uomPack = $.trim(
+        $row.find('.inv-uom-pack-select').val() || ''
+    ).toUpperCase();
+
+    return uomPack === 'KG';
+}
+
+function syncQtyKgPack($row, sourceField) {
+    if (!$row || !$row.length || !isKgPackRow($row)) {
+        return;
+    }
+
+    var $qty = $row.find('.qty-shipping');
+    var $qtyPack = $row.find('.qty-pack-shipping');
+
+    if (sourceField === 'qty') {
+        $qtyPack.val($qty.val());
+    } else if (sourceField === 'qty_pack') {
+        $qty.val($qtyPack.val());
+    }
+}
 function updateAutoCorrectRowState() {
     $('#detailBody .detail-row').each(function() {
         var $row = $(this);
@@ -1173,11 +1199,43 @@ function saveUomDetailModal() {
 
     
 }
+$(document).on('input change', '.qty-shipping', function() {
+    var $row = $(this).closest('.detail-row');
+
+    if (isKgPackRow($row)) {
+        syncQtyKgPack($row, 'qty');
+    }
+});
+
+$(document).on('input change', '.qty-pack-shipping', function() {
+    var $row = $(this).closest('.detail-row');
+
+    if (isKgPackRow($row)) {
+        syncQtyKgPack($row, 'qty_pack');
+    }
+});
+
 $(document).on('change', '.inv-uom-pack-select', function() {
     var $row = $(this).closest('.detail-row');
 
     if (isShippingAutoCorrectEnabled()) {
         applyShippingAutoCorrect($row);
+        return;
+    }
+
+    if (isKgPackRow($row)) {
+        var qty = parseFloat($row.find('.qty-shipping').val()) || 0;
+        var qtyPack = parseFloat($row.find('.qty-pack-shipping').val()) || 0;
+
+        if (qty > 0) {
+            $row.find('.qty-pack-shipping').val(
+                $row.find('.qty-shipping').val()
+            );
+        } else if (qtyPack > 0) {
+            $row.find('.qty-shipping').val(
+                $row.find('.qty-pack-shipping').val()
+            );
+        }
     }
 });
 function validateToleranceBeforeSubmit() {

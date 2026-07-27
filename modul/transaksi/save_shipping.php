@@ -641,6 +641,19 @@ try {
             }
         }
 
+        /*
+         * Rule sinkronisasi backend:
+         * Jika UoM Pack = KG, Qty dan Qty Pack harus selalu sama.
+         * Prioritas Qty utama jika nilainya lebih dari 0.
+         */
+        if ($uom_pack_shipping === 'KG') {
+            if ($qty_shipping > 0) {
+                $qty_pack_shipping = $qty_shipping;
+            } elseif ($qty_pack_shipping > 0) {
+                $qty_shipping = $qty_pack_shipping;
+            }
+        }
+
         // Hitung ulang hanya jika Allow Auto Correct aktif dan UoM Detail diisi.
         // Jika UoM Detail kosong, gunakan Qty dan Qty Pack input manual.
         if ($allowAutoCorrect && !empty($uomDetailRows)) {
@@ -671,6 +684,18 @@ try {
                 (float)$autoCorrectResult['qty_pack_shipping'];
 
             $uom_shipping = 'KG';
+        }
+
+        /*
+         * Pastikan kembali setelah proses Auto Correct.
+         * Untuk UoM Pack KG, kedua nilai wajib identik.
+         */
+        if ($uom_pack_shipping === 'KG') {
+            if ($qty_shipping > 0) {
+                $qty_pack_shipping = $qty_shipping;
+            } elseif ($qty_pack_shipping > 0) {
+                $qty_shipping = $qty_pack_shipping;
+            }
         }
 
         if (

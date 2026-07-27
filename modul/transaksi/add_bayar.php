@@ -511,7 +511,7 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
         </a>
     </div>
 
-    <form method="POST" action="modul/transaksi/save_bayar_shipping_revisi.php" id="formBayar">
+    <form method="POST" action="modul/transaksi/save_bayar.php" id="formBayar">
         <div class="form-card">
 
     <!-- GROUP 1: Shipping & Payment Header -->

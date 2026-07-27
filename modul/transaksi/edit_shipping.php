@@ -920,6 +920,33 @@ function addRow(data) {
     updateRowNumbers();
 }
 
+/*
+ * Sinkronisasi Qty dan Qty Pack khusus jika UoM Pack = KG.
+ * Berlaku untuk baris existing maupun inventory baru hasil Load dari Order.
+ */
+function isKgPackRow($row) {
+    var uomPack = $.trim(
+        $row.find('.inv-uom-pack-select').val() || ''
+    ).toUpperCase();
+
+    return uomPack === 'KG';
+}
+
+function syncQtyKgPack($row, sourceField) {
+    if (!$row || !$row.length || !isKgPackRow($row)) {
+        return;
+    }
+
+    var $qty = $row.find('.qty-shipping');
+    var $qtyPack = $row.find('.qty-pack-shipping');
+
+    if (sourceField === 'qty') {
+        $qtyPack.val($qty.val());
+    } else if (sourceField === 'qty_pack') {
+        $qty.val($qtyPack.val());
+    }
+}
+
 function removeRow(btn) {
     if (confirm('Hapus item ini?')) {
         $(btn).closest('tr').remove();
@@ -1120,6 +1147,43 @@ function saveUomDetailModal() {
     closeUomDetailModal();
 }
 
+$(document).on('input change', '.qty-shipping', function() {
+    var $row = $(this).closest('.detail-row');
+
+    if (isKgPackRow($row)) {
+        syncQtyKgPack($row, 'qty');
+    }
+});
+
+$(document).on('input change', '.qty-pack-shipping', function() {
+    var $row = $(this).closest('.detail-row');
+
+    if (isKgPackRow($row)) {
+        syncQtyKgPack($row, 'qty_pack');
+    }
+});
+
+$(document).on('change', '.inv-uom-pack-select', function() {
+    var $row = $(this).closest('.detail-row');
+
+    if (!isKgPackRow($row)) {
+        return;
+    }
+
+    var qty = parseFloat($row.find('.qty-shipping').val()) || 0;
+    var qtyPack = parseFloat($row.find('.qty-pack-shipping').val()) || 0;
+
+    if (qty > 0) {
+        $row.find('.qty-pack-shipping').val(
+            $row.find('.qty-shipping').val()
+        );
+    } else if (qtyPack > 0) {
+        $row.find('.qty-shipping').val(
+            $row.find('.qty-pack-shipping').val()
+        );
+    }
+});
+
 function validateToleranceBeforeSubmit() {
     var tolerance = getSelectedOrderTolerance();
     var factor = 1 + (tolerance / 100);
@@ -1298,11 +1362,6 @@ $(document).ready(function() {
             }
             if (uomPack === '') {
                 alert('Baris ' + (i + 1) + ': UoM Pack wajib dipilih.');
-                validRows = false;
-                return false;
-            }
-            if (uomDetailArr.length === 0) {
-                alert('Baris ' + (i + 1) + ': UoM Detail wajib dipilih minimal 1.');
                 validRows = false;
                 return false;
             }
