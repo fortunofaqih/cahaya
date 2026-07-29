@@ -1,5 +1,6 @@
 <?php
 // modul/transaksi/add_invoice.php
+// REVISI: Pilih Sales Order terlebih dahulu, lalu pilih Shipping yang akan dibuat invoice.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -52,29 +53,40 @@ $invoice_no = generateInvoiceNo($conn);
 $invoice_date = date('Y-m-d');
 $invoice_date_display = formatDateDisplay($invoice_date);
 
-$customer_rs = mysqli_query($conn, "
+$order_rs = mysqli_query($conn, "
     SELECT DISTINCT
-        c.customer_id,
-        c.customer,
-        c.address,
-        c.city,
-        hs.shipping_no,
-        hs.order_no,
-        hs.shipping_date
-    FROM m_customer c
+        so.order_no,
+        so.order_date,
+        so.customer_id,
+        COALESCE(NULLIF(so.customer_name, ''), c.customer, '') AS customer_name,
+        COALESCE(NULLIF(so.customer_address, ''), c.address, '') AS customer_address,
+        COALESCE(NULLIF(so.customer_city, ''), c.city, '') AS customer_city,
+        so.payment_type,
+        so.payment_term,
+        so.days,
+        so.currency,
+        so.station,
+        so.grand_total,
+        so.down_payment,
+        so.remarks
+    FROM head_sales_order so
     INNER JOIN hed_shipping hs
-        ON hs.customer_id = c.customer_id
-    WHERE c.is_active = 'Checked'
-      AND NOT EXISTS (
-          SELECT 1
-          FROM det_invoice di
-          WHERE di.shipping_no = hs.shipping_no
-      )
+        ON hs.order_no = so.order_no
+    LEFT JOIN m_customer c
+        ON c.customer_id = so.customer_id
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM det_invoice di
+        WHERE di.shipping_no = hs.shipping_no
+    )
     ORDER BY
-        c.customer ASC,
-        hs.shipping_date DESC,
-        hs.shipping_no DESC
+        so.order_date DESC,
+        so.order_no DESC
 ");
+
+if (!$order_rs) {
+    die('Gagal mengambil daftar Sales Order: ' . mysqli_error($conn));
+}
 
 $default_gudang_id = 'FC-02';
 $gudang_options = [];
@@ -170,29 +182,71 @@ if ($gudang_rs) {
             </div>
 
             <div class="inv-panel">
-                <div class="inv-panel-header"><i class="fa fa-building-user"></i> Customer Information</div>
+                <div class="inv-panel-header"><i class="fa fa-file-lines"></i> Sales Order</div>
                 <div class="inv-panel-body">
                     <div class="ff">
-                        <label>Customer Name <span class="required">*</span></label>
-                        <select id="customer_id" required>
-                            <option value="">-- Pilih Customer / Shipping No --</option>
-                            <?php while ($c = mysqli_fetch_assoc($customer_rs)): ?>
-                                <?php $customerShippingKey = $c['customer_id'] . '|' . $c['shipping_no']; ?>
-                                <option value="<?= h($customerShippingKey) ?>"
-                                        data-customer-id="<?= h($c['customer_id']) ?>"
-                                        data-customer-name="<?= h($c['customer']) ?>"
-                                        data-address="<?= h($c['address']) ?>"
-                                        data-city="<?= h($c['city']) ?>"
-                                        data-shipping-no="<?= h($c['shipping_no']) ?>"
-                                        data-order-no="<?= h($c['order_no']) ?>"
-                                        data-shipping-date="<?= h($c['shipping_date']) ?>">
-                                    <?= h($c['customer']) ?> - <?= h($c['shipping_no']) ?> (<?= h(formatDateDisplay($c['shipping_date'])) ?>)
+                        <label>Sales Order <span class="required">*</span></label>
+                        <select name="order_no" id="order_no" required>
+                            <option value="">-- Pilih Sales Order --</option>
+                            <?php while ($o = mysqli_fetch_assoc($order_rs)): ?>
+                                <option
+                                    value="<?= h($o['order_no']) ?>"
+                                    data-order-date="<?= h($o['order_date']) ?>"
+                                    data-customer-id="<?= h($o['customer_id']) ?>"
+                                    data-customer-name="<?= h($o['customer_name']) ?>"
+                                    data-address="<?= h($o['customer_address']) ?>"
+                                    data-city="<?= h($o['customer_city']) ?>"
+                                    data-payment-type="<?= h($o['payment_type']) ?>"
+                                    data-payment-term="<?= h($o['payment_term']) ?>"
+                                    data-days="<?= h($o['days']) ?>"
+                                    data-currency="<?= h($o['currency']) ?>"
+                                    data-station="<?= h($o['station']) ?>"
+                                    data-grand-total="<?= h($o['grand_total']) ?>"
+                                    data-down-payment="<?= h($o['down_payment']) ?>"
+                                    data-remarks="<?= h($o['remarks']) ?>"
+                                >
+                                    <?= h($o['order_no']) ?> | <?= h(formatDateDisplay($o['order_date'])) ?> | <?= h($o['customer_name']) ?>
                                 </option>
                             <?php endwhile; ?>
                         </select>
+                    </div>
+
+                    <input type="hidden" name="order_date" id="order_date">
+                    <input type="hidden" name="currency" id="currency" value="IDR">
+                    <input type="hidden" name="payment_type" id="payment_type">
+                    <input type="hidden" name="payment_term" id="payment_term" value="30">
+
+                    <div class="ff">
+                        <label>Order Date</label>
+                        <input type="text" id="order_date_display" readonly>
+                    </div>
+                    <div class="ff">
+                        <label>Station</label>
+                        <input type="text" name="station" id="station" value="FACTORY" placeholder="FACTORY">
+                    </div>
+                    <div class="ff">
+                        <label>Payment Type</label>
+                        <input type="text" id="payment_type_display" readonly>
+                    </div>
+                    <div class="ff">
+                        <label>Payment Term / Days</label>
+                        <input type="number" name="days" id="days" value="30" min="0" step="1">
+                    </div>
+                    <div class="ff">
+                        <label>Remarks Sales Order</label>
+                        <textarea id="remarks_so" rows="2" readonly></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="inv-panel">
+                <div class="inv-panel-header"><i class="fa fa-building-user"></i> Customer Information</div>
+                <div class="inv-panel-body">
+                    <div class="ff">
+                        <label>Customer Name</label>
+                        <input type="text" id="customer_name_display" readonly>
                         <input type="hidden" name="customer_id" id="customer_id_hidden">
                         <input type="hidden" name="customer_name" id="customer_name">
-                        <input type="hidden" name="selected_shipping_no" id="selected_shipping_no">
                     </div>
                     <div class="ff">
                         <label>Customer Address</label>
@@ -204,33 +258,13 @@ if ($gudang_rs) {
                     </div>
                 </div>
             </div>
-
-            <div class="inv-panel">
-                <div class="inv-panel-header"><i class="fa fa-file-lines"></i> Sales Order</div>
-                <div class="inv-panel-body">
-                    <div class="ff">
-                        <label>Sales Order <span class="required">*</span></label>
-                        <select name="order_no" id="order_no" required>
-                            <option value="">-- Pilih Customer dulu --</option>
-                        </select>
-                    </div>
-                    <input type="hidden" name="order_date" id="order_date">
-                    <input type="hidden" name="currency" id="currency" value="IDR">
-                    <input type="hidden" name="payment_type" id="payment_type">
-                    <input type="hidden" name="payment_term" id="payment_term" value="30">
-                    <div class="ff"><label>Order Date</label><input type="text" id="order_date_display" readonly></div>
-                    <div class="ff"><label>Station</label><input type="text" name="station" id="station" value="FACTORY" placeholder="FACTORY"></div>
-                    <div class="ff"><label>Payment Type</label><input type="text" id="payment_type_display" readonly></div>
-                    <div class="ff"><label>Payment Term / Days</label><input type="number" name="days" id="days" value="30" min="0" step="1"></div>
-                    <div class="ff"><label>Remarks Sales Order</label><textarea id="remarks_so" rows="2" readonly></textarea></div>
-                </div>
             </div>
         </div>
 
         <div class="inv-panel-full">
             <div class="inv-panel-header"><i class="fa fa-truck"></i> Daftar Shipping / Surat Jalan</div>
             <div class="detail-toolbar">
-                <span style="font-size:10px;color:#777;"><i class="fa fa-info-circle"></i> Shipping yang sudah pernah masuk invoice otomatis tidak muncul lagi.</span>
+                <span style="font-size:10px;color:#777;"><i class="fa fa-info-circle"></i> Setelah Sales Order dipilih, centang satu atau beberapa Shipping yang akan dibuatkan invoice. Shipping yang sudah pernah masuk invoice otomatis tidak muncul lagi.</span>
             </div>
             <div class="detail-table-wrap">
                 <table class="detail-table" id="shippingTable">
@@ -377,67 +411,55 @@ function renderShippingDetailTable(items){
     return html;
 }
 
-function loadCustomerOrders(customerId, selectedOrderNo, selectedShippingNo){
-    $('#order_no').html('<option value="">Loading...</option>');
-    $('#shippingBody').html('<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">Pilih Sales Order terlebih dahulu.</td></tr>');
-    resetOrderFields();
+function loadCustomerDeposit(customerId){
+    depositBalance = 0;
+    recalcTotals();
 
-    if(!customerId){ $('#order_no').html('<option value="">-- Pilih Customer dulu --</option>'); return; }
+    if(!customerId){
+        return;
+    }
 
-    fetch('modul/transaksi/ajax_invoice.php?ajax=get_customer_orders&customer_id=' + encodeURIComponent(customerId), {headers:{'Accept':'application/json'}})
-        .then(r => r.json())
-        .then(res => {
-            if(res.status !== 'success') throw new Error(res.message || 'Gagal load SO');
-            var html = '<option value="">-- Pilih Sales Order --</option>';
-            var matchedOrders = res.data;
-
-            if(selectedOrderNo){
-                matchedOrders = res.data.filter(function(o){
-                    return String(o.order_no || '') === String(selectedOrderNo);
-                });
+    fetch(
+        'modul/transaksi/ajax_invoice.php?ajax=get_customer_deposit&customer_id=' +
+        encodeURIComponent(customerId),
+        {headers:{'Accept':'application/json'}}
+    )
+        .then(function(r){
+            if(!r.ok){
+                throw new Error('HTTP ' + r.status);
             }
-
-            if(!matchedOrders.length){
-                html += '<option value="">Sales Order untuk Shipping No ini tidak ditemukan</option>';
-            }
-
-            matchedOrders.forEach(function(o){
-                html += '<option value="'+escHtml(o.order_no)+'" '+
-                    'data-order-date="'+escHtml(o.order_date)+'" '+
-                    'data-payment-type="'+escHtml(o.payment_type)+'" '+
-                    'data-payment-term="'+escHtml(o.payment_term)+'" '+
-                    'data-days="'+escHtml(o.days)+'" '+
-                    'data-currency="'+escHtml(o.currency)+'" '+
-                    'data-station="'+escHtml(o.station)+'" '+
-                    'data-grand-total="'+escHtml(o.grand_total)+'" '+
-                    'data-down-payment="'+escHtml(o.down_payment)+'" '+
-                    'data-remarks="'+escHtml(o.remarks)+'">'+
-                    escHtml(o.order_no)+' | '+fmtDate(o.order_date)+' | '+escHtml(selectedShippingNo || '')+
-                    '</option>';
-            });
-
-            $('#order_no').html(html).trigger('change.select2');
-
-            if(selectedOrderNo && matchedOrders.length){
-                $('#order_no').val(selectedOrderNo).trigger('change');
-            }
+            return r.json();
         })
-        .catch(err => { alert('Gagal load Sales Order: ' + err.message); $('#order_no').html('<option value="">Gagal load SO</option>'); });
-
-    fetch('modul/transaksi/ajax_invoice.php?ajax=get_customer_deposit&customer_id=' + encodeURIComponent(customerId), {headers:{'Accept':'application/json'}})
-        .then(r => r.json())
-        .then(res => { depositBalance = res.status === 'success' ? parseFloat(res.balance || 0) : 0; recalcTotals(); })
-        .catch(() => { depositBalance = 0; recalcTotals(); });
+        .then(function(res){
+            depositBalance = res.status === 'success'
+                ? parseFloat(res.balance || 0)
+                : 0;
+            recalcTotals();
+        })
+        .catch(function(){
+            depositBalance = 0;
+            recalcTotals();
+        });
 }
 
 function resetOrderFields(){
     selectedOrder = null;
-    $('#order_date,#payment_type,#currency').val('');
+    depositBalance = 0;
+
+    $('#order_date,#payment_type').val('');
+    $('#currency').val('IDR');
     $('#station').val('FACTORY');
     $('#days').val('30');
     $('#payment_term').val('30');
+
     $('#order_date_display,#payment_type_display,#remarks_so').val('');
-    $('#shippingBody').html('<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">Pilih Sales Order terlebih dahulu.</td></tr>');
+    $('#customer_id_hidden,#customer_name,#customer_name_display,#customer_address,#customer_city').val('');
+
+    $('#shippingBody').html(
+        '<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">' +
+        'Pilih Sales Order terlebih dahulu.</td></tr>'
+    );
+
     recalcTotals();
 }
 
@@ -456,17 +478,13 @@ function loadOrderShippings(orderNo){
             }
 
             var html = '';
-            var selectedShippingNo = $('#selected_shipping_no').val() || '';
-            var shippingRows = res.data;
-
-            if(selectedShippingNo){
-                shippingRows = res.data.filter(function(s){
-                    return String(s.shipping_no || '') === String(selectedShippingNo);
-                });
-            }
+            var shippingRows = Array.isArray(res.data) ? res.data : [];
 
             if(!shippingRows.length){
-                $('#shippingBody').html('<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">Shipping No yang dipilih tidak ditemukan pada Sales Order ini.</td></tr>');
+                $('#shippingBody').html(
+                    '<tr><td colspan="9" style="text-align:center;color:#777;padding:15px;">' +
+                    'Tidak ada shipping yang belum masuk invoice untuk Sales Order ini.</td></tr>'
+                );
                 recalcTotals();
                 return;
             }
@@ -479,7 +497,7 @@ function loadOrderShippings(orderNo){
                 var items = getShippingItems(s);
 
                 html += '<tr class="shipping-main-row" data-shipping-no="'+escHtml(shippingNo)+'">'+
-                    '<td style="text-align:center;"><input type="checkbox" class="ship-check" name="shipping_no[]" value="'+escHtml(shippingNo)+'" data-subtotal="'+escHtml(subtotal)+'" data-total="'+escHtml(total)+'" '+(selectedShippingNo === shippingNo ? 'checked' : '')+'></td>'+
+                    '<td style="text-align:center;"><input type="checkbox" class="ship-check" value="'+escHtml(shippingNo)+'" data-subtotal="'+escHtml(subtotal)+'" data-total="'+escHtml(total)+'" form="formInvoice"></td>'+
                     '<td style="text-align:center;"><button type="button" class="expand-btn" data-shipping-no="'+escHtml(shippingNo)+'" data-loaded="'+(items.length ? '1' : '0')+'">+</button></td>'+
                     '<td style="font-weight:bold;color:#0d6efd;">'+escHtml(shippingNo)+'</td>'+
                     '<td>'+escHtml(fmtDate(s.shipping_date))+'<input type="hidden" name="shipping_date_'+escHtml(shippingNo)+'" value="'+escHtml(s.shipping_date)+'"></td>'+
@@ -567,53 +585,64 @@ $(document).ready(function(){
     if(typeof flatpickr !== 'undefined'){
         flatpickr('.datepicker', { dateFormat:'d-M-Y', allowInput:true, disableMobile:true });
     }
-    $('#customer_id,#order_no').select2({ width:'100%', placeholder:'-- Pilih --', allowClear:true });
-
-    $('#customer_id').on('change', function(){
-        var opt = this.options[this.selectedIndex];
-        if(!opt || !this.value){
-            $('#customer_id_hidden,#customer_name,#customer_address,#customer_city,#selected_shipping_no').val('');
-            loadCustomerOrders('');
-            return;
-        }
-        var actualCustomerId = opt.getAttribute('data-customer-id') || '';
-        var selectedShippingNo = opt.getAttribute('data-shipping-no') || '';
-        var selectedOrderNo = opt.getAttribute('data-order-no') || '';
-
-        $('#customer_id_hidden').val(actualCustomerId);
-        $('#customer_name').val(opt.getAttribute('data-customer-name') || opt.text.trim());
-        $('#customer_address').val(opt.getAttribute('data-address') || '');
-        $('#customer_city').val(opt.getAttribute('data-city') || '');
-        $('#selected_shipping_no').val(selectedShippingNo);
-
-        loadCustomerOrders(actualCustomerId, selectedOrderNo, selectedShippingNo);
+    $('#order_no').select2({
+        width:'100%',
+        placeholder:'-- Pilih Sales Order --',
+        allowClear:true
     });
 
     $('#order_no').on('change', function(){
         var opt = this.options[this.selectedIndex];
-        if(!opt || !this.value){ resetOrderFields(); return; }
+
+        if(!opt || !this.value){
+            resetOrderFields();
+            return;
+        }
+
         selectedOrder = {
             order_no: this.value,
             order_date: opt.getAttribute('data-order-date') || '',
+            customer_id: opt.getAttribute('data-customer-id') || '',
+            customer_name: opt.getAttribute('data-customer-name') || '',
+            customer_address: opt.getAttribute('data-address') || '',
+            customer_city: opt.getAttribute('data-city') || '',
             payment_type: opt.getAttribute('data-payment-type') || '',
             payment_term: opt.getAttribute('data-payment-term') || '',
             days: opt.getAttribute('data-days') || '30',
             currency: opt.getAttribute('data-currency') || 'IDR',
             station: opt.getAttribute('data-station') || 'FACTORY',
+            grand_total: parseFloat(opt.getAttribute('data-grand-total') || 0),
             down_payment: parseFloat(opt.getAttribute('data-down-payment') || 0),
             remarks: opt.getAttribute('data-remarks') || ''
         };
+
+        $('#customer_id_hidden').val(selectedOrder.customer_id);
+        $('#customer_name').val(selectedOrder.customer_name);
+        $('#customer_name_display').val(selectedOrder.customer_name);
+        $('#customer_address').val(selectedOrder.customer_address);
+        $('#customer_city').val(selectedOrder.customer_city);
+
         $('#order_date').val(selectedOrder.order_date);
         $('#order_date_display').val(fmtDate(selectedOrder.order_date));
+
         $('#payment_type').val(selectedOrder.payment_type);
         $('#payment_type_display').val(selectedOrder.payment_type);
-        var selectedDays = selectedOrder.days || selectedOrder.payment_term || '30';
+
+        var selectedDays =
+            selectedOrder.days ||
+            selectedOrder.payment_term ||
+            '30';
+
         $('#days').val(selectedDays);
-        $('#payment_term').val(selectedDays);
-        $('#currency').val(selectedOrder.currency);
-        $('#station').val((selectedOrder.station || 'FACTORY').toUpperCase());
+        $('#payment_term').val(selectedOrder.payment_term || '');
+        $('#currency').val(selectedOrder.currency || 'IDR');
+        $('#station').val(
+            (selectedOrder.station || 'FACTORY').toUpperCase()
+        );
         $('#remarks_so').val(selectedOrder.remarks);
-        loadOrderShippings(this.value);
+
+        loadOrderShippings(selectedOrder.order_no);
+        loadCustomerDeposit(selectedOrder.customer_id);
         recalcTotals();
     });
 
@@ -626,26 +655,82 @@ $(document).ready(function(){
     });
 
     $('#formInvoice').on('submit', function(e){
+        var $form = $(this);
+        var $checkedShipping = $('.ship-check:checked');
+
         if(!$('#customer_id_hidden').val()){
-            e.preventDefault(); alert('Customer / Shipping No wajib dipilih.'); return false;
+            e.preventDefault();
+            alert('Data customer dari Sales Order tidak ditemukan.');
+            return false;
         }
+
         if(!$('#order_no').val()){
-            e.preventDefault(); alert('Sales Order wajib dipilih.'); return false;
+            e.preventDefault();
+            alert('Sales Order wajib dipilih.');
+            return false;
         }
-        if($('.ship-check:checked').length === 0){
-            e.preventDefault(); alert('Pilih minimal 1 shipping/surat jalan.'); return false;
+
+        if($checkedShipping.length === 0){
+            e.preventDefault();
+            alert('Pilih minimal 1 shipping/surat jalan.');
+            return false;
         }
+
+        /*
+         * Checkbox Shipping dibuat secara dinamis di tabel.
+         * Agar shipping_no[] pasti masuk POST, salin semua checkbox
+         * terpilih menjadi hidden input langsung di dalam form.
+         */
+        $form.find('input.shipping-post-value').remove();
+
+        $checkedShipping.each(function(){
+            $('<input>', {
+                type: 'hidden',
+                name: 'shipping_no[]',
+                value: String($(this).val() || ''),
+                class: 'shipping-post-value'
+            }).appendTo($form);
+        });
+
         var d = parseInt($('#days').val(), 10);
-        if (isNaN(d) || d < 0) d = 30;
+        if (isNaN(d) || d < 0) {
+            d = 30;
+        }
+
         $('#days').val(d);
-        $('#payment_term').val(String(d));
+
+        /*
+         * Jangan timpa payment_term dengan days.
+         * payment_term tetap mengikuti data Sales Order.
+         */
+        if (!$('#payment_term').val()) {
+            $('#payment_term').val(
+                selectedOrder && selectedOrder.payment_term
+                    ? selectedOrder.payment_term
+                    : ''
+            );
+        }
+
         if (!$.trim($('#station').val())) {
             $('#station').val('FACTORY');
         }
 
         var invDate = $('input[name="invoice_date"]');
         invDate.val(indoToSql(invDate.val()));
-        $('#btnSave').prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Saving...');
+
+        /*
+         * Pemeriksaan terakhir sebelum submit.
+         */
+        if ($form.find('input[name="shipping_no[]"]').length === 0) {
+            e.preventDefault();
+            alert('Shipping terpilih gagal dimasukkan ke form. Silakan pilih ulang.');
+            return false;
+        }
+
+        $('#btnSave')
+            .prop('disabled', true)
+            .html('<i class="fa fa-spinner fa-spin"></i> Saving...');
+
         return true;
     });
 });

@@ -55,6 +55,7 @@ function appIcon($name) {
         'print' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10v5H7V3Zm2 2v1h6V5H9ZM6 9h12a3 3 0 0 1 3 3v5h-4v4H7v-4H3v-5a3 3 0 0 1 3-3Zm3 7v3h6v-3H9Zm8-3h2v-1a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v3h2v-1h10v1h2v-2h-2Z"/></svg>',
         'edit' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.86 3.59a2 2 0 0 1 2.83 0l.72.72a2 2 0 0 1 0 2.83L9.5 18.05 5 19l.95-4.5L16.86 3.59Zm1.41 1.41L7.78 15.5l-.3 1.02 1.02-.3L19 5.73 18.27 5ZM4 21h16v-2H4v2Z"/></svg>',
         'delete' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v9h-2V9Zm4 0h2v9h-2V9ZM7 9h2v10h6V9h2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9Z"/></svg>',
+        'expand' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5H7Z"/></svg>',
         'calendar' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm11 8H6v10h12V10ZM6 6v2h12V6H6Z"/></svg>',
         'status' => '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 6v6c0 5 3.8 9.7 9 10 5.2-.3 9-5 9-10V6l-9-4Zm0 2.2 7 3.1V12c0 4-2.9 7.5-7 8-4.1-.5-7-4-7-8V7.3l7-3.1Zm-1 11.2 5.3-5.3 1.4 1.4-6.7 6.7-3.7-3.7 1.4-1.4 2.3 2.3Z"/></svg>',
     ];
@@ -150,6 +151,46 @@ if (!$stmt) {
 mysqli_stmt_bind_param($stmt, $types, ...$params);
 mysqli_stmt_execute($stmt);
 $result = mysqli_stmt_get_result($stmt);
+
+$invoiceDetails = [];
+$detailSql = "
+    SELECT
+        di.invoice_no,
+        di.shipping_no,
+        di.shipping_date,
+        hs.order_no,
+        ds.inventory_id,
+        ds.inventory_name,
+        ds.qty_shipping,
+        ds.uom_shipping,
+        ds.qty_pack_shipping,
+        ds.uom_pack_shipping,
+        ds.qty_detail_shipping,
+        ds.uom_detail_shipping,
+        ds.price_unit,
+        ds.subtotal,
+        ds.remarks_inventory_shipping
+    FROM det_invoice di
+    INNER JOIN hed_shipping hs ON hs.shipping_no = di.shipping_no
+    INNER JOIN det_shipping ds ON ds.shipping_no = di.shipping_no
+    INNER JOIN head_invoice hi ON hi.invoice_no = di.invoice_no
+    $where_sql  
+    ORDER BY di.invoice_no, di.shipping_date, di.shipping_no, ds.id
+";
+
+$detailStmt = mysqli_prepare($conn, $detailSql);
+if ($detailStmt) {
+    mysqli_stmt_bind_param($detailStmt, $types, ...$params);
+    mysqli_stmt_execute($detailStmt);
+    $detailResult = mysqli_stmt_get_result($detailStmt);
+
+    while ($detailRow = mysqli_fetch_assoc($detailResult)) {
+        $key = (string)($detailRow['invoice_no'] ?? '');
+        $invoiceDetails[$key][] = $detailRow;
+    }
+
+    mysqli_stmt_close($detailStmt);
+}
 ?>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -310,6 +351,18 @@ $result = mysqli_stmt_get_result($stmt);
 .text-center { text-align: center; }
 .text-bold { font-weight: bold; }
 .text-blue { color: #0d6efd; }
+.btn-expand { background: #6f42c1; color: #fff; }
+.btn-expand .app-icon { transition: transform .2s ease; }
+.btn-expand.expanded .app-icon { transform: rotate(180deg); }
+.invoice-detail-row { display: none; }
+.invoice-detail-row.show { display: table-row; }
+.invoice-detail-cell { padding: 0 !important; background: #f8fbff !important; }
+.invoice-detail-box { padding: 10px 12px 12px 45px; min-width: 1250px; }
+.invoice-detail-title { font-weight: 700; color: #2b4c7e; margin-bottom: 7px; }
+.invoice-detail-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+.invoice-detail-table th,
+.invoice-detail-table td { border: 1px solid #ccd7e3; padding: 6px; background: #fff; white-space: nowrap; }
+.invoice-detail-table th { background: #dfeaf5; color: #2b4c7e; position: static; }
 @media (max-width: 900px) {
     .filter-grid {
         grid-template-columns: 1fr 1fr;
@@ -432,23 +485,31 @@ $result = mysqli_stmt_get_result($stmt);
                         ?>
                         <tr>
                           <td class="sticky-aksi text-center">
+                                <button type="button"
+                                        class="btn-vs btn-expand btn-action js-expand-invoice"
+                                        data-target="detail-<?= h(md5($invoiceNo)) ?>"
+                                        title="Lihat detail invoice">
+                                    <span class="app-icon"><?= appIcon('expand') ?></span>
+                                </button>
+
                                 <a class="btn-vs btn-primary btn-action"
-                                href="modul/transaksi/cetak_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
-                                target="_blank"
-                                title="Print">
+                                   href="modul/transaksi/cetak_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
+                                   target="_blank"
+                                   title="Cetak harga invoice">
                                     <span class="app-icon"><?= appIcon('print') ?></span>
                                 </a>
 
-                                <!--<a class="btn-vs btn-warning btn-action"
-                                href="modul/transaksi/edit_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
-                                title="Edit">
-                                    <span class="app-icon"><?= appIcon('edit') ?></span>
-                                </a>-->
+                                <a class="btn-vs btn-success btn-action"
+                                   href="modul/transaksi/cetak_invoice_full.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
+                                   target="_blank"
+                                   title="Cetak invoice lengkap">
+                                    <span class="app-icon"><?= appIcon('print') ?></span>
+                                </a>
 
                                 <a class="btn-vs btn-danger btn-action"
-                                href="modul/transaksi/delete_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
-                                onclick="return confirm('Hapus invoice <?= htmlspecialchars($row['invoice_no'], ENT_QUOTES, 'UTF-8') ?>?')"
-                                title="Delete">
+                                   href="modul/transaksi/delete_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
+                                   onclick="return confirm('Hapus invoice <?= htmlspecialchars($row['invoice_no'], ENT_QUOTES, 'UTF-8') ?>?')"
+                                   title="Delete">
                                     <span class="app-icon"><?= appIcon('delete') ?></span>
                                 </a>
                             </td>
@@ -473,6 +534,53 @@ $result = mysqli_stmt_get_result($stmt);
                             <td><?= h($row['user_modified']) ?></td>
                             <td><?= h($row['date_modified']) ?></td>
                         </tr>
+
+                        <?php
+                            $detailRows = $invoiceDetails[$invoiceNo] ?? [];
+                            $detailTargetId = 'detail-' . md5($invoiceNo);
+                        ?>
+                        <tr id="<?= h($detailTargetId) ?>" class="invoice-detail-row">
+                            <td colspan="21" class="invoice-detail-cell">
+                                <div class="invoice-detail-box">
+                                    <div class="invoice-detail-title">Detail Invoice: <?= h($invoiceNo) ?></div>
+                                    <table class="invoice-detail-table">
+                                        <thead>
+                                            <tr>
+                                                <th>No</th><th>Shipping No</th><th>Shipping Date</th><th>Order No</th>
+                                                <th>Inventory ID</th><th>Inventory Name</th><th>Qty</th><th>UoM</th>
+                                                <th>Qty Pack</th><th>UoM Pack</th><th>Qty Detail</th><th>UoM Detail</th>
+                                                <th>Price Unit</th><th>Subtotal</th><th>Remarks</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                        <?php if (empty($detailRows)): ?>
+                                            <tr><td colspan="15" class="text-center">Detail inventory tidak ditemukan.</td></tr>
+                                        <?php else: ?>
+                                            <?php foreach ($detailRows as $detailIndex => $detailRow): ?>
+                                                <tr>
+                                                    <td class="text-center"><?= $detailIndex + 1 ?></td>
+                                                    <td><?= h($detailRow['shipping_no']) ?></td>
+                                                    <td><?= h(formatDateDisplay($detailRow['shipping_date'])) ?></td>
+                                                    <td><?= h($detailRow['order_no']) ?></td>
+                                                    <td><?= h($detailRow['inventory_id']) ?></td>
+                                                    <td><?= h($detailRow['inventory_name']) ?></td>
+                                                    <td class="text-right"><?= h(formatMoney($detailRow['qty_shipping'])) ?></td>
+                                                    <td><?= h($detailRow['uom_shipping']) ?></td>
+                                                    <td class="text-right"><?= h(formatMoney($detailRow['qty_pack_shipping'])) ?></td>
+                                                    <td><?= h($detailRow['uom_pack_shipping']) ?></td>
+                                                    <td class="text-right"><?= h(formatMoney($detailRow['qty_detail_shipping'])) ?></td>
+                                                    <td><?= h($detailRow['uom_detail_shipping']) ?></td>
+                                                    <td class="text-right">Rp <?= h(formatMoney($detailRow['price_unit'])) ?></td>
+                                                    <td class="text-right">Rp <?= h(formatMoney($detailRow['subtotal'])) ?></td>
+                                                    <td><?= h($detailRow['remarks_inventory_shipping']) ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </td>
+                        </tr>
                     <?php endwhile; ?>
                 <?php endif; ?>
             </tbody>
@@ -481,6 +589,17 @@ $result = mysqli_stmt_get_result($stmt);
 </div>
 
 <script>
+document.addEventListener('click', function(event) {
+    var button = event.target.closest('.js-expand-invoice');
+    if (!button) return;
+
+    var target = document.getElementById(button.getAttribute('data-target'));
+    if (!target) return;
+
+    target.classList.toggle('show');
+    button.classList.toggle('expanded');
+});
+
 if (typeof flatpickr !== 'undefined') {
     flatpickr('.js-date-picker', {
         dateFormat: 'd-M-Y',

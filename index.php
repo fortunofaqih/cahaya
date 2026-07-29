@@ -174,6 +174,9 @@ switch ($page) {
     case 'cetak_invoice':
         include 'modul/transaksi/cetak_invoice.php';
         break;
+    case 'cetak_invoice_full':
+        include 'modul/transaksi/cetak_invoice_full.php';
+        break;
     case 'edit_invoice':
         include 'modul/transaksi/edit_invoice.php';
         break;

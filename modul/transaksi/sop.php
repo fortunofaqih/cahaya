@@ -2112,116 +2112,13 @@ function formatQtyText(value) {
     return String(num).replace(/\.?(0+)$/, '');
 }
 
-function getInventoryCategory(item) {
-    return String(
-        item.inventory_category ||
-        item.category ||
-        item.inventory_name ||
-        item.inv_name ||
-        ''
-    ).toUpperCase();
-}
 
-function getRollThicknessValue(item) {
-    // Prioritas utama tetap dari master inventory: mi.t / inventory_t.
-    let directT = parseDecimalJS(item.inventory_t ?? item.t ?? 0);
-    if (directT > 0) {
-        return directT;
-    }
 
-    // Fallback saat edit: ambil dari Ukuran Roll / catalog.
-    // Contoh ukuran: 0.2000X300/160X51 M -> tebal = 0.2000
-    let ukuranText = String(
-        $('#ukuran_rol').val() ||
-        item.ukuran_rol ||
-        item.inventory_catalog ||
-        item.catalog ||
-        item.inventory_name ||
-        ''
-    ).trim().replace(',', '.');
 
-    let match = ukuranText.match(/(\d+(?:\.\d+)?)\s*[xX]/);
-    if (match) {
-        return parseFloat(match[1]) || 0;
-    }
 
-    // Fallback terakhir: ambil angka pertama dari ukuran bila format tidak memakai X.
-    let firstNumber = ukuranText.match(/\d+(?:\.\d+)?/);
-    return firstNumber ? (parseFloat(firstNumber[0]) || 0) : 0;
-}
 
-function getRollDivider(item) {
-    // Ambil semua data category yang tersedia
-    let category = String(item.inventory_category || item.category || '').toUpperCase();
-    let categoriId = String(item.categori_id || '').toUpperCase();
-    let categoryName = String(item.category_name || '').toUpperCase();
-    let inventoryName = String(item.inventory_name || item.inv_name || '').toUpperCase();
-    
-    // Gabungkan semua untuk pengecekan
-    let allText = category + ' ' + categoriId + ' ' + categoryName + ' ' + inventoryName;
-    
-    console.log('Category Check:', {
-        category: category,
-        categoriId: categoriId,
-        categoryName: categoryName,
-        inventoryName: inventoryName,
-        allText: allText
-    });
-    
-    // DETEKSI PP
-    // Cek dari text
-    if (/\bPP\b/.test(allText) || allText.includes('PP')) {
-        console.log('Detected PP from text, divider = 17');
-        return 17;
-    }
-    
-    // Cek dari categori_id PP (CAT029-CAT035)
-    if (categoriId === 'CAT029' || categoriId === 'CAT030' || 
-        categoriId === 'CAT031' || categoriId === 'CAT032' || 
-        categoriId === 'CAT033' || categoriId === 'CAT034' || 
-        categoriId === 'CAT035') {
-        console.log('Detected PP from categori_id, divider = 17');
-        return 17;
-    }
-    
-    // DETEKSI PE
-    if (/\bPE\b/.test(allText) || allText.includes('PE') ||
-        categoriId === 'CAT022' || categoriId === 'CAT023' || 
-        categoriId === 'CAT024' || categoriId === 'CAT025' || 
-        categoriId === 'CAT026' || categoriId === 'CAT027' || 
-        categoriId === 'CAT028') {
-        console.log('Detected PE, divider = 18');
-        return 18;
-    }
-    
-    // DETEKSI HD
-    if (/\bHD\b/.test(allText) || allText.includes('HD') ||
-        categoriId === 'CAT005' || categoriId === 'CAT006' || 
-        categoriId === 'CAT007' || categoriId === 'CAT008' || 
-        categoriId === 'CAT009' || categoriId === 'CAT010' || 
-        categoriId === 'CAT011' || categoriId === 'CAT012') {
-        console.log('Detected HD, divider = 18');
-        return 18;
-    }
-    
-    console.log('Default divider = 18');
-    return 18;  // Default
-}
 
-function getAutoStandarCekRol(item) {
-    let category = getInventoryCategory(item);
-    let lebar = parseFloat(item.inventory_l || item.l || 0);
 
-    if (category.includes('PP')) {
-        return '100';
-    }
-
-    if (category.includes('PE') || category.includes('HD')) {
-        return lebar < 100 ? '50' : '25';
-    }
-
-    return '';
-}
 
 function getAutoBeratJenisRol(item) {
     let density = item.inventory_density ?? item.density ?? '';
@@ -2251,21 +2148,177 @@ function getAutoNatWarnaRol(item) {
     return String(item.inventory_colour || item.colour || '');
 }
 
-function getAutoGramaturAsliRol(item) {
-    let tebal = getRollThicknessValue(item);
-    let lebar = parseDecimalJS(item.inventory_l || item.l || 0);
-    let beratJenis = parseDecimalJS($('#berat_jenis_rol').val() || getAutoBeratJenisRol(item));
-    let standarCek = parseDecimalJS($('#standar_cek_rol').val() || getAutoStandarCekRol(item));
+/* ----------------------------------------------------------
+   1. MASTER KODE KATEGORI (sesuai tabel m_category Anda)
+   ----------------------------------------------------------
+   HD  : CAT005, CAT006, CAT007, CAT008, CAT009, CAT010, CAT011, CAT012
+   PE  : CAT022, CAT023, CAT024, CAT025, CAT026, CAT027, CAT028, CAT044 (PE SABLON)
+   PP  : CAT029, CAT030, CAT031, CAT032, CAT033, CAT034, CAT035, CAT045 (PP SABLON)
 
-    // Fallback lebar dari Ukuran Roll jika mi.l kosong.
-    // Contoh ukuran: 0.2000X300/160X51 M -> lebar = 300
-    if (lebar <= 0) {
-        let ukuranText = String($('#ukuran_rol').val() || item.ukuran_rol || item.inventory_catalog || item.catalog || '').replace(',', '.');
-        let match = ukuranText.match(/\d+(?:\.\d+)?\s*[xX]\s*(\d+(?:\.\d+)?)/);
-        if (match) {
-            lebar = parseFloat(match[1]) || 0;
-        }
+   Catatan: kalau nanti master kategori bertambah/berubah kode,
+   cukup update 3 array ini saja, seluruh perhitungan lain otomatis ikut.
+---------------------------------------------------------- */
+const MATERIAL_CATEGORY_MAP = {
+    PP: ['CAT029', 'CAT030', 'CAT031', 'CAT032', 'CAT033', 'CAT034', 'CAT035', 'CAT045'],
+    PE: ['CAT022', 'CAT023', 'CAT024', 'CAT025', 'CAT026', 'CAT027', 'CAT028', 'CAT044'],
+    HD: ['CAT005', 'CAT006', 'CAT007', 'CAT008', 'CAT009', 'CAT010', 'CAT011', 'CAT012']
+};
+
+/* ----------------------------------------------------------
+   2. DETEKSI JENIS MATERIAL (PP / PE / HD)
+   ----------------------------------------------------------
+   Prioritas:
+   a) categori_id (paling akurat, karena berbasis kode master, bukan teks)
+   b) fallback ke nama kategori / nama inventory (jaga-jaga bila
+      categori_id belum ter-join atau data lama belum lengkap)
+---------------------------------------------------------- */
+function detectMaterialType(item) {
+    let categoriId = String(item.categori_id || '').trim().toUpperCase();
+
+    if (categoriId !== '') {
+        if (MATERIAL_CATEGORY_MAP.PP.includes(categoriId)) return 'PP';
+        if (MATERIAL_CATEGORY_MAP.PE.includes(categoriId)) return 'PE';
+        if (MATERIAL_CATEGORY_MAP.HD.includes(categoriId)) return 'HD';
     }
+
+    // Fallback berbasis teks (dipakai hanya jika categori_id kosong/tidak dikenali)
+    let fallbackText = String(
+        item.category_name ||
+        item.inventory_category ||
+        item.category ||
+        item.inventory_name ||
+        item.inv_name ||
+        ''
+    ).toUpperCase();
+
+    if (/\bPP\b/.test(fallbackText)) return 'PP';
+    if (/\bPE\b/.test(fallbackText)) return 'PE';
+    if (/\bHD\b/.test(fallbackText)) return 'HD';
+
+    return '';
+}
+
+/* ----------------------------------------------------------
+   3. LEBAR ROLL (dengan fallback dari teks "Ukuran Roll")
+   ----------------------------------------------------------
+   Prioritas:
+   a) mi.l / inventory_l (master inventory) -> paling akurat
+   b) ekstraksi dari teks Ukuran Roll, contoh:
+      "0.2000X300/160X51 M" -> tebal=0.2000, lebar=300
+---------------------------------------------------------- */
+function getRollWidthValue(item) {
+    let lebar = parseDecimalJS(item.inventory_l ?? item.l ?? 0);
+    if (lebar > 0) {
+        return lebar;
+    }
+
+    let ukuranText = String(
+        $('#ukuran_rol').val() ||
+        item.ukuran_rol ||
+        item.inventory_catalog ||
+        item.catalog ||
+        item.inventory_name ||
+        ''
+    ).trim().replace(',', '.');
+
+    // Format umum: [tebal]X[lebar]/... contoh: 0.2000X300/160X51 M
+    let match = ukuranText.match(/\d+(?:\.\d+)?\s*[xX]\s*(\d+(?:\.\d+)?)/);
+    if (match) {
+        return parseFloat(match[1]) || 0;
+    }
+
+    return 0;
+}
+
+/* ----------------------------------------------------------
+   4. TEBAL ROLL (t) — logika lama dipertahankan, hanya dirapikan
+   ----------------------------------------------------------
+   Prioritas:
+   a) mi.t / inventory_t (master inventory)
+   b) ekstraksi angka pertama sebelum "X" dari teks Ukuran Roll
+   c) fallback terakhir: angka pertama yang ditemukan di teks
+---------------------------------------------------------- */
+function getRollThicknessValue(item) {
+    let directT = parseDecimalJS(item.inventory_t ?? item.t ?? 0);
+    if (directT > 0) {
+        return directT;
+    }
+
+    let ukuranText = String(
+        $('#ukuran_rol').val() ||
+        item.ukuran_rol ||
+        item.inventory_catalog ||
+        item.catalog ||
+        item.inventory_name ||
+        ''
+    ).trim().replace(',', '.');
+
+    let match = ukuranText.match(/(\d+(?:\.\d+)?)\s*[xX]/);
+    if (match) {
+        return parseFloat(match[1]) || 0;
+    }
+
+    let firstNumber = ukuranText.match(/\d+(?:\.\d+)?/);
+    return firstNumber ? (parseFloat(firstNumber[0]) || 0) : 0;
+}
+
+/* ----------------------------------------------------------
+   5. STANDAR PENGECEKAN
+   ----------------------------------------------------------
+   Aturan:
+   - PP           -> selalu 100 (tidak terpengaruh lebar)
+   - PE atau HD   -> lebar < 100  -> 50
+                     lebar >= 100 -> 25
+   - Material lain / tidak terdeteksi -> '' (kosong, tidak dihitung)
+---------------------------------------------------------- */
+function getAutoStandarCekRol(item) {
+    let material = detectMaterialType(item);
+    let lebar = getRollWidthValue(item);
+
+    if (material === 'PP') {
+        return '100';
+    }
+
+    if (material === 'PE' || material === 'HD') {
+        return lebar < 100 ? '50' : '25';
+    }
+
+    return '';
+}
+
+/* ----------------------------------------------------------
+   6. PEMBAGI UNTUK TEBAL ASLI
+   ----------------------------------------------------------
+   Aturan (sesuai kode lama, sekarang berbasis detectMaterialType):
+   - PP          -> 17
+   - PE atau HD  -> 18
+   - default     -> 18
+---------------------------------------------------------- */
+function getRollDivider(item) {
+    let material = detectMaterialType(item);
+
+    if (material === 'PP') {
+        return 17;
+    }
+
+    if (material === 'PE' || material === 'HD') {
+        return 18;
+    }
+
+    return 18; // default
+}
+
+/* ----------------------------------------------------------
+   7. GRAMATUR ASLI
+   ----------------------------------------------------------
+   Rumus:
+   Gramatur Asli = (tebal x 100) x lebar x density x standar_pengecekan / 10000
+---------------------------------------------------------- */
+function getAutoGramaturAsliRol(item) {
+    let tebal = getRollThicknessValue(item);                     // t
+    let lebar = getRollWidthValue(item);                         // l (dengan fallback konsisten)
+    let beratJenis = parseDecimalJS($('#berat_jenis_rol').val() || getAutoBeratJenisRol(item)); // density
+    let standarCek = parseDecimalJS($('#standar_cek_rol').val() || getAutoStandarCekRol(item));  // standar pengecekan
 
     if (tebal <= 0 || lebar <= 0 || beratJenis <= 0 || standarCek <= 0) {
         return '';
@@ -2274,6 +2327,12 @@ function getAutoGramaturAsliRol(item) {
     return formatNumber2((tebal * 100 * lebar * beratJenis * standarCek) / 10000);
 }
 
+/* ----------------------------------------------------------
+   8. TEBAL ASLI
+   ----------------------------------------------------------
+   Rumus:
+   Tebal Asli = (tebal x 100) x density / pembagi
+---------------------------------------------------------- */
 function getAutoTebalAsliRol(item) {
     let tebal = getRollThicknessValue(item);
     let density = parseDecimalJS($('#berat_jenis_rol').val() || getAutoBeratJenisRol(item));
@@ -2285,6 +2344,7 @@ function getAutoTebalAsliRol(item) {
 
     return formatNumber2((tebal * 100 * density) / pembagi);
 }
+
 
 function getDefaultSpecRolText() {
     return 'Gram: +/-%  Tebal: +/-%';

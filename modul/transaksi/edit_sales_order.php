@@ -869,43 +869,94 @@ function calculatePriceUnitFromPrice(row) {
 // ============================================================
 // FUNGSI QTY & UOM DETAIL
 // ============================================================
-function updateQtyPackBySelectedUomPack(row) {
-    if (!isAutoCorrectEnabled()) {
-        setAutoCalculatedState(row, false);
-        calculateRow(row);
+function applyAutoCorrectToRow(row) {
+    var $row = $(row);
+
+    var inventoryId = $row.find('.inv-select').val();
+    var uomDetailUnit = ($row.find('.inv-uom-detail').val() || '').trim();
+    var uomDetailValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
+    var uomDetailFactor = parseFloat($row.find('.inv-uom-detail-factor').val()) || 0;
+    var uomPack = ($row.find('.inv-uom-pack-select').val() || '').trim();
+
+    if (!inventoryId || !uomDetailUnit || uomDetailValue <= 0) return;
+
+    if (uomDetailFactor <= 0) {
+        uomDetailFactor = getUomFactor(inventoryId, uomDetailUnit);
+        $row.find('.inv-uom-detail-factor').val(formatDecimalInput(uomDetailFactor));
+    }
+
+    if (uomDetailFactor <= 0) {
         return;
     }
 
+    var qtyDefault = uomDetailValue * uomDetailFactor;
+    $row.find('.qty').val(formatDecimalInput(qtyDefault)).addClass('qty-auto-calculated');
+
+    var packFactor = getUomFactor(inventoryId, uomPack);
+
+    if (uomPack && packFactor > 0) {
+        $row.find('.qty-pack').val(formatDecimalInput(qtyDefault / packFactor)).addClass('qty-auto-calculated');
+    } else if (uomPack) {
+        $row.find('.qty-pack').val(formatDecimalInput(qtyDefault)).addClass('qty-auto-calculated');
+    }
+
+    if (isSpecialInventory($row.find('.inv-name-hidden').val() || '')) {
+        var priceUnit = parseRupiah($row.find('.price-unit').val());
+        if (priceUnit > 0) {
+            calculatePriceFromPriceUnit(row);
+        }
+    }
+
+    calculateRow(row);
+}
+
+function updateQtyPackBySelectedUomPack(row) {
     var $row = $(row);
-    setAutoCalculatedState(row, true);
+
     var inventoryId = $row.find('.inv-select').val();
+
     var uomDefault = ($row.find('.inv-uom').val() || '').trim();
     var uomPack = ($row.find('.inv-uom-pack-select').val() || '').trim();
+
     var qtyDefault = parseFloat($row.find('.qty').val()) || 0;
+
     var uomDetailUnit = ($row.find('.inv-uom-detail').val() || '').trim();
     var uomDetailManualValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
-    
+
     if (!uomPack) {
         $row.find('.qty-pack').val(0);
         calculateRow(row);
         return;
     }
-    
+
+    if (uomDetailUnit && uomDetailUnit !== uomPack && uomDetailManualValue > 0) {
+        var selectedPackFactor = getUomFactor(inventoryId, uomPack);
+        if (selectedPackFactor > 0) {
+            var convertedQtyPack = qtyDefault / selectedPackFactor;
+            $row.find('.qty-pack').val(formatDecimalInput(convertedQtyPack));
+        } else {
+            $row.find('.qty-pack').val(formatDecimalInput(qtyDefault));
+        }
+        calculateRow(row);
+        return;
+    }
+
     if (uomPack === uomDefault) {
         $row.find('.qty-pack').val(formatDecimalInput(qtyDefault));
         updateUomDetailFromQtyPack(row);
         calculateRow(row);
         return;
     }
-    
+
     if (uomPack === uomDetailUnit && uomDetailManualValue > 0) {
         $row.find('.qty-pack').val(formatDecimalInput(uomDetailManualValue));
         updateUomDetailFromQtyPack(row);
         calculateRow(row);
         return;
     }
-    
+
     var selectedPackFactor = getUomFactor(inventoryId, uomPack);
+
     if (selectedPackFactor > 0) {
         var convertedQtyPack = qtyDefault / selectedPackFactor;
         $row.find('.qty-pack').val(formatDecimalInput(convertedQtyPack));
@@ -914,21 +965,21 @@ function updateQtyPackBySelectedUomPack(row) {
         $row.find('.qty-pack').val(formatDecimalInput(qtyDefault));
         updateUomDetailFromQtyPack(row);
     }
+
     calculateRow(row);
 }
 
 function updateUomDetailFromQtyPack(row) {
-    if (!isAutoCorrectEnabled()) return;
-
     var $row = $(row);
+    
     var uomPack = ($row.find('.inv-uom-pack-select').val() || '').trim();
     var uomDefault = ($row.find('.inv-uom').val() || '').trim();
     var qtyPack = parseFloat($row.find('.qty-pack').val()) || 0;
     var inventoryId = $row.find('.inv-select').val();
     
-    // Jika UoM Detail sudah diisi manual, jangan ubah
-    var currentUomDetail = $row.find('.inv-uom-detail').val() || '';
+    var currentUomDetail = ($row.find('.inv-uom-detail').val() || '').trim();
     var currentUomDetailValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
+    
     if (currentUomDetail && currentUomDetailValue > 0) {
         return;
     }
@@ -1014,6 +1065,7 @@ function chooseUomDetailFromModal(btn) {
     if (!currentUomDetailRow) return;
 
     var input = $(btn).closest('tr').find('.uom-modal-manual-value');
+
     var selectedUnit = input.data('unit') || '';
     var masterFactor = parseFloat(input.data('factor')) || 0;
     var manualValue = parseFloat(input.val()) || 0;
@@ -1022,50 +1074,55 @@ function chooseUomDetailFromModal(btn) {
         alert('Unit tidak valid.');
         return;
     }
+
     if (manualValue <= 0) {
         alert('Isi value manual terlebih dahulu.');
         input.focus();
         return;
     }
+
     if (masterFactor <= 0) {
         alert('Master value UoM belum valid.');
         return;
     }
 
+    var hasilKonversi = manualValue * masterFactor;
+
     currentUomDetailRow.find('.inv-uom-detail').val(selectedUnit);
     currentUomDetailRow.find('.inv-uom-detail-value').val(formatDecimalInput(manualValue));
     currentUomDetailRow.find('.inv-uom-detail-factor').val(formatDecimalInput(masterFactor));
 
-    if (isAutoCorrectEnabled()) {
-        var hasilKonversi = manualValue * masterFactor;
+    if ($('#chkAutoCorrect').is(':checked')) {
+        applyAutoCorrectToRow(currentUomDetailRow[0]);
+    } else {
+        currentUomDetailRow.find('.qty, .qty-pack').removeClass('qty-auto-calculated');
         currentUomDetailRow.find('.qty').val(formatDecimalInput(hasilKonversi));
         updateQtyPackBySelectedUomPack(currentUomDetailRow[0]);
-        setAutoCalculatedState(currentUomDetailRow[0], true);
-    } else {
-        setAutoCalculatedState(currentUomDetailRow[0], false);
+        calculateRow(currentUomDetailRow[0]);
     }
 
-    calculateRow(currentUomDetailRow[0]);
     closeUomDetailModal();
 }
 
 function recalculateFromUomDetail(row) {
-    if (!isAutoCorrectEnabled()) {
-        setAutoCalculatedState(row, false);
-        calculateRow(row);
+    var $row = $(row);
+
+    if ($('#chkAutoCorrect').is(':checked')) {
+        applyAutoCorrectToRow(row);
         return;
     }
 
-    var $row = $(row);
-    setAutoCalculatedState(row, true);
+    $row.find('.qty, .qty-pack').removeClass('qty-auto-calculated');
+
     var manualValue = parseFloat($row.find('.inv-uom-detail-value').val()) || 0;
     var factor = parseFloat($row.find('.inv-uom-detail-factor').val()) || 0;
-    
+
     if (manualValue > 0 && factor > 0) {
         var hasilKonversi = manualValue * factor;
         $row.find('.qty').val(formatDecimalInput(hasilKonversi));
         updateQtyPackBySelectedUomPack(row);
     }
+
     calculateRow(row);
 }
 
@@ -1252,8 +1309,131 @@ function addRow(data) {
 // ============================================================
 // FUNGSI SELECT2
 // ============================================================
+function findInventoryMaster(inventoryId) {
+    inventoryId = String(inventoryId || '').trim();
+    if (!inventoryId) return null;
+
+    for (var i = 0; i < inventoryData.length; i++) {
+        if (String(inventoryData[i].id || '').trim() === inventoryId) {
+            return inventoryData[i];
+        }
+    }
+    return null;
+}
+
+function getDefaultUomFromMaster(inventoryId) {
+    var list = inventoryUomData[inventoryId] || [];
+    for (var i = 0; i < list.length; i++) {
+        if (parseInt(list[i].default, 10) === 1) {
+            return list[i].unit || '';
+        }
+    }
+    return '';
+}
+
+function populateUomPackOptions(row, inventoryId, selectedUnit) {
+    var $row = $(row);
+    var $select = $row.find('.inv-uom-pack-select');
+    var list = inventoryUomData[inventoryId] || [];
+    var defaultUnit = '';
+
+    $select.empty().append('<option value="">-- Pilih UoM Pack --</option>');
+
+    for (var i = 0; i < list.length; i++) {
+        var unit = String(list[i].unit || '').trim();
+        if (!unit) continue;
+
+        if (parseInt(list[i].default, 10) === 1) {
+            defaultUnit = unit;
+        }
+
+        $select.append($('<option>', {
+            value: unit,
+            text: unit
+        }));
+    }
+
+    selectedUnit = String(selectedUnit || '').trim();
+    var chosenUnit = selectedUnit || defaultUnit;
+
+    if (!chosenUnit) {
+        chosenUnit = String($row.find('.inv-uom').val() || '').trim();
+    }
+
+    // Jika unit dari search_inventory belum terdapat di m_inventory_uom,
+    // tetap tambahkan agar data master inventory masih dapat digunakan.
+    if (chosenUnit && $select.find('option').filter(function() {
+        return String(this.value).trim() === chosenUnit;
+    }).length === 0) {
+        $select.append($('<option>', {
+            value: chosenUnit,
+            text: chosenUnit
+        }));
+    }
+
+    $select.val(chosenUnit);
+    $row.find('.inv-uom-pack').val(chosenUnit);
+
+    return chosenUnit;
+}
+
+function applySelectedInventory(row, rawItem, resetTransactionValues) {
+    var $row = $(row);
+    var item = rawItem || {};
+    var inventoryId = String(item.inventory_id || item.id || $row.find('.inv-select').val() || '').trim();
+
+    if (!inventoryId) {
+        console.error('Inventory ID tidak ditemukan:', item);
+        return;
+    }
+
+    var master = findInventoryMaster(inventoryId) || {};
+    var inventoryName = item.inventory_name || item.name || master.name || '';
+
+    // Beberapa endpoint Select2 hanya mengirim id dan text.
+    // Jangan gunakan text sebagai nama bila masih mengandung "ID — Nama".
+    if (!inventoryName && item.text) {
+        var textValue = String(item.text);
+        var separatorPosition = textValue.indexOf('—');
+        inventoryName = separatorPosition >= 0
+            ? textValue.substring(separatorPosition + 1).trim()
+            : textValue.trim();
+    }
+
+    var uom = item.uom || master.uom || getDefaultUomFromMaster(inventoryId) || '';
+    var uomPack = item.uom_pack || master.uom_pack || '';
+    var p = parseFloat(item.p !== undefined ? item.p : master.p) || 0;
+    var l = parseFloat(item.l !== undefined ? item.l : master.l) || 0;
+    var t = parseFloat(item.t !== undefined ? item.t : master.t) || 0;
+
+    $row.find('.inv-name-hidden').val(inventoryName);
+    $row.find('.inv-uom').val(uom);
+    $row.find('.inv-p').val(p);
+    $row.find('.inv-l').val(l);
+    $row.find('.inv-t').val(t);
+
+    populateUomPackOptions(row, inventoryId, uomPack);
+
+    if (resetTransactionValues) {
+        $row.find('.qty').val('');
+        $row.find('.qty-pack').val('');
+        $row.find('.inv-uom-detail').val('');
+        $row.find('.inv-uom-detail-value').val('');
+        $row.find('.inv-uom-detail-factor').val('');
+        $row.find('.price-unit').val('0');
+        $row.find('.price').val('0');
+        $row.find('.subtotal').val('0');
+        $row.find('.inv-remarks').val('');
+    }
+
+    updatePriceUnitReadonly(row);
+    setAutoCalculatedState(row, false);
+    calculateRow(row);
+}
+
 function initInvSelect2(row) {
     var $sel = $(row).find('.inv-select');
+
     $sel.select2({
         placeholder        : '🔍 Cari inventory ID / nama...',
         allowClear         : true,
@@ -1264,99 +1444,95 @@ function initInvSelect2(row) {
             url          : 'modul/transaksi/search_inventory.php',
             dataType     : 'json',
             delay        : 250,
-            data         : function(p) { return { q: p.term, page: p.page||1 }; },
-            processResults: function(d) { return { results: d.results, pagination: d.pagination }; },
-            cache        : true
+            data         : function(p) {
+                return { q: p.term, page: p.page || 1 };
+            },
+            processResults: function(response) {
+                var results = response && Array.isArray(response.results)
+                    ? response.results
+                    : [];
+
+                // Normalisasi hasil AJAX supaya kompatibel baik endpoint
+                // mengirim id maupun inventory_id.
+                results = results.map(function(item) {
+                    var normalized = $.extend({}, item);
+                    normalized.id = normalized.id || normalized.inventory_id || '';
+                    normalized.inventory_id = normalized.inventory_id || normalized.id || '';
+                    normalized.text = normalized.text ||
+                        (normalized.inventory_id + ' — ' + (normalized.inventory_name || ''));
+                    return normalized;
+                });
+
+                return {
+                    results: results,
+                    pagination: response && response.pagination
+                        ? response.pagination
+                        : { more: false }
+                };
+            },
+            cache: true
         },
         templateResult   : formatInvResult,
         templateSelection: formatInvSelection
     });
 
     $sel.on('select2:select', function(e) {
-        var item = e.params.data;
-        var tr   = $(this).closest('tr');
-        var $tr = $(tr);
-        
-        $tr.find('.inv-name-hidden').val(item.inventory_name || '');
-        $tr.find('.inv-uom').val(item.uom || '');
-        $tr.find('.inv-p').val(item.p || 0);
-        $tr.find('.inv-l').val(item.l || 0);
-        $tr.find('.inv-t').val(item.t || 0);
-        
-        // Update UoM Pack options
-        var uomPackSelect = $tr.find('.inv-uom-pack-select');
-        uomPackSelect.empty();
-        
-        // Tambahkan option default
-        uomPackSelect.append('<option value="">-- Pilih UoM Pack --</option>');
-        
-        if (item.inventory_id && inventoryUomData[item.inventory_id]) {
-            var uomOptions = inventoryUomData[item.inventory_id];
-            var existingUomPack = $tr.find('.inv-uom-pack').val();
-            
-            for (var i = 0; i < uomOptions.length; i++) {
-                var uomItem = uomOptions[i];
-                var isExisting = existingUomPack === uomItem.unit;
-                var selectedAttr = (parseInt(uomItem.default) === 1 || isExisting) ? 'selected' : '';
-                uomPackSelect.append(
-                    '<option value="' + escHtml(uomItem.unit) + '" ' + selectedAttr + '>' +
-                        escHtml(uomItem.unit) +
-                    '</option>'
-                );
-            }
-        } else {
-            if (item.uom_pack) {
-                uomPackSelect.append(
-                    '<option value="' + escHtml(item.uom_pack) + '" selected>' +
-                        escHtml(item.uom_pack) +
-                    '</option>'
-                );
-            }
-        }
-        
-        // Cek apakah ini data existing
-        var isExisting = $tr.find('.inv-uom-detail').val() !== '' || 
-                         parseFloat($tr.find('.qty').val()) > 0;
-        
-        if (!isExisting) {
-            $tr.find('.inv-uom-detail').val('');
-            $tr.find('.inv-uom-detail-value').val(0);
-            $tr.find('.inv-uom-detail-factor').val(0);
-            $tr.find('.qty').val(0);
-            $tr.find('.qty-pack').val(0);
-        }
-        
-        updatePriceUnitReadonly(tr);
-        calculateRow(tr);
+        var item = e.params.data || {};
+        var tr = $(this).closest('tr')[0];
+        applySelectedInventory(tr, item, true);
     });
-    
+
     $sel.on('select2:clear', function() {
         var tr = $(this).closest('tr');
-        var $tr = $(tr);
-        $tr.find('.inv-name-hidden, .inv-uom, .inv-uom-pack, .inv-remarks').val('');
-        $tr.find('.inv-p, .inv-l, .inv-t').val(0);
-        $tr.find('.inv-uom-pack-select').empty().append('<option value="">-- Pilih UoM Pack --</option>');
-        $tr.find('.inv-uom-detail').val('');
-        $tr.find('.inv-uom-detail-value').val(0);
-        $tr.find('.inv-uom-detail-factor').val(0);
-        $tr.find('.qty, .qty-pack, .price-unit, .price, .subtotal').val(0);
-        calculateRow(tr);
+        tr.find('.inv-name-hidden, .inv-uom, .inv-uom-pack, .inv-remarks').val('');
+        tr.find('.inv-p, .inv-l, .inv-t').val(0);
+        tr.find('.inv-uom-pack-select')
+            .empty()
+            .append('<option value="">-- Pilih UoM Pack --</option>');
+        tr.find('.inv-uom-detail').val('');
+        tr.find('.inv-uom-detail-value').val('');
+        tr.find('.inv-uom-detail-factor').val('');
+        tr.find('.qty, .qty-pack, .price-unit, .price, .subtotal').val(0);
+        setAutoCalculatedState(tr[0], false);
+        calculateRow(tr[0]);
     });
 }
 
 function formatInvResult(item) {
-    if (item.loading) return $('<span style="font-size:10px;">🔍 Mencari...</span>');
-    if (!item.inventory_id) return $('<span>' + escHtml(item.text) + '</span>');
+    if (item.loading) {
+        return $('<span style="font-size:10px;">🔍 Mencari...</span>');
+    }
+
+    var inventoryId = item.inventory_id || item.id || '';
+    var master = findInventoryMaster(inventoryId) || {};
+    var inventoryName = item.inventory_name || item.name || master.name || '';
+    var uom = item.uom || master.uom || getDefaultUomFromMaster(inventoryId) || '-';
+
+    if (!inventoryId) {
+        return $('<span>' + escHtml(item.text || '') + '</span>');
+    }
+
     return $(`<div>
-        <span class="inv-id">${escHtml(item.inventory_id)}</span>
-        <span class="inv-name">${escHtml(item.inventory_name||'')}</span>
-        <div class="inv-meta">UoM: ${escHtml(item.uom||'-')}</div>
+        <span class="inv-id">${escHtml(inventoryId)}</span>
+        <span class="inv-name">${escHtml(inventoryName)}</span>
+        <div class="inv-meta">UoM: ${escHtml(uom)}</div>
     </div>`);
 }
 
 function formatInvSelection(item) {
-    if (!item.inventory_id) return item.text;
-    return item.inventory_id + ' — ' + (item.inventory_name || '');
+    var inventoryId = item.inventory_id || item.id || '';
+    var master = findInventoryMaster(inventoryId) || {};
+    var inventoryName = item.inventory_name || item.name || master.name || '';
+
+    if (!inventoryId) {
+        return item.text || '';
+    }
+
+    if (!inventoryName && item.text) {
+        return item.text;
+    }
+
+    return inventoryId + ' — ' + inventoryName;
 }
 
 // ============================================================
@@ -1447,73 +1623,107 @@ $(document).ready(function() {
     // UoM Pack change
     $(document).on('change', '.inv-uom-pack-select', function() {
         var tr = $(this).closest('tr')[0];
-        updateQtyPackBySelectedUomPack(tr);
-        updateUomDetailFromQtyPack(tr);
-    });
 
-    // Qty input
-    $(document).on('input', '.qty', function() {
-        var tr = $(this).closest('tr')[0];
-        updateQtyPackBySelectedUomPack(tr);
-        updateUomDetailFromQtyPack(tr);
-    });
-    // Qty Pack input
-    $(document).on('input', '.qty-pack', function() {
-        var tr = $(this).closest('tr')[0];
+        if (isAutoCorrectEnabled()) {
+            var hasUomDetail = ($(tr).find('.inv-uom-detail').val() || '').trim();
+            var hasDetailValue = (parseFloat($(tr).find('.inv-uom-detail-value').val()) || 0) > 0;
 
-        if (!isAutoCorrectEnabled()) {
-            setAutoCalculatedState(tr, false);
-            calculateRow(tr);
-            return;
-        }
-
-        var qtyPack = parseFloat($(this).val()) || 0;
-        var uomPack = $(tr).find('.inv-uom-pack-select').val() || '';
-        var uomDefault = $(tr).find('.inv-uom').val() || '';
-        var uomDetail = $(tr).find('.inv-uom-detail').val() || '';
-
-        $(tr).find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
-        $(tr).find('.inv-uom-detail').val(uomPack);
-
-        var factor = getUomFactor($(tr).find('.inv-select').val(), uomPack);
-        $(tr).find('.inv-uom-detail-factor').val(formatDecimalInput(factor));
-
-        if (uomPack === uomDefault) {
-            $(tr).find('.qty').val(formatDecimalInput(qtyPack));
-        } else if (uomPack === uomDetail && uomDetail !== uomDefault) {
-            var factorConv = getUomFactor($(tr).find('.inv-select').val(), uomPack);
-            if (factorConv > 0) {
-                $(tr).find('.qty').val(formatDecimalInput(qtyPack * factorConv));
+            if (hasUomDetail && hasDetailValue) {
+                applyAutoCorrectToRow(tr);
+            } else {
+                updateQtyPackBySelectedUomPack(tr);
+                updateUomDetailFromQtyPack(tr);
             }
         } else {
-            var factorConv = getUomFactor($(tr).find('.inv-select').val(), uomPack);
-            if (factorConv > 0) {
-                $(tr).find('.qty').val(formatDecimalInput(qtyPack * factorConv));
+            updateQtyPackBySelectedUomPack(tr);
+            updateUomDetailFromQtyPack(tr);
+            setAutoCalculatedState(tr, false);
+        }
+
+        var inventoryName = $(tr).find('.inv-name-hidden').val() || '';
+        if (isSpecialInventory(inventoryName)) {
+            var priceUnit = parseRupiah($(tr).find('.price-unit').val());
+            if (priceUnit > 0) {
+                calculatePriceFromPriceUnit(tr);
             }
         }
 
-        setAutoCalculatedState(tr, true);
         calculateRow(tr);
     });
 
-    // Allow Auto Correct toggle
-    $(document).on('change', '#chkAutoCorrect', function() {
-        if (this.checked) {
-            $('#detailBody .detail-row').each(function() {
-                var manualValue = parseFloat($(this).find('.inv-uom-detail-value').val()) || 0;
-                var factor = parseFloat($(this).find('.inv-uom-detail-factor').val()) || 0;
+    // Qty -> Qty Pack mengikuti faktor m_inventory_uom
+    $(document).on('input change', '.qty', function() {
+        var tr = $(this).closest('tr')[0];
 
-                if (manualValue > 0 && factor > 0) {
-                    recalculateFromUomDetail(this);
+        updateQtyPackBySelectedUomPack(tr);
+        updateUomDetailFromQtyPack(tr);
+
+        var inventoryName = $(tr).find('.inv-name-hidden').val() || '';
+        if (isSpecialInventory(inventoryName)) {
+            var priceUnit = parseRupiah($(tr).find('.price-unit').val());
+            if (priceUnit > 0) {
+                calculatePriceFromPriceUnit(tr);
+            }
+        }
+
+        calculateRow(tr);
+    });
+
+    // Qty Pack -> Qty mengikuti faktor m_inventory_uom
+    $(document).on('input change', '.qty-pack', function() {
+        var tr = $(this).closest('tr')[0];
+        var $tr = $(tr);
+
+        var qtyPack = parseFloat($(this).val()) || 0;
+        var uomPack = ($tr.find('.inv-uom-pack-select').val() || '').trim();
+        var uomDefault = ($tr.find('.inv-uom').val() || '').trim();
+        var inventoryId = $tr.find('.inv-select').val() || '';
+
+        var factor = getUomFactor(inventoryId, uomPack);
+
+        // Simpan UoM Pack sebagai UoM Detail sementara agar relasi konversinya konsisten.
+        $tr.find('.inv-uom-detail-value').val(formatDecimalInput(qtyPack));
+        $tr.find('.inv-uom-detail').val(uomPack);
+        $tr.find('.inv-uom-detail-factor').val(formatDecimalInput(factor));
+
+        if (uomPack === uomDefault) {
+            $tr.find('.qty').val(formatDecimalInput(qtyPack));
+        } else if (factor > 0) {
+            $tr.find('.qty').val(formatDecimalInput(qtyPack * factor));
+        } else {
+            // Bila master factor tidak ditemukan, gunakan relasi 1:1.
+            $tr.find('.qty').val(formatDecimalInput(qtyPack));
+        }
+
+        setAutoCalculatedState(tr, isAutoCorrectEnabled());
+
+        var inventoryName = $tr.find('.inv-name-hidden').val() || '';
+        if (isSpecialInventory(inventoryName)) {
+            var priceUnit = parseRupiah($tr.find('.price-unit').val());
+            if (priceUnit > 0) {
+                calculatePriceFromPriceUnit(tr);
+            }
+        }
+
+        calculateRow(tr);
+    });
+
+    // Allow Auto Correct: menghitung ulang dari UoM Detail yang dipilih user.
+    $(document).on('change', '#chkAutoCorrect', function() {
+        $('#detailBody .detail-row').each(function() {
+            if (this && isAutoCorrectEnabled()) {
+                var hasUomDetail = ($(this).find('.inv-uom-detail').val() || '').trim();
+                var hasValue = (parseFloat($(this).find('.inv-uom-detail-value').val()) || 0) > 0;
+
+                if (hasUomDetail && hasValue) {
+                    applyAutoCorrectToRow(this);
                 } else {
                     updateQtyPackBySelectedUomPack(this);
                 }
-            });
-        } else {
-            $('#detailBody .detail-row').each(function() {
+            } else {
                 setAutoCalculatedState(this, false);
-            });
-        }
+            }
+        });
     });
 
     // Price Unit input
