@@ -12,7 +12,53 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
+// AJAX: ambil type inventory langsung dari m_inventory.
+// Digunakan untuk memastikan inventory Jasa (JS) tidak diperlakukan sebagai barang.
+if (isset($_GET['ajax_get_inventory_types'])) {
+    header('Content-Type: application/json; charset=utf-8');
 
+    $inventory_ids = $_POST['inventory_ids'] ?? [];
+    if (!is_array($inventory_ids)) {
+        $inventory_ids = [];
+    }
+
+    $inventory_ids = array_values(array_unique(array_filter(array_map('trim', $inventory_ids))));
+    if (count($inventory_ids) === 0) {
+        echo json_encode(['success' => true, 'data' => []]);
+        exit;
+    }
+
+    // Gunakan escaping per nilai agar kompatibel dengan PHP yang belum stabil
+    // untuk mysqli_stmt_bind_param() menggunakan spread operator dinamis.
+    $escaped_ids = [];
+    foreach ($inventory_ids as $inventory_id) {
+        $escaped_ids[] = "'" . mysqli_real_escape_string($conn, $inventory_id) . "'";
+    }
+
+    $sql = "
+        SELECT inventory_id, COALESCE(type, '') AS type
+        FROM m_inventory
+        WHERE inventory_id IN (" . implode(',', $escaped_ids) . ")
+    ";
+
+    $result = mysqli_query($conn, $sql);
+
+    if (!$result) {
+        echo json_encode([
+            'success' => false,
+            'message' => mysqli_error($conn)
+        ]);
+        exit;
+    }
+
+    $data = [];
+    while ($row = mysqli_fetch_assoc($result)) {
+        $data[$row['inventory_id']] = $row['type'] ?? '';
+    }
+
+    echo json_encode(['success' => true, 'data' => $data]);
+    exit;
+}
 
 // AJAX: cek Shipping No manual apakah sudah ada di database
 if (isset($_GET['ajax_check_shipping_no'])) {
@@ -408,6 +454,24 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
 .tolerance-warning-row {
     background: #fff3cd !important;
 }
+.service-row td {
+    background: #f5f5f5 !important;
+}
+.service-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: #6f42c1;
+    color: #fff;
+    font-size: 9px;
+    font-weight: bold;
+}
+.service-field {
+    background: #e9ecef !important;
+    color: #777 !important;
+    cursor: not-allowed;
+}
 
 </style>
 
@@ -798,8 +862,16 @@ function syncUomDetailLegacyFields($row, jsonValue) {
     $row.find('.uom-detail-legacy-uom').val(firstUom);
     $row.find('.qty-detail-legacy-qty').val(formatDecimal(totalQty));
 }
+function isServiceType(typeValue) {
+    return String(typeValue || '').trim().toUpperCase() === 'JASA (JS)';
+}
+
+function isServiceRow($row) {
+    return !!($row && $row.length && String($row.attr('data-is-service')) === '1');
+}
+
 function applyShippingAutoCorrect($row) {
-    if (!isShippingAutoCorrectEnabled() || !$row || !$row.length) {
+    if (!isShippingAutoCorrectEnabled() || !$row || !$row.length || isServiceRow($row)) {
         return true;
     }
 
@@ -898,8 +970,36 @@ function buildRow(data) {
     data = data || {};
 
     var inventoryId = data.inventory_id || '';
+    var inventoryType = data.inventory_type || data.type || '';
+    var isService = isServiceType(inventoryType);
 
-    // Kolom UoM utama untuk Shipping selalu KG.
+    // Inventory Jasa (JS) bukan barang, sehingga seluruh Qty dan UoM harus kosong.
+    if (isService) {
+        return '<tr class="detail-row service-row" data-idx="' + idx + '" data-is-service="1" data-inventory-type="' + escAttr(inventoryType) + '" data-order-qty="0" data-order-qty-pack="0">' +
+            '<td style="text-align:center;"><input type="checkbox" class="rowCheckbox"></td>' +
+            '<td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"></td>' +
+            '<td>' +
+                '<input type="text" name="inventory_id[]" class="inv-id" value="' + escAttr(inventoryId) + '" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">' +
+                '<input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="' + escAttr(data.inventory_name || '') + '">' +
+                '<input type="hidden" name="inventory_type[]" value="' + escAttr(inventoryType) + '">' +
+            '</td>' +
+            '<td><input type="text" class="inv-name-display" value="' + escAttr(data.inventory_name || '') + '" readonly style="background:#f1f3f5;"><span class="service-badge">JASA</span></td>' +
+            '<td><input type="hidden" name="qty_shipping[]" class="qty-shipping" value=""><input type="text" value="" readonly class="service-field" title="Tidak berlaku untuk jasa"></td>' +
+            '<td><input type="hidden" name="uom_shipping[]" class="inv-uom-select" value=""><input type="text" value="" readonly class="service-field" title="Tidak berlaku untuk jasa"></td>' +
+            '<td><input type="hidden" name="qty_pack_shipping[]" class="qty-pack-shipping" value=""><input type="text" value="" readonly class="service-field" title="Tidak berlaku untuk jasa"></td>' +
+            '<td><input type="hidden" name="uom_pack_shipping[]" class="inv-uom-pack-select" value=""><input type="text" value="" readonly class="service-field" title="Tidak berlaku untuk jasa"></td>' +
+            '<td>' +
+                '<button type="button" class="uom-detail-btn empty service-field" disabled>Tidak berlaku untuk jasa</button>' +
+                '<input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="">' +
+                '<input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="">' +
+                '<input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="">' +
+            '</td>' +
+            '<td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="' + escAttr(data.remarks || '') + '" placeholder="Catatan jasa..."></td>' +
+            '<td style="text-align:center;"><button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button></td>' +
+        '</tr>';
+    }
+
+    // Kolom UoM utama untuk Shipping barang selalu KG.
     var uomOptions = '<option value="KG" selected>KG</option>';
 
     // Kolom UoM Pack mengikuti UoM Pack dari Sales Order, bukan placeholder.
@@ -910,12 +1010,13 @@ function buildRow(data) {
     var uomDetailSummary = getUomDetailSummary(uomDetailJson);
     var isUomDetailEmpty = parseUomDetailJson(uomDetailJson).length === 0;
 
-    return '<tr class="detail-row" data-idx="' + idx + '" data-order-qty="' + escAttr(data.order_qty || 0) + '" data-order-qty-pack="' + escAttr(data.order_qty_pack || 0) + '">' +
+    return '<tr class="detail-row" data-idx="' + idx + '" data-is-service="0" data-inventory-type="' + escAttr(inventoryType) + '" data-order-qty="' + escAttr(data.order_qty || 0) + '" data-order-qty-pack="' + escAttr(data.order_qty_pack || 0) + '">' +
         '<td style="text-align:center;"><input type="checkbox" class="rowCheckbox"></td>' +
         '<td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"></td>' +
         '<td>' +
             '<input type="text" name="inventory_id[]" class="inv-id" value="' + escAttr(data.inventory_id || '') + '" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">' +
             '<input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="' + escAttr(data.inventory_name || '') + '">' +
+            '<input type="hidden" name="inventory_type[]" value="' + escAttr(inventoryType) + '">' +
         '</td>' +
         '<td><input type="text" class="inv-name-display" value="' + escAttr(data.inventory_name || '') + '" readonly style="background:#f1f3f5;"></td>' +
         '<td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="' + formatDecimal(data.qty || 0) + '" style="text-align:right;"></td>' +
@@ -951,6 +1052,8 @@ function addRow(data) {
  * Sinkronisasi Qty dan Qty Pack khusus UoM Pack = KG.
  */
 function isKgPackRow($row) {
+    if (isServiceRow($row)) return false;
+
     var uomPack = $.trim(
         $row.find('.inv-uom-pack-select').val() || ''
     ).toUpperCase();
@@ -975,6 +1078,10 @@ function syncQtyKgPack($row, sourceField) {
 function updateAutoCorrectRowState() {
     $('#detailBody .detail-row').each(function() {
         var $row = $(this);
+        if (isServiceRow($row)) {
+            return;
+        }
+
         var hasUomDetail =
             parseUomDetailJson($row.find('.uom-detail-json').val()).length > 0;
 
@@ -1051,7 +1158,49 @@ function openLoadInventoryModal() {
         dataType: 'json',
         success: function(response) {
             if (response.success && response.data.length > 0) {
-                renderModalInventoryRows(response.data);
+                var items = response.data;
+                var inventoryIds = items.map(function(item) {
+                    return item.inventory_id || '';
+                }).filter(function(id) { return id !== ''; });
+
+                $.ajax({
+                    url: 'modul/transaksi/add_shipping.php?ajax_get_inventory_types=1',
+                    type: 'POST',
+                    data: { inventory_ids: inventoryIds },
+                    dataType: 'json',
+                    success: function(typeResponse) {
+                        if (!typeResponse || typeResponse.success !== true) {
+                            var errorMessage = typeResponse && typeResponse.message
+                                ? typeResponse.message
+                                : 'Respons pengecekan type inventory tidak valid.';
+
+                            console.error('Inventory type check failed:', errorMessage);
+                            $('#modalInventoryBody').html(
+                                '<tr><td colspan="8" style="text-align:center; color:#dc3545;">' +
+                                'Gagal mengecek type inventory: ' + escHtml(errorMessage) +
+                                '</td></tr>'
+                            );
+                            return;
+                        }
+
+                        var typeMap = typeResponse.data || {};
+                        items.forEach(function(item) {
+                            item.inventory_type = typeMap[item.inventory_id] || item.type || '';
+                        });
+                        renderModalInventoryRows(items);
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Inventory type AJAX error:', status, error);
+                        console.error('Server response:', xhr.responseText);
+
+                        $('#modalInventoryBody').html(
+                            '<tr><td colspan="8" style="text-align:center; color:#dc3545;">' +
+                            'Gagal mengecek type inventory pada m_inventory. ' +
+                            'Periksa Console/Network untuk respons server.' +
+                            '</td></tr>'
+                        );
+                    }
+                });
             } else {
                 $('#modalInventoryBody').html('<tr><td colspan="8" style="text-align:center; color:#777;">Tidak ada inventory ditemukan untuk order ini.</td></tr>');
             }
@@ -1075,10 +1224,14 @@ function renderModalInventoryRows(items) {
         var qty = parseFloat(item.quantity) || 0;
         var qtyPack = parseFloat(item.quantity_pack) || 0;
         var uomPack = item.uom_pack || '';
+        var inventoryType = item.inventory_type || item.type || '';
+        var isService = isServiceType(inventoryType);
 
         html += '<tr class="modal-inventory-row" ' +
+            (isService ? 'style="background:#f3ecff;" ' : '') +
             'data-inventory-id="' + escAttr(inventoryId) + '" ' +
             'data-inventory-name="' + escAttr(item.inventory_name || '') + '" ' +
+            'data-inventory-type="' + escAttr(inventoryType) + '" ' +
             'data-order-qty="' + escAttr(qty) + '" ' +
             'data-order-qty-pack="' + escAttr(qtyPack) + '" ' +
             'data-uom="' + escAttr(item.uom || 'KG') + '" ' +
@@ -1086,11 +1239,11 @@ function renderModalInventoryRows(items) {
             'data-remarks="' + escAttr(item.remarks || '') + '">' +
             '<td style="text-align:center;"><input type="checkbox" class="modalRowCheckbox"></td>' +
             '<td style="font-weight:bold; text-align:center;">' + escHtml(inventoryId) + '</td>' +
-            '<td>' + escHtml(item.inventory_name || '') + '</td>' +
-            '<td style="text-align:center;">' + escHtml(item.uom || '') + '</td>' +
-            '<td style="text-align:right; background:#f8f9fa;">' + formatDecimal(qty) + '</td>' +
-            '<td style="text-align:right; background:#f8f9fa;">' + formatDecimal(qtyPack) + '</td>' +
-            '<td style="text-align:center; background:#f8f9fa;">' + escHtml(uomPack) + '</td>' +
+            '<td>' + escHtml(item.inventory_name || '') + (isService ? ' <span class="service-badge">JASA</span>' : '') + '</td>' +
+            '<td style="text-align:center;">' + (isService ? '' : escHtml(item.uom || '')) + '</td>' +
+            '<td style="text-align:right; background:#f8f9fa;">' + (isService ? '' : formatDecimal(qty)) + '</td>' +
+            '<td style="text-align:right; background:#f8f9fa;">' + (isService ? '' : formatDecimal(qtyPack)) + '</td>' +
+            '<td style="text-align:center; background:#f8f9fa;">' + (isService ? '' : escHtml(uomPack)) + '</td>' +
             '<td style="text-align:center; background:#fff3cd;">' + formatDecimal(tolerance) + '%</td>' +
         '</tr>';
     });
@@ -1108,13 +1261,17 @@ function addSelectedInventoryFromModal() {
 
     $checked.each(function() {
         var $r = $(this).closest('.modal-inventory-row');
+        var inventoryType = $r.attr('data-inventory-type') || '';
+        var isService = isServiceType(inventoryType);
+
         addRow({
             inventory_id: $r.data('inventory-id') || '',
+            inventory_type: inventoryType,
             inventory_name: $r.data('inventory-name') || '',
-            qty: 0,
-            uom: 'KG',
-            qty_pack: 0,
-            uom_pack: $r.attr('data-uom-pack') || 'KG',
+            qty: isService ? '' : 0,
+            uom: isService ? '' : 'KG',
+            qty_pack: isService ? '' : 0,
+            uom_pack: isService ? '' : ($r.attr('data-uom-pack') || 'KG'),
             uom_detail_json: '',
             order_qty: parseFloat($r.attr('data-order-qty')) || 0,
             order_qty_pack: parseFloat($r.attr('data-order-qty-pack')) || 0,
@@ -1142,6 +1299,12 @@ var activeUomDetailRow = null;
 
 function openUomDetailModal(btn) {
     activeUomDetailRow = $(btn).closest('.detail-row');
+
+    if (isServiceRow(activeUomDetailRow)) {
+        showNotification('UoM Detail tidak berlaku untuk inventory Jasa (JS).', 'error');
+        activeUomDetailRow = null;
+        return;
+    }
     var inventoryId = activeUomDetailRow.find('.inv-id').val();
     var current = parseUomDetailJson(activeUomDetailRow.find('.uom-detail-json').val());
     var currentMap = {};
@@ -1281,7 +1444,7 @@ function validateToleranceBeforeSubmit() {
     $('#detailBody .detail-row').each(function() {
         var $row = $(this);
         var invId = $.trim($row.find('.inv-id').val());
-        if (!invId) return;
+        if (!invId || isServiceRow($row)) return;
 
         if (!totals[invId]) {
             totals[invId] = {
@@ -1598,6 +1761,10 @@ var validRows = true;
 $('#detailBody .detail-row').each(function(i) {
     var $row = $(this);
 
+    if (isServiceRow($row)) {
+        return;
+    }
+
     var invId = $.trim($row.find('.inv-id').val());
     var uom = $row.find('.inv-uom-select').val();
     var uomPack = $row.find('.inv-uom-pack-select').val();
@@ -1663,6 +1830,10 @@ if (isShippingAutoCorrectEnabled()) {
  */
 $('#detailBody .detail-row').each(function(i) {
     var $row = $(this);
+
+    if (isServiceRow($row)) {
+        return;
+    }
 
     var qty =
         parseFloat($row.find('.qty-shipping').val()) || 0;

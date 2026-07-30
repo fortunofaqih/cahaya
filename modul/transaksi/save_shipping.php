@@ -151,6 +151,62 @@ function loadSalesOrderQtyMap(mysqli $conn, $order_no) {
     return $map;
 }
 
+
+function loadInventoryTypeMap(mysqli $conn, array $inventoryIds) {
+    $map = [];
+
+    $inventoryIds = array_values(array_unique(array_filter(array_map(
+        static function ($id) {
+            return trim((string)$id);
+        },
+        $inventoryIds
+    ))));
+
+    if (empty($inventoryIds)) {
+        return $map;
+    }
+
+    $placeholders = implode(',', array_fill(0, count($inventoryIds), '?'));
+
+    $stmt = mysqli_prepare($conn, "
+        SELECT inventory_id, COALESCE(`type`, '') AS inventory_type
+        FROM m_inventory
+        WHERE inventory_id IN ($placeholders)
+    ");
+
+    $types = str_repeat('s', count($inventoryIds));
+    $bindParams = [$types];
+
+    foreach ($inventoryIds as $key => $inventoryId) {
+        $bindParams[] = &$inventoryIds[$key];
+    }
+
+    call_user_func_array(
+        'mysqli_stmt_bind_param',
+        array_merge([$stmt], $bindParams)
+    );
+
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        $inventoryId = trim((string)$row['inventory_id']);
+        if ($inventoryId === '') {
+            continue;
+        }
+
+        $map[$inventoryId] = trim((string)($row['inventory_type'] ?? ''));
+    }
+
+    mysqli_stmt_close($stmt);
+
+    return $map;
+}
+
+function isServiceInventoryType($inventoryType) {
+    return strcasecmp(trim((string)$inventoryType), 'Jasa (JS)') === 0;
+}
+
 function parseUomDetailJson($json, &$jsonError = '') {
     $jsonError = '';
     $json = trim((string)$json);
@@ -450,6 +506,13 @@ try {
 
     $soQtyMap = loadSalesOrderQtyMap($conn, $order_no);
 
+    // Ambil type inventory langsung dari master.
+    // Inventory type "Jasa (JS)" tidak memerlukan Qty maupun UoM.
+    $inventoryTypeMap = loadInventoryTypeMap(
+        $conn,
+        $inventory_ids
+    );
+
     $inventoryUomMap = loadInventoryUomMap(
         $conn,
         $inventory_ids
@@ -608,9 +671,28 @@ try {
             ? $soQtyMap[$inventory_id]['inventory_name']
             : $inventory_name;
 
+        $inventoryType = $inventoryTypeMap[$inventory_id] ?? '';
+        $isServiceItem = isServiceInventoryType($inventoryType);
+
+        /*
+         * Inventory Jasa bukan barang fisik.
+         * Semua Qty dan UoM harus disimpan kosong/0 dan tidak mengikuti
+         * Auto Correct, konversi UoM, maupun tolerance barang.
+         */
+        if ($isServiceItem) {
+            $uom_shipping = null;
+            $qty_shipping = 0;
+            $qty_pack_shipping = 0;
+            $uom_pack_shipping = null;
+            $uom_detail_shipping = null;
+            $qty_detail_shipping = 0;
+            $uomDetailRows = [];
+        }
+
         // Pastikan seluruh UOM Detail merupakan UOM yang valid untuk inventory.
         $masterUomMap = $inventoryUomMap[$inventory_id] ?? [];
 
+        if (!$isServiceItem) {
         foreach ($uomDetailRows as $detailRow) {
             $detailUom = normalizeUom($detailRow['uom'] ?? '');
 
@@ -630,6 +712,7 @@ try {
                 );
             }
         }
+        }
 
         // Ringkasan untuk kolom lama det_shipping.
         if (!empty($uomDetailRows)) {
@@ -646,7 +729,7 @@ try {
          * Jika UoM Pack = KG, Qty dan Qty Pack harus selalu sama.
          * Prioritas Qty utama jika nilainya lebih dari 0.
          */
-        if ($uom_pack_shipping === 'KG') {
+        if (!$isServiceItem && $uom_pack_shipping === 'KG') {
             if ($qty_shipping > 0) {
                 $qty_pack_shipping = $qty_shipping;
             } elseif ($qty_pack_shipping > 0) {
@@ -656,7 +739,7 @@ try {
 
         // Hitung ulang hanya jika Allow Auto Correct aktif dan UoM Detail diisi.
         // Jika UoM Detail kosong, gunakan Qty dan Qty Pack input manual.
-        if ($allowAutoCorrect && !empty($uomDetailRows)) {
+        if (!$isServiceItem && $allowAutoCorrect && !empty($uomDetailRows)) {
             $autoCorrectError = '';
 
             $autoCorrectResult = calculateAutoCorrectShippingQty(
@@ -690,7 +773,7 @@ try {
          * Pastikan kembali setelah proses Auto Correct.
          * Untuk UoM Pack KG, kedua nilai wajib identik.
          */
-        if ($uom_pack_shipping === 'KG') {
+        if (!$isServiceItem && $uom_pack_shipping === 'KG') {
             if ($qty_shipping > 0) {
                 $qty_pack_shipping = $qty_shipping;
             } elseif ($qty_pack_shipping > 0) {
@@ -699,6 +782,7 @@ try {
         }
 
         if (
+            !$isServiceItem &&
             $qty_shipping <= 0 &&
             $qty_pack_shipping <= 0 &&
             $qty_detail_shipping <= 0
@@ -711,21 +795,23 @@ try {
             );
         }
 
-        if ($qty_shipping > 0 && $uom_shipping === null) {
+        if (!$isServiceItem && $qty_shipping > 0 && $uom_shipping === null) {
             mysqli_rollback($conn);
             failAndBack('UOM item ke-' . ($i + 1) . ' belum dipilih.');
         }
 
-        if ($qty_pack_shipping > 0 && $uom_pack_shipping === null) {
+        if (!$isServiceItem && $qty_pack_shipping > 0 && $uom_pack_shipping === null) {
             mysqli_rollback($conn);
             failAndBack('UOM Pack item ke-' . ($i + 1) . ' belum dipilih.');
         }
 
-        if ($qty_detail_shipping > 0 && $uom_detail_shipping === null) {
+        if (!$isServiceItem && $qty_detail_shipping > 0 && $uom_detail_shipping === null) {
             mysqli_rollback($conn);
             failAndBack('UOM Detail item ke-' . ($i + 1) . ' belum dipilih.');
         }
-        // Validasi tolerance hanya untuk total item pada dokumen shipping yang sedang dibuat.
+        // Validasi tolerance hanya untuk barang fisik.
+        // Inventory Jasa (JS) tidak memiliki Qty sehingga tidak ikut tolerance.
+        if (!$isServiceItem) {
         // Contoh: order 90 KG tolerance 10% => maksimal input pada dokumen ini 99 KG.
         // Shipping sebelumnya tidak ikut dihitung di sini.
         $orderQty = (float)$soQtyMap[$inventory_id]['order_qty'];
@@ -767,6 +853,7 @@ try {
 
         $currentShippingMap[$inventory_id]['qty'] = $newTotalQty;
         $currentShippingMap[$inventory_id]['qty_pack'] = $newTotalQtyPack;
+        }
 
         mysqli_stmt_bind_param(
             $stmtDetail,
