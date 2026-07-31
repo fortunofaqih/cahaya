@@ -90,6 +90,7 @@ $customerData = null;
 $rows = [];
 $saldo_awal = 0;
 $total_penjualan = 0;
+$total_retur = 0;
 $total_pembayaran = 0;
 $saldo_akhir = 0;
 
@@ -144,10 +145,27 @@ if ($customer_id !== '') {
                 WHERE hb.customer_id = ?
                   AND hb.bayar_date < ?
             ), 0)
+            -
+            COALESCE((
+                SELECT SUM(hri.return_amount)
+                FROM head_retur_invoice hri
+                WHERE hri.customer_id = ?
+                  AND hri.return_date < ?
+                  AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+            ), 0)
         ) AS saldo_awal
 ";
 $stmtSaldo = mysqli_prepare($conn, $sqlSaldo);
-mysqli_stmt_bind_param($stmtSaldo, 'ssss', $customer_id, $start_date, $customer_id, $start_date);
+mysqli_stmt_bind_param(
+    $stmtSaldo,
+    'ssssss',
+    $customer_id,
+    $start_date,
+    $customer_id,
+    $start_date,
+    $customer_id,
+    $start_date
+);
 mysqli_stmt_execute($stmtSaldo);
 $resSaldo = mysqli_stmt_get_result($stmtSaldo);
 $rowSaldo = mysqli_fetch_assoc($resSaldo);
@@ -158,8 +176,10 @@ mysqli_stmt_close($stmtSaldo);
         SELECT
             trans_date,
             shipping_no,
+            return_id,
             bayar_no,
             penjualan,
+            retur,
             pembayaran,
             sort_order,
             invoice_no_sort
@@ -168,12 +188,14 @@ mysqli_stmt_close($stmtSaldo);
             SELECT
                 hi.invoice_date AS trans_date,
                 COALESCE(di.shipping_no, '') AS shipping_no,
+                '' AS return_id,
                 '' AS bayar_no,
                 CASE
                     WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
                     WHEN COALESCE(hi.payment_balance, 0) > 0 THEN COALESCE(hi.payment_balance, 0)
                     ELSE COALESCE(hi.grand_total, 0)
                 END AS penjualan,
+                0 AS retur,
                 0 AS pembayaran,
                 1 AS sort_order,
                 hi.invoice_no AS invoice_no_sort
@@ -190,17 +212,36 @@ mysqli_stmt_close($stmtSaldo);
                 GROUP BY invoice_no
             ) di ON di.invoice_no = hi.invoice_no
             WHERE hi.customer_id = ?
-            AND hi.invoice_date BETWEEN ? AND ?
+              AND hi.invoice_date BETWEEN ? AND ?
+
+            UNION ALL
+
+            SELECT
+                hri.return_date AS trans_date,
+                COALESCE(hri.shipping_no, '') AS shipping_no,
+                hri.return_id AS return_id,
+                '' AS bayar_no,
+                0 AS penjualan,
+                COALESCE(hri.return_amount, 0) AS retur,
+                0 AS pembayaran,
+                2 AS sort_order,
+                COALESCE(hri.invoice_no, '') AS invoice_no_sort
+            FROM head_retur_invoice hri
+            WHERE hri.customer_id = ?
+              AND hri.return_date BETWEEN ? AND ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
 
             UNION ALL
 
             SELECT
                 hb.bayar_date AS trans_date,
-                COALESCE(di.shipping_no, '') AS shipping_no,
+                COALESCE(NULLIF(db.shipping_no, ''), di.shipping_no, '') AS shipping_no,
+                '' AS return_id,
                 hb.bayar_no AS bayar_no,
                 0 AS penjualan,
+                0 AS retur,
                 db.bayar_amount AS pembayaran,
-                2 AS sort_order,
+                3 AS sort_order,
                 db.invoice_no AS invoice_no_sort
             FROM head_bayar hb
             INNER JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
@@ -216,19 +257,23 @@ mysqli_stmt_close($stmtSaldo);
                 GROUP BY invoice_no
             ) di ON di.invoice_no = db.invoice_no
             WHERE hb.customer_id = ?
-            AND hb.bayar_date BETWEEN ? AND ?
+              AND hb.bayar_date BETWEEN ? AND ?
         ) x
         ORDER BY
             trans_date ASC,
             sort_order ASC,
             shipping_no ASC,
             invoice_no_sort ASC,
+            return_id ASC,
             bayar_no ASC
     ";
     $stmtRows = mysqli_prepare($conn, $sqlRows);
     mysqli_stmt_bind_param(
         $stmtRows,
-        'ssssss',
+        'sssssssss',
+        $customer_id,
+        $start_date,
+        $end_date,
         $customer_id,
         $start_date,
         $end_date,
@@ -241,18 +286,21 @@ mysqli_stmt_close($stmtSaldo);
 
     $rows = [];
     $total_penjualan = 0;
+    $total_retur = 0;
     $total_pembayaran = 0;
     $runningSaldo = $saldo_awal;
 
     while ($row = mysqli_fetch_assoc($resRows)) {
         $penjualan = (float)($row['penjualan'] ?? 0);
+        $retur = (float)($row['retur'] ?? 0);
         $pembayaran = (float)($row['pembayaran'] ?? 0);
 
-        $runningSaldo += $penjualan - $pembayaran;
+        $runningSaldo += $penjualan - $retur - $pembayaran;
 
         $row['sisa'] = $runningSaldo;
 
         $total_penjualan += $penjualan;
+        $total_retur += $retur;
         $total_pembayaran += $pembayaran;
 
         $rows[] = $row;
@@ -260,7 +308,7 @@ mysqli_stmt_close($stmtSaldo);
 
     mysqli_stmt_close($stmtRows);
 
-    $saldo_akhir = $saldo_awal + $total_penjualan - $total_pembayaran;
+    $saldo_akhir = $saldo_awal + $total_penjualan - $total_retur - $total_pembayaran;
 }
 ?>
 
@@ -369,7 +417,7 @@ mysqli_stmt_close($stmtSaldo);
 }
 .summary-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(150px, 1fr));
+    grid-template-columns: repeat(5, minmax(145px, 1fr));
     gap: 8px;
     margin-bottom: 10px;
 }
@@ -399,7 +447,7 @@ mysqli_stmt_close($stmtSaldo);
 }
 .kartu-table {
     width: 100%;
-    min-width: 1050px;
+    min-width: 1250px;
     border-collapse: collapse;
     font-size: 9.5px;
 }
@@ -436,6 +484,11 @@ mysqli_stmt_close($stmtSaldo);
 .text-center { text-align: center; }
 .text-bold { font-weight: bold; }
 .text-blue { color: #0d6efd; }
+.text-retur { color:#b02a37; font-weight:bold; }
+.kartu-table tbody tr.return-row td { background:#fff5f5; }
+.kartu-table tbody tr.return-row:hover td { background:#ffe8e8; }
+.summary-card.retur-card { border-color:#f1aeb5; background:#fff5f5; }
+.summary-card.retur-card .value { color:#b02a37; }
 .customer-info {
     background: #fff;
     border: 1px solid #dee2e6;
@@ -574,6 +627,10 @@ mysqli_stmt_close($stmtSaldo);
                 <div class="label">Total Penjualan</div>
                 <div class="value">Rp <?= h(formatMoney($total_penjualan)) ?></div>
             </div>
+            <div class="summary-card retur-card">
+                <div class="label">Total Retur</div>
+                <div class="value">- Rp <?= h(formatMoney($total_retur)) ?></div>
+            </div>
             <div class="summary-card">
                 <div class="label">Total Pembayaran</div>
                 <div class="value">Rp <?= h(formatMoney($total_pembayaran)) ?></div>
@@ -591,8 +648,10 @@ mysqli_stmt_close($stmtSaldo);
                       <th>SALDO AWAL</th>
                     <th>TANGGAL</th>
                     <th>SHIPPING NO.</th>
+                    <th>NO. RETUR</th>
                     <th>NO. BAYAR</th>
                     <th>PENJUALAN</th>
+                    <th>RETUR</th>
                     <th>PEMBAYARAN</th>
                     <th>SISA</th>
                     </tr>
@@ -600,21 +659,26 @@ mysqli_stmt_close($stmtSaldo);
                 <tbody>
                     <?php if (empty($rows)): ?>
                         <tr>
-                            <td colspan="7" class="text-center" style="color:#777;padding:15px;">
+                            <td colspan="9" class="text-center" style="color:#777;padding:15px;">
                                 Tidak ada data piutang pada periode ini.
                             </td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($rows as $i => $row): ?>
-                            <tr>
+                            <?php $isReturn = (float)($row['retur'] ?? 0) > 0; ?>
+                            <tr class="<?= $isReturn ? 'return-row' : '' ?>">
                                 <td class="money-cell">
                                     <?= $i === 0 ? 'Rp ' . h(formatMoney($saldo_awal)) : '' ?>
                                 </td>
                                 <td class="text-center"><?= h(formatDateDisplay($row['trans_date'])) ?></td>
                                 <td class="text-bold text-blue"><?= h($row['shipping_no']) ?></td>
+                                <td class="text-center text-retur"><?= h($row['return_id']) ?></td>
                                 <td class="text-center"><?= h($row['bayar_no']) ?></td>
                                 <td class="money-cell">
                                     <?= ((float)$row['penjualan'] > 0) ? 'Rp ' . h(formatMoney($row['penjualan'])) : '' ?>
+                                </td>
+                                <td class="money-cell text-retur">
+                                    <?= ((float)$row['retur'] > 0) ? '- Rp ' . h(formatMoney($row['retur'])) : '' ?>
                                 </td>
                                 <td class="money-cell">
                                     <?= ((float)$row['pembayaran'] > 0) ? 'Rp ' . h(formatMoney($row['pembayaran'])) : '' ?>
@@ -626,8 +690,9 @@ mysqli_stmt_close($stmtSaldo);
                 </tbody>
                 <tfoot>
                     <tr>
-                        <td colspan="4" class="text-right">TOTAL</td>
+                        <td colspan="5" class="text-right">TOTAL</td>
                         <td class="money-cell">Rp <?= h(formatMoney($total_penjualan)) ?></td>
+                        <td class="money-cell text-retur">- Rp <?= h(formatMoney($total_retur)) ?></td>
                         <td class="money-cell">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
                         <td class="money-cell">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
                     </tr>

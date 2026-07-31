@@ -321,8 +321,8 @@ foreach ($rows as $row) {
     <title><?= h($title) ?></title>
     <style>
         @page {
-            size: 330mm 215mm;
-            margin: 8mm;
+            size: 377.8mm 279.4mm;
+            margin: 5mm 6mm;
         }
 
         * {
@@ -332,7 +332,7 @@ foreach ($rows as $row) {
         }
 
         body {
-            font-family: Arial, Helvetica, sans-serif;
+            font-family: "Courier New", Courier, monospace;
             font-size: 12px;
             color: #000;
             background: #eef1f5;
@@ -390,8 +390,8 @@ foreach ($rows as $row) {
         }
 
         .print-wrap {
-            width: 1350px;
-            min-width: 1350px;
+            width: 1680px;
+            min-width: 1680px;
             margin: 0 auto;
             padding: 20px 24px;
             background: #fff;
@@ -474,9 +474,22 @@ foreach ($rows as $row) {
 
         /* Print Styles */
         @media print {
+            html,
             body {
-                padding: 0;
-                background: #fff;
+                width: 377.8mm !important;
+                min-width: 377.8mm !important;
+                height: auto !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: visible !important;
+                background: #fff !important;
+            }
+
+            body {
+                display: block !important;
+                font-family: "Courier New", Courier, monospace !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
             }
 
             .no-print {
@@ -484,53 +497,106 @@ foreach ($rows as $row) {
             }
 
             .screen-scroll {
+                width: 365.8mm !important;
+                min-width: 365.8mm !important;
                 overflow: visible !important;
-                padding: 0;
+                margin: 0 !important;
+                padding: 0 !important;
             }
 
             .screen-scroll::-webkit-scrollbar {
-                display: none;
+                display: none !important;
             }
 
             .print-wrap {
-                width: 100%;
-                min-width: 0;
-                margin: 0;
-                padding: 8px 10px;
-                box-shadow: none;
-                border-radius: 0;
+                width: 365.8mm !important;
+                min-width: 365.8mm !important;
+                max-width: 365.8mm !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                box-shadow: none !important;
+                border-radius: 0 !important;
+                background: #fff !important;
             }
 
             .title {
-                font-size: 15px;
+                font-size: 10pt !important;
+                line-height: 1.1 !important;
+                margin-bottom: 0.8mm !important;
             }
+
             .subtitle {
-                font-size: 10px;
+                font-size: 8pt !important;
+                line-height: 1.1 !important;
+                margin-bottom: 0.8mm !important;
             }
+
             .printed {
-                font-size: 8.5px;
+                font-size: 7pt !important;
+                margin-bottom: 2mm !important;
             }
 
             table {
-                font-size: 7.4px;
+                width: 100% !important;
+                table-layout: fixed !important;
+                border-collapse: collapse !important;
+                font-size: 7pt !important;
+                line-height: 1.05 !important;
             }
 
             th {
-                padding: 3px 2px;
+                padding: 1.5mm 0.7mm !important;
                 background: #f2f2f2 !important;
+                font-weight: bold !important;
+                white-space: nowrap !important;
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
             }
 
             td {
-                padding: 2.5px 2px;
+                padding: 1.1mm 0.7mm !important;
+                white-space: nowrap !important;
+            }
+
+            th:nth-child(1),
+            td:nth-child(1) {
+                width: 9mm !important;
+            }
+
+            th:nth-child(2),
+            td:nth-child(2) {
+                width: 47mm !important;
+            }
+
+            th:nth-child(n+3),
+            td:nth-child(n+3) {
+                width: 28.2mm !important;
+            }
+
+            .label-cell {
+                white-space: normal !important;
+                overflow-wrap: anywhere !important;
             }
 
             tfoot td {
-                padding: 3px 2px;
+                padding: 1.5mm 0.7mm !important;
                 background: #f2f2f2 !important;
+                font-weight: bold !important;
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
+            }
+
+            tr {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }
+
+            thead {
+                display: table-header-group !important;
+            }
+
+            tfoot {
+                display: table-footer-group !important;
             }
         }
 
@@ -552,8 +618,8 @@ foreach ($rows as $row) {
 
             .print-wrap {
                 padding: 12px;
-                min-width: 1200px;
-                width: 1200px;
+                min-width: 1500px;
+                width: 1500px;
             }
         }
     </style>
@@ -565,6 +631,26 @@ foreach ($rows as $row) {
     <button type="button" class="btn-print" onclick="window.print()">
         🖨️ CETAK LAPORAN
     </button>
+</div>
+
+<div class="no-print" style="
+    width:100%;
+    max-width:1680px;
+    margin:0 auto 12px;
+    padding:9px 12px;
+    background:#fffbe6;
+    border:1px solid #d8c26e;
+    font-family:Arial,Helvetica,sans-serif;
+    font-size:12px;
+    line-height:1.5;
+">
+    Setting Epson LQ-2190:
+    pilih <strong>US Std Fanfold</strong>,
+    ukuran <strong>14 7/8 × 11 inci</strong>
+    atau <strong>377,8 × 279,4 mm</strong>,
+    orientasi <strong>Landscape</strong>,
+    skala <strong>100%</strong>,
+    margin minimum, serta nonaktifkan Header dan Footer browser.
 </div>
 
 <!-- Container Scroll -->

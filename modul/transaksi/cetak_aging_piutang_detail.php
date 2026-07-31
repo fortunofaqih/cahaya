@@ -1,5 +1,16 @@
 <?php
 // modul/transaksi/cetak_aging_piutang_detail.php
+//
+// REVISI BESAR:
+// 1. Tampilan menjadi ringkasan per customer, dikelompokkan berdasarkan Kota.
+// 2. Kolom Grup, Kota, dan Cust ID dihilangkan.
+// 3. Urutan kolom:
+//    Nama Customer | Awal | Penjualan | Bayar | Titip | Akhir |
+//    1-30 Hari | 31-60 Hari | 61-90 Hari | Lebih | Belum Jatuh Tempo
+// 4. Sales Return / Retur Invoice mengurangi piutang.
+// 5. Nilai retur ditempatkan sebagai pengurang pada kolom "Lebih".
+// 6. Retur berstatus Cancelled tidak dihitung.
+// 7. Semua filter menggunakan bentuk tabel yang sama.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -12,24 +23,30 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
-function h($value) {
-    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+mysqli_set_charset($conn, 'utf8mb4');
+
+function h($value)
+{
+    return htmlspecialchars(
+        (string)($value ?? ''),
+        ENT_QUOTES,
+        'UTF-8'
+    );
 }
 
-function formatMoney($value) {
-    return number_format((float)$value, 2, ',', '.');
+function formatMoney($value)
+{
+    return number_format(
+        (float)$value,
+        2,
+        ',',
+        '.'
+    );
 }
 
-function formatDateIndo($date) {
-    if (empty($date) || $date === '0000-00-00') {
-        return '';
-    }
-
-    $ts = strtotime($date);
-    return $ts ? date('d-M-Y', $ts) : '';
-}
-
-function getMonthName($month) {
+function getMonthName($month)
+{
     $names = [
         1 => 'Januari',
         2 => 'Februari',
@@ -48,234 +65,597 @@ function getMonthName($month) {
     return $names[(int)$month] ?? '';
 }
 
-function getTitleFilter($filterBy, $filterValue) {
-    if ($filterBy === 'grup') {
+function getTitleFilter($filterBy, $filterValue)
+{
+    if ($filterBy === 'grup' && $filterValue !== '') {
         return 'Grup: ' . $filterValue;
     }
 
-    if ($filterBy === 'kota') {
+    if ($filterBy === 'kota' && $filterValue !== '') {
         return 'Kota: ' . $filterValue;
     }
 
-    if ($filterBy === 'pelanggan') {
+    if ($filterBy === 'pelanggan' && $filterValue !== '') {
         return 'Pelanggan: ' . $filterValue;
     }
 
     return 'Semua Grup';
 }
 
-function initGrandTotal() {
+function initAmountRow()
+{
     return [
-        'invoice_amount' => 0,
-        'pembayaran' => 0,
-        'sisa_piutang' => 0,
-        'belum_jatuh_tempo' => 0,
-        'b_1_30' => 0,
-        'b_31_60' => 0,
-        'b_61_90' => 0,
-        'b_lebih' => 0,
+        'saldo_awal' => 0.0,
+        'penjualan' => 0.0,
+        'bayar' => 0.0,
+        'titip' => 0.0,
+        'retur' => 0.0,
+        'akhir' => 0.0,
+        'b_1_30' => 0.0,
+        'b_31_60' => 0.0,
+        'b_61_90' => 0.0,
+        'b_lebih' => 0.0,
+        'belum_jatuh_tempo' => 0.0,
     ];
+}
+
+function addAmounts(array &$target, array $source)
+{
+    foreach (array_keys(initAmountRow()) as $key) {
+        $target[$key] += (float)($source[$key] ?? 0);
+    }
+}
+
+function normalizeCity($city)
+{
+    $city = trim((string)$city);
+
+    return $city !== ''
+        ? strtoupper($city)
+        : 'TANPA KOTA';
 }
 
 $bulan = (int)($_GET['bulan'] ?? date('n'));
 $tahun = (int)($_GET['tahun'] ?? date('Y'));
-$filterBy = $_GET['filter_by'] ?? 'semua';
-$filterValue = trim((string)($_GET['filter_value'] ?? ''));
+
+$filterBy = trim(
+    (string)($_GET['filter_by'] ?? 'semua')
+);
+
+$filterValue = trim(
+    (string)($_GET['filter_value'] ?? '')
+);
 
 if ($bulan < 1 || $bulan > 12) {
     $bulan = (int)date('n');
 }
 
-if ($tahun < 2020 || $tahun > ((int)date('Y') + 1)) {
+if (
+    $tahun < 2020 ||
+    $tahun > ((int)date('Y') + 1)
+) {
     $tahun = (int)date('Y');
 }
 
-$startDate = sprintf('%04d-%02d-01', $tahun, $bulan);
-$endDate = date('Y-m-t', strtotime($startDate));
+$startDate = sprintf(
+    '%04d-%02d-01',
+    $tahun,
+    $bulan
+);
+
+$endDate = date(
+    'Y-m-t',
+    strtotime($startDate)
+);
+
 $asOfDate = $endDate;
 
-$title = 'AGING PIUTANG - DETAIL';
-$subtitle = 'Periode ' . getMonthName($bulan) . ' ' . $tahun . ' | ' . getTitleFilter($filterBy, $filterValue);
+$title =
+    'Laporan Aging Periode Bulan ' .
+    getMonthName($bulan) .
+    ' Tahun ' .
+    $tahun .
+    ' CAHAYA';
+
+$subtitle =
+    getTitleFilter(
+        $filterBy,
+        $filterValue
+    );
+
 $printedAt = date('d-M-Y H:i:s');
 
-$invoiceAmountExpr = "
+/*
+ * Nilai invoice sebelum Titip:
+ *
+ * Jika piutang tersedia, titip_applied ditambahkan kembali karena
+ * kolom Titip akan ditampilkan sebagai pengurang tersendiri.
+ *
+ * Jika piutang tidak tersedia, gunakan grand_total/subtotal dikurangi DP.
+ */
+$invoiceGrossExpr = "
     GREATEST(
         CASE
-            WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
+            WHEN COALESCE(hi.piutang, 0) > 0 THEN
+                COALESCE(hi.piutang, 0)
+                + COALESCE(hi.titip_applied, 0)
+
             WHEN COALESCE(hi.grand_total, 0) > 0 THEN
-                (
-                    COALESCE(hi.grand_total, 0)
-                    - COALESCE(hi.down_payment, 0)
-                    - COALESCE(hi.titip_applied, 0)
-                )
+                COALESCE(hi.grand_total, 0)
+                - COALESCE(hi.down_payment, 0)
+
             ELSE
-                (
-                    COALESCE(hi.subtotal, 0)
-                    - COALESCE(hi.down_payment, 0)
-                    - COALESCE(hi.titip_applied, 0)
-                )
+                COALESCE(hi.subtotal, 0)
+                - COALESCE(hi.down_payment, 0)
         END,
         0
     )
 ";
 
+/*
+ * Filter yang sama diterapkan pada data invoice/customer.
+ */
 $whereInvoice = " WHERE hi.invoice_date <= ? ";
-$params = [$endDate, $endDate];
-$types = "ss";
+$params = [$endDate];
+$types = 's';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
-    $whereInvoice .= " AND COALESCE(c.area_code, '') = ? ";
+    $whereInvoice .= "
+        AND COALESCE(c.area_code, '') = ?
+    ";
+
     $params[] = $filterValue;
-    $types .= "s";
+    $types .= 's';
+
 } elseif ($filterBy === 'kota' && $filterValue !== '') {
-    $whereInvoice .= " AND COALESCE(NULLIF(c.city, ''), NULLIF(hi.customer_city, '')) = ? ";
+    $whereInvoice .= "
+        AND COALESCE(
+                NULLIF(c.city, ''),
+                NULLIF(hi.customer_city, '')
+            ) = ?
+    ";
+
     $params[] = $filterValue;
-    $types .= "s";
-} elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
-    $whereInvoice .= " AND hi.customer_id = ? ";
+    $types .= 's';
+
+} elseif (
+    $filterBy === 'pelanggan' &&
+    $filterValue !== ''
+) {
+    $whereInvoice .= "
+        AND hi.customer_id = ?
+    ";
+
     $params[] = $filterValue;
-    $types .= "s";
+    $types .= 's';
 }
 
-$sql = "
+/*
+ * Ambil invoice hingga akhir periode.
+ *
+ * Pembayaran dan retur cutoff diambil per invoice.
+ * Aging awalnya dihitung sebelum retur, kemudian total retur
+ * ditempatkan sebagai pengurang pada kolom "Lebih".
+ */
+$sqlInvoice = "
     SELECT
         hi.invoice_no,
-        COALESCE(di.shipping_no, '') AS shipping_no,
         hi.invoice_date,
-        DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days, 0) DAY) AS due_date,
-        hi.days,
+        DATE_ADD(
+            hi.invoice_date,
+            INTERVAL COALESCE(hi.days, 0) DAY
+        ) AS due_date,
+
         hi.customer_id,
         hi.customer_name,
         hi.customer_city,
+
         COALESCE(c.area_code, '') AS area_code,
-        COALESCE(NULLIF(c.city, ''), NULLIF(hi.customer_city, ''), '') AS city,
-        $invoiceAmountExpr AS invoice_amount,
+
+        COALESCE(
+            NULLIF(c.city, ''),
+            NULLIF(hi.customer_city, ''),
+            'TANPA KOTA'
+        ) AS city,
+
+        $invoiceGrossExpr AS invoice_gross,
+
+        COALESCE(
+            hi.titip_applied,
+            0
+        ) AS titip_applied,
+
         COALESCE((
             SELECT SUM(db.bayar_amount)
             FROM detail_bayar db
-            INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
             WHERE db.invoice_no = hi.invoice_no
               AND hb.bayar_date <= ?
-        ), 0) AS pembayaran_cutoff
+        ), 0) AS pembayaran_cutoff,
+
+        COALESCE((
+            SELECT SUM(db.bayar_amount)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date < ?
+        ), 0) AS pembayaran_before_period,
+
+        COALESCE((
+            SELECT SUM(db.bayar_amount)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date BETWEEN ? AND ?
+        ), 0) AS pembayaran_period,
+
+        COALESCE((
+            SELECT SUM(hri.return_amount)
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.return_date <= ?
+              AND LOWER(
+                    COALESCE(hri.status, 'Open')
+                  ) <> 'cancelled'
+        ), 0) AS retur_cutoff,
+
+        COALESCE((
+            SELECT SUM(hri.return_amount)
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.return_date < ?
+              AND LOWER(
+                    COALESCE(hri.status, 'Open')
+                  ) <> 'cancelled'
+        ), 0) AS retur_before_period,
+
+        COALESCE((
+            SELECT SUM(hri.return_amount)
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.return_date BETWEEN ? AND ?
+              AND LOWER(
+                    COALESCE(hri.status, 'Open')
+                  ) <> 'cancelled'
+        ), 0) AS retur_period
+
     FROM head_invoice hi
-    LEFT JOIN m_customer c ON c.customer_id = hi.customer_id
-    LEFT JOIN (
-        SELECT
-            invoice_no,
-            GROUP_CONCAT(
-                DISTINCT shipping_no
-                ORDER BY shipping_no
-                SEPARATOR ', '
-            ) AS shipping_no
-        FROM det_invoice
-        GROUP BY invoice_no
-    ) di ON di.invoice_no = hi.invoice_no
+
+    LEFT JOIN m_customer c
+        ON c.customer_id = hi.customer_id
+
     $whereInvoice
-    GROUP BY
-        hi.invoice_no,
-        di.shipping_no,
-        hi.invoice_date,
-        hi.days,
-        hi.customer_id,
-        hi.customer_name,
-        hi.customer_city,
-        c.area_code,
-        c.city,
-        hi.piutang,
-        hi.grand_total,
-        hi.subtotal,
-        hi.down_payment,
-        hi.titip_applied
+
     ORDER BY
-        c.area_code ASC,
         city ASC,
         hi.customer_name ASC,
         hi.invoice_date ASC,
         hi.invoice_no ASC
 ";
 
-$stmt = mysqli_prepare($conn, $sql);
+/*
+ * Urutan parameter:
+ * 1 pembayaran cutoff
+ * 2 pembayaran sebelum periode
+ * 3-4 pembayaran periode
+ * 5 retur cutoff
+ * 6 retur sebelum periode
+ * 7-8 retur periode
+ * 9+ filter invoice
+ */
+$invoiceParams = [
+    $endDate,
+    $startDate,
+    $startDate,
+    $endDate,
+    $endDate,
+    $startDate,
+    $startDate,
+    $endDate,
+    ...$params
+];
 
-if (!$stmt) {
-    die("SQL DETAIL AGING ERROR: " . mysqli_error($conn) . "<br><pre>" . h($sql) . "</pre>");
+$invoiceTypes =
+    'ssssssss' .
+    $types;
+
+$stmtInvoice = mysqli_prepare(
+    $conn,
+    $sqlInvoice
+);
+
+if (!$stmtInvoice) {
+    die(
+        'SQL AGING ERROR: ' .
+        h(mysqli_error($conn)) .
+        '<br><pre>' .
+        h($sqlInvoice) .
+        '</pre>'
+    );
 }
 
-mysqli_stmt_bind_param($stmt, $types, ...$params);
-mysqli_stmt_execute($stmt);
-$res = mysqli_stmt_get_result($stmt);
+mysqli_stmt_bind_param(
+    $stmtInvoice,
+    $invoiceTypes,
+    ...$invoiceParams
+);
 
-$rows = [];
-$grand = initGrandTotal();
+mysqli_stmt_execute($stmtInvoice);
 
-while ($row = mysqli_fetch_assoc($res)) {
-    $invoiceAmount = (float)($row['invoice_amount'] ?? 0);
-    $pembayaran = (float)($row['pembayaran_cutoff'] ?? 0);
-    $sisaPiutang = $invoiceAmount - $pembayaran;
+$resInvoice =
+    mysqli_stmt_get_result($stmtInvoice);
 
-    if ($sisaPiutang <= 0.0001) {
-        continue;
+/*
+ * Struktur customer:
+ * customerKey => data customer + nilai.
+ */
+$customers = [];
+
+while (
+    $row =
+    mysqli_fetch_assoc($resInvoice)
+) {
+    $customerId = trim(
+        (string)($row['customer_id'] ?? '')
+    );
+
+    $customerName = trim(
+        (string)($row['customer_name'] ?? '')
+    );
+
+    $city = normalizeCity(
+        $row['city'] ?? ''
+    );
+
+    $customerKey =
+        $customerId !== ''
+            ? $customerId
+            : $city . '|' . $customerName;
+
+    if (!isset($customers[$customerKey])) {
+        $customers[$customerKey] = [
+            'customer_id' => $customerId,
+            'customer_name' =>
+                $customerName !== ''
+                    ? $customerName
+                    : '-',
+            'city' => $city,
+            'amounts' => initAmountRow(),
+        ];
     }
 
-    $dueDate = $row['due_date'];
-    $ageDays = 0;
+    $amounts =&
+        $customers[$customerKey]['amounts'];
 
-    if (!empty($dueDate) && $dueDate !== '0000-00-00') {
-        $ageDays = (int)floor((strtotime($asOfDate) - strtotime($dueDate)) / 86400);
+    $invoiceDate =
+        (string)($row['invoice_date'] ?? '');
+
+    $dueDate =
+        (string)($row['due_date'] ?? '');
+
+    $invoiceGross =
+        (float)($row['invoice_gross'] ?? 0);
+
+    $titipApplied =
+        (float)($row['titip_applied'] ?? 0);
+
+    $paymentCutoff =
+        (float)($row['pembayaran_cutoff'] ?? 0);
+
+    $paymentBefore =
+        (float)($row['pembayaran_before_period'] ?? 0);
+
+    $paymentPeriod =
+        (float)($row['pembayaran_period'] ?? 0);
+
+    $returnCutoff =
+        (float)($row['retur_cutoff'] ?? 0);
+
+    $returnBefore =
+        (float)($row['retur_before_period'] ?? 0);
+
+    $returnPeriod =
+        (float)($row['retur_period'] ?? 0);
+
+    /*
+     * Saldo Awal:
+     * hanya invoice sebelum awal periode.
+     */
+    if (
+        $invoiceDate !== '' &&
+        $invoiceDate < $startDate
+    ) {
+        $openingInvoice =
+            $invoiceGross
+            - $titipApplied
+            - $paymentBefore
+            - $returnBefore;
+
+        $amounts['saldo_awal'] +=
+            $openingInvoice;
     }
 
-    $belumJatuhTempo = 0;
-    $b1_30 = 0;
-    $b31_60 = 0;
-    $b61_90 = 0;
-    $bLebih = 0;
+    /*
+     * Mutasi periode.
+     */
+    if (
+        $invoiceDate >= $startDate &&
+        $invoiceDate <= $endDate
+    ) {
+        $amounts['penjualan'] +=
+            $invoiceGross;
 
-    if ($ageDays <= 0) {
-        $belumJatuhTempo = $sisaPiutang;
-    } elseif ($ageDays <= 30) {
-        $b1_30 = $sisaPiutang;
-    } elseif ($ageDays <= 60) {
-        $b31_60 = $sisaPiutang;
-    } elseif ($ageDays <= 90) {
-        $b61_90 = $sisaPiutang;
-    } else {
-        $bLebih = $sisaPiutang;
+        $amounts['titip'] +=
+            $titipApplied;
     }
 
-    $row['invoice_amount_calc'] = $invoiceAmount;
-    $row['pembayaran_calc'] = $pembayaran;
-    $row['sisa_piutang'] = $sisaPiutang;
-    $row['age_days'] = $ageDays;
-    $row['belum_jatuh_tempo'] = $belumJatuhTempo;
-    $row['b_1_30'] = $b1_30;
-    $row['b_31_60'] = $b31_60;
-    $row['b_61_90'] = $b61_90;
-    $row['b_lebih'] = $bLebih;
+    $amounts['bayar'] +=
+        $paymentPeriod;
 
-    $rows[] = $row;
+    $amounts['retur'] +=
+        $returnPeriod;
 
-    $grand['invoice_amount'] += $invoiceAmount;
-    $grand['pembayaran'] += $pembayaran;
-    $grand['sisa_piutang'] += $sisaPiutang;
-    $grand['belum_jatuh_tempo'] += $belumJatuhTempo;
-    $grand['b_1_30'] += $b1_30;
-    $grand['b_31_60'] += $b31_60;
-    $grand['b_61_90'] += $b61_90;
-    $grand['b_lebih'] += $bLebih;
+    /*
+     * Aging akhir periode sebelum retur.
+     *
+     * Retur tidak langsung ditempatkan sesuai umur invoice,
+     * karena permintaan laporan adalah menaruh nilai retur
+     * sebagai pengurang pada kolom "Lebih".
+     */
+    $outstandingBeforeReturn =
+        $invoiceGross
+        - $titipApplied
+        - $paymentCutoff;
+
+    if ($outstandingBeforeReturn > 0.0001) {
+        $ageDays = 0;
+
+        if (
+            $dueDate !== '' &&
+            $dueDate !== '0000-00-00'
+        ) {
+            $ageDays = (int)floor(
+                (
+                    strtotime($asOfDate)
+                    - strtotime($dueDate)
+                ) / 86400
+            );
+        }
+
+        if ($ageDays <= 0) {
+            $amounts['belum_jatuh_tempo'] +=
+                $outstandingBeforeReturn;
+
+        } elseif ($ageDays <= 30) {
+            $amounts['b_1_30'] +=
+                $outstandingBeforeReturn;
+
+        } elseif ($ageDays <= 60) {
+            $amounts['b_31_60'] +=
+                $outstandingBeforeReturn;
+
+        } elseif ($ageDays <= 90) {
+            $amounts['b_61_90'] +=
+                $outstandingBeforeReturn;
+
+        } else {
+            $amounts['b_lebih'] +=
+                $outstandingBeforeReturn;
+        }
+    }
+
+    /*
+     * Seluruh retur hingga akhir periode menjadi minus
+     * pada kolom Lebih agar total aging tetap sama dengan Akhir.
+     */
+    $amounts['b_lebih'] -=
+        $returnCutoff;
+
+    unset($amounts);
 }
 
-mysqli_stmt_close($stmt);
+mysqli_stmt_close($stmtInvoice);
+
+/*
+ * Hitung saldo akhir per customer dan singkirkan customer
+ * yang benar-benar tidak mempunyai mutasi maupun saldo.
+ */
+foreach ($customers as $key => &$customer) {
+    $a =& $customer['amounts'];
+
+    $a['akhir'] =
+        $a['saldo_awal']
+        + $a['penjualan']
+        - $a['bayar']
+        - $a['titip']
+        - $a['retur'];
+
+    $activityTotal =
+        abs($a['saldo_awal'])
+        + abs($a['penjualan'])
+        + abs($a['bayar'])
+        + abs($a['titip'])
+        + abs($a['retur'])
+        + abs($a['akhir']);
+
+    if ($activityTotal < 0.0001) {
+        unset($customers[$key]);
+    }
+
+    unset($a);
+}
+unset($customer);
+
+/*
+ * Kelompokkan berdasarkan kota.
+ */
+$grouped = [];
+
+foreach ($customers as $customer) {
+    $city = $customer['city'];
+
+    if (!isset($grouped[$city])) {
+        $grouped[$city] = [
+            'rows' => [],
+            'totals' => initAmountRow(),
+        ];
+    }
+
+    $grouped[$city]['rows'][] =
+        $customer;
+
+    addAmounts(
+        $grouped[$city]['totals'],
+        $customer['amounts']
+    );
+}
+
+ksort(
+    $grouped,
+    SORT_NATURAL | SORT_FLAG_CASE
+);
+
+foreach ($grouped as &$cityGroup) {
+    usort(
+        $cityGroup['rows'],
+        function ($a, $b) {
+            return strcasecmp(
+                $a['customer_name'],
+                $b['customer_name']
+            );
+        }
+    );
+}
+unset($cityGroup);
+
+$grand = initAmountRow();
+
+foreach ($grouped as $cityGroup) {
+    addAmounts(
+        $grand,
+        $cityGroup['totals']
+    );
+}
 ?>
-
 <!DOCTYPE html>
-<html>
+<html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
     <title><?= h($title) ?></title>
+
     <style>
         @page {
-            size: 330mm 215mm;
-            margin: 7mm;
+            size: 377.8mm 279.4mm;
+            margin: 5mm 6mm;
         }
 
         * {
@@ -285,40 +665,50 @@ mysqli_stmt_close($stmt);
         }
 
         body {
-            font-family: Arial, Helvetica, sans-serif;
+            font-family:
+                "Courier New",
+                Courier,
+                monospace;
             font-size: 12px;
             color: #000;
             background: #eef1f5;
             padding: 16px;
         }
 
-        /* Toolbar Tombol Cetak */
         .toolbar {
             width: 100%;
             display: flex;
             justify-content: flex-end;
+            gap: 8px;
             margin-bottom: 16px;
         }
 
-        .btn-print {
+        .btn-action {
             border: none;
             border-radius: 6px;
-            background: #2b5797;
             color: #fff;
-            padding: 12px 30px;
-            font-size: 16px;
+            padding: 12px 24px;
+            font-size: 15px;
             font-weight: bold;
             cursor: pointer;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-            transition: 0.2s;
+            text-decoration: none;
+            box-shadow:
+                0 2px 6px rgba(0,0,0,.2);
         }
 
-        .btn-print:hover {
-            background: #1a3f6a;
-            transform: scale(1.02);
+        .btn-back {
+            background: #6c757d;
         }
 
-        /* Container Scroll */
+        .btn-print {
+            background: #2b5797;
+        }
+
+        .btn-action:hover {
+            filter: brightness(.92);
+            text-decoration: none;
+        }
+
         .screen-scroll {
             width: 100%;
             overflow-x: auto;
@@ -328,108 +718,137 @@ mysqli_stmt_close($stmt);
         }
 
         .screen-scroll::-webkit-scrollbar {
-            height: 10px;
+            height: 11px;
         }
+
         .screen-scroll::-webkit-scrollbar-track {
             background: #f1f1f1;
             border-radius: 5px;
         }
+
         .screen-scroll::-webkit-scrollbar-thumb {
             background: #888;
             border-radius: 5px;
         }
-        .screen-scroll::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
 
         .print-wrap {
-            width: 1480px;
-            min-width: 1480px;
+            width: 1680px;
+            min-width: 1680px;
             margin: 0 auto;
-            padding: 20px 24px;
+            padding: 14px 18px;
             background: #fff;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+            box-shadow:
+                0 2px 12px rgba(0,0,0,.1);
             border-radius: 4px;
         }
 
         .title {
-            text-align: center;
-            font-size: 20px;
+            font-size: 16px;
             font-weight: bold;
-            margin-bottom: 2px;
+            margin-bottom: 3px;
         }
 
         .subtitle {
-            text-align: center;
-            font-size: 13px;
-            margin-bottom: 2px;
+            font-size: 11px;
+            margin-bottom: 3px;
         }
 
         .printed {
             text-align: right;
-            font-size: 11px;
-            margin-bottom: 8px;
+            font-size: 10px;
             color: #555;
+            margin-bottom: 6px;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 10px;
+            table-layout: fixed;
+            font-size: 9px;
         }
 
         th {
-            border: 1px solid #000;
-            background: #e8e8e8;
-            padding: 6px 4px;
+            border-top: 1px solid #000;
+            border-bottom: 1px solid #000;
+            padding: 5px 3px;
             text-align: center;
             font-weight: bold;
             white-space: nowrap;
         }
 
         td {
-            border-left: 1px solid #000;
-            border-right: 1px solid #000;
-            padding: 5px 4px;
+            padding: 3px 4px;
             vertical-align: middle;
             white-space: nowrap;
         }
 
-        tbody tr:first-child td {
-            border-top: 1px solid #000;
-        }
-        tbody tr:last-child td {
-            border-bottom: 1px solid #000;
+        .customer-col {
+            width: 245px;
+            text-align: left;
+            white-space: normal;
         }
 
-        tfoot td {
-            border: 1px solid #000;
-            background: #e8e8e8;
+        .money-col {
+            width: 112px;
+        }
+
+        .money-cell {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .city-row td {
+            padding-top: 8px;
+            padding-bottom: 3px;
             font-weight: bold;
-            padding: 6px 4px;
+            font-size: 10px;
+            border-top: 1px solid #000;
+        }
+
+        .city-total td {
+            border-top: 1px solid #777;
+            border-bottom: 1px solid #000;
+            font-weight: bold;
+            background: #f7f7f7;
+            padding-top: 4px;
+            padding-bottom: 4px;
+        }
+
+        .grand-total td {
+            border-top: 2px solid #000;
+            border-bottom: 2px solid #000;
+            font-weight: bold;
+            background: #e8e8e8;
+            padding-top: 6px;
+            padding-bottom: 6px;
+        }
+
+        .return-negative {
+            color: #a00000;
+            font-weight: bold;
+        }
+
+        .text-right {
+            text-align: right;
         }
 
         .text-center {
             text-align: center;
         }
-        .text-right {
-            text-align: right;
+
+        .no-data {
+            padding: 20px;
+            text-align: center;
+            color: #777;
+            font-size: 12px;
         }
 
-        .money-cell {
-            text-align: right;
+        .report-note {
+            margin-top: 7px;
+            font-size: 9px;
+            color: #555;
         }
 
-        .label-cell {
-            white-space: normal;
-        }
-
-        .customer-cell {
-            white-space: normal;
-            font-weight: bold;
-        }
-
-        /* Print Styles */
         @media print {
             body {
                 padding: 0;
@@ -445,53 +864,93 @@ mysqli_stmt_close($stmt);
                 padding: 0;
             }
 
-            .screen-scroll::-webkit-scrollbar {
-                display: none;
+            html,
+            body {
+                width: 377.8mm !important;
+                min-width: 377.8mm !important;
+                height: auto !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: visible !important;
             }
 
             .print-wrap {
-                width: 100%;
-                min-width: 0;
-                margin: 0;
-                padding: 8px 10px;
-                box-shadow: none;
-                border-radius: 0;
+                width: 365.8mm !important;
+                min-width: 365.8mm !important;
+                max-width: 365.8mm !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                box-shadow: none !important;
+                border-radius: 0 !important;
             }
 
             .title {
-                font-size: 15px;
+                font-size: 10pt;
+                line-height: 1.1;
             }
+
             .subtitle {
-                font-size: 10px;
+                font-size: 8pt;
+                line-height: 1.1;
             }
+
             .printed {
-                font-size: 8.5px;
+                font-size: 7pt;
+                margin-bottom: 2mm;
             }
 
             table {
-                font-size: 7.4px;
+                width: 100% !important;
+                table-layout: fixed !important;
+                font-size: 7pt;
+                line-height: 1.05;
             }
 
             th {
-                padding: 3px 2px;
-                background: #f2f2f2 !important;
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
+                padding: 1.5mm 0.7mm;
+                font-weight: bold;
             }
 
             td {
-                padding: 2.5px 2px;
+                padding: 1.1mm 0.7mm;
             }
 
-            tfoot td {
-                padding: 3px 2px;
-                background: #f2f2f2 !important;
+            .customer-col {
+                width: 55mm !important;
+            }
+
+            .money-col {
+                width: 28.2mm !important;
+            }
+
+            .city-row td {
+                font-size: 7.5pt;
+                padding-top: 2mm;
+                padding-bottom: 0.8mm;
+            }
+
+            .city-total td {
+                padding-top: 1.2mm;
+                padding-bottom: 1.2mm;
+            }
+
+            .grand-total td {
+                padding-top: 1.5mm;
+                padding-bottom: 1.5mm;
+            }
+
+            .report-note {
+                font-size: 6.5pt;
+                margin-top: 2mm;
+            }
+
+            .city-total td,
+            .grand-total td {
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
             }
         }
 
-        /* Mobile */
         @media screen and (max-width: 768px) {
             body {
                 padding: 8px;
@@ -501,104 +960,304 @@ mysqli_stmt_close($stmt);
                 justify-content: center;
             }
 
-            .btn-print {
-                width: 100%;
-                padding: 14px;
-                font-size: 16px;
+            .btn-action {
+                flex: 1;
+                text-align: center;
             }
 
             .print-wrap {
-                padding: 12px;
-                min-width: 1200px;
-                width: 1200px;
+                width: 1500px;
+                min-width: 1500px;
             }
         }
     </style>
 </head>
+
 <body>
 
-<!-- Toolbar Cetak -->
 <div class="toolbar no-print">
-    <button type="button" class="btn-print" onclick="window.print()">
-        🖨️ CETAK LAPORAN
+    <a
+        href="../../index.php?page=aging_piutang"
+        class="btn-action btn-back"
+    >
+        KEMBALI
+    </a>
+
+    <button
+        type="button"
+        class="btn-action btn-print"
+        onclick="window.print()"
+    >
+        CETAK LAPORAN
     </button>
 </div>
 
-<!-- Container Scroll -->
+<div class="no-print" style="
+    max-width:1680px;
+    margin:0 auto 12px;
+    padding:9px 12px;
+    background:#fffbe6;
+    border:1px solid #e0c97f;
+    font-family:Arial,Helvetica,sans-serif;
+    font-size:12px;
+    line-height:1.5;
+">
+    Setting Epson LQ-2190:
+    <strong>Paper 14 7/8 × 11 inch</strong>,
+    ukuran <strong>377,8 × 279,4 mm</strong>,
+    orientasi <strong>Landscape</strong>,
+    skala <strong>100%</strong>,
+    margin minimum, dan nonaktifkan header/footer browser.
+</div>
+
 <div class="screen-scroll">
     <div class="print-wrap">
-        <div class="title"><?= h($title) ?></div>
-        <div class="subtitle"><?= h($subtitle) ?></div>
-        <div class="printed">Dicetak: <?= h($printedAt) ?></div>
+        <div class="title">
+            <?= h($title) ?>
+        </div>
+
+        <div class="subtitle">
+            <?= h($subtitle) ?>
+        </div>
+
+        <div class="printed">
+            Dicetak:
+            <?= h($printedAt) ?>
+        </div>
 
         <table>
             <thead>
                 <tr>
-                    <th style="width:28px;">No</th>
-                    <th style="width:50px;">Grup</th>
-                    <th style="width:55px;">Kota</th>
-                    <th style="width:55px;">Cust ID</th>
-                    <th style="width:130px;">Nama Customer</th>
-                    <th style="width:85px;">Shipping No.</th>
-                    <th style="width:62px;">Tgl Inv</th>
-                    <th style="width:62px;">Jth Tempo</th>
-                    <th style="width:38px;">Umur</th>
-                    <th style="width:78px;">Nilai Invoice</th>
-                    <th style="width:78px;">Pembayaran</th>
-                    <th style="width:78px;">Sisa Piutang</th>
-                    <th style="width:72px;">Belum JT</th>
-                    <th style="width:68px;">1-30</th>
-                    <th style="width:68px;">31-60</th>
-                    <th style="width:68px;">61-90</th>
-                    <th style="width:68px;">Lebih</th>
+                    <th class="customer-col">
+                        Nama Customer
+                    </th>
+
+                    <th class="money-col">
+                        Awal
+                    </th>
+
+                    <th class="money-col">
+                        Penjualan
+                    </th>
+
+                    <th class="money-col">
+                        Bayar
+                    </th>
+
+                    <th class="money-col">
+                        Titip
+                    </th>
+
+                    <th class="money-col">
+                        Akhir
+                    </th>
+
+                    <th class="money-col">
+                        1-30 Hari
+                    </th>
+
+                    <th class="money-col">
+                        31-60 Hari
+                    </th>
+
+                    <th class="money-col">
+                        61-90 Hari
+                    </th>
+
+                    <th class="money-col">
+                        Lebih
+                    </th>
+
+                    <th class="money-col">
+                        Blm Jth. Tempo
+                    </th>
                 </tr>
             </thead>
+
             <tbody>
-                <?php if (empty($rows)): ?>
+                <?php if (empty($grouped)): ?>
                     <tr>
-                        <td colspan="17" class="text-center" style="padding:20px; font-size:13px; color:#999;">
-                            Tidak ada data aging piutang detail untuk filter ini.
+                        <td
+                            colspan="11"
+                            class="no-data"
+                        >
+                            Tidak ada data aging piutang untuk filter ini.
                         </td>
                     </tr>
                 <?php else: ?>
-                    <?php $no = 1; ?>
-                    <?php foreach ($rows as $row): ?>
-                        <tr>
-                            <td class="text-center"><?= $no++ ?></td>
-                            <td class="label-cell"><?= h($row['area_code'] !== '' ? $row['area_code'] : 'TANPA GRUP') ?></td>
-                            <td class="label-cell"><?= h($row['city'] !== '' ? $row['city'] : $row['customer_city']) ?></td>
-                            <td class="text-center"><?= h($row['customer_id']) ?></td>
-                            <td class="customer-cell"><?= h($row['customer_name']) ?></td>
-                            <td class="text-center" style="font-size:9px;"><?= h($row['shipping_no']) ?></td>
-                            <td class="text-center"><?= h(formatDateIndo($row['invoice_date'])) ?></td>
-                            <td class="text-center"><?= h(formatDateIndo($row['due_date'])) ?></td>
-                            <td class="text-center"><?= h($row['age_days']) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['invoice_amount_calc'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['pembayaran_calc'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['sisa_piutang'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['belum_jatuh_tempo'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['b_61_90'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['b_lebih'])) ?></td>
+
+                    <?php foreach ($grouped as $city => $cityGroup): ?>
+                        <tr class="city-row">
+                            <td colspan="11">
+                                <?= h($city) ?>
+                            </td>
+                        </tr>
+
+                        <?php foreach ($cityGroup['rows'] as $customer): ?>
+                            <?php $a = $customer['amounts']; ?>
+
+                            <tr>
+                                <td class="customer-col">
+                                    <?= h($customer['customer_name']) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['saldo_awal'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['penjualan'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['bayar'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['titip'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['akhir'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['b_1_30'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['b_31_60'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['b_61_90'])) ?>
+                                </td>
+
+                                <td
+                                    class="money-cell
+                                    <?= $a['b_lebih'] < 0 ? 'return-negative' : '' ?>"
+                                >
+                                    <?= h(formatMoney($a['b_lebih'])) ?>
+                                </td>
+
+                                <td class="money-cell">
+                                    <?= h(formatMoney($a['belum_jatuh_tempo'])) ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+
+                        <?php $ct = $cityGroup['totals']; ?>
+
+                        <tr class="city-total">
+                            <td class="customer-col">
+                                TOTAL <?= h($city) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['saldo_awal'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['penjualan'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['bayar'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['titip'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['akhir'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['b_1_30'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['b_31_60'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['b_61_90'])) ?>
+                            </td>
+
+                            <td
+                                class="money-cell
+                                <?= $ct['b_lebih'] < 0 ? 'return-negative' : '' ?>"
+                            >
+                                <?= h(formatMoney($ct['b_lebih'])) ?>
+                            </td>
+
+                            <td class="money-cell">
+                                <?= h(formatMoney($ct['belum_jatuh_tempo'])) ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
             </tbody>
+
             <tfoot>
-                <tr>
-                    <td colspan="9" class="text-right">GRAND TOTAL</td>
-                    <td class="money-cell"><?= h(formatMoney($grand['invoice_amount'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['sisa_piutang'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['belum_jatuh_tempo'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['b_61_90'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['b_lebih'])) ?></td>
+                <tr class="grand-total">
+                    <td class="customer-col">
+                        GRAND TOTAL
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['saldo_awal'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['penjualan'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['bayar'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['titip'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['akhir'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['b_1_30'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['b_31_60'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['b_61_90'])) ?>
+                    </td>
+
+                    <td
+                        class="money-cell
+                        <?= $grand['b_lebih'] < 0 ? 'return-negative' : '' ?>"
+                    >
+                        <?= h(formatMoney($grand['b_lebih'])) ?>
+                    </td>
+
+                    <td class="money-cell">
+                        <?= h(formatMoney($grand['belum_jatuh_tempo'])) ?>
+                    </td>
                 </tr>
             </tfoot>
         </table>
+
+        <div class="report-note">
+            Catatan: nilai Retur Invoice sampai akhir periode
+            dicatat sebagai pengurang pada kolom
+            <strong>Lebih</strong>.
+            Retur berstatus Cancelled tidak dihitung.
+        </div>
     </div>
 </div>
 
