@@ -89,6 +89,7 @@ $groupLabels = [
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cahaya App</title>
+	<link rel="icon" type="image/png" href="assets/img/logo_mcp.png">
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- FontAwesome untuk Icon Menu -->
@@ -180,7 +181,7 @@ $groupLabels = [
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top border-bottom border-secondary">
     <div class="container-fluid">
         <a class="navbar-brand fw-bold text-info" href="index.php">
-            CP
+            CP 
             <span class="badge bg-secondary text-white" style="font-size: 10px;">ERP</span>
         </a>
         <button class="navbar-toggler d-md-none" type="button" data-bs-toggle="collapse" data-bs-target="#sidebarMenu" aria-controls="sidebarMenu" aria-expanded="false" aria-label="Toggle navigation">
@@ -318,7 +319,7 @@ $groupLabels = [
                     <!-- ================== TRANSAKSI ================== -->
                     <?php 
                     $hasTransaksiMenu = false;
-                    $transaksiMenus = ['sales_order', 'sop', 'shipping', 'invoice', 'retur-invoice', 'pembayaran', 'downpayment', 'titip_uang', 'purchase_order'];
+                    $transaksiMenus = ['sales_order', 'sop', 'shipping', 'invoice', 'return_invoice', 'pembayaran', 'downpayment', 'titip_uang', 'purchase_order'];
                     foreach ($transaksiMenus as $menu) {
                         if (canAccessMenu($menu, $allowedMenus)) {
                             $hasTransaksiMenu = true;
@@ -363,10 +364,10 @@ $groupLabels = [
                         </li>
                         <?php endif; ?>
                         
-                        <?php if (canAccessMenu('retur-invoice', $allowedMenus)): ?>
+                        <?php if (canAccessMenu('return_invoice', $allowedMenus)): ?>
                         <li class="nav-item">
-                            <a class="nav-link" href="index.php?page=retur-invoice">
-                                <i class="fa fa-undo me-2"></i> Retur Invoice
+                            <a class="nav-link" href="index.php?page=return_invoice">
+                                <i class="fa fa-undo me-2"></i> Return Invoice
                             </a>
                         </li>
                         <?php endif; ?>
@@ -411,7 +412,7 @@ $groupLabels = [
                     <?php if ($hasLaporanMenu): ?>
                     <div class="menu-header">Laporan</div>
                         
-                        <?php if (canAccessMenu('kartu-stok', $allowedMenus)): ?>
+                       <?php if (canAccessMenu('kartu-stok', $allowedMenus)): ?>
                         <li class="nav-item">
                             <a class="nav-link" href="index.php?page=kartu_stok_order_customer">
                                 <i class="fa fa-book me-2"></i> Kartu Stok Order Customer
@@ -476,7 +477,7 @@ $groupLabels = [
                     // Tampilkan menu tambahan dari database yang tidak termasuk dalam menu statis di atas
                     $staticMenus = ['dashboard', 'customer', 'supplier', 'area', 'marketing', 'sales', 
                                    'inventory', 'category', 'gudang', 'mesin', 'uom', 'purchase_order', 
-                                   'sales_order', 'sop', 'shipping', 'invoice', 'retur-invoice', 
+                                   'sales_order', 'sop', 'shipping', 'invoice', 'retur_invoice', 
                                    'pembayaran', 'downpayment', 'titip_uang', 'kartu-stok', 
                                    'rekap_sales_order', 'aging_piutang', 'konfigurasi', 'user-akses', 
                                    'add-menu', 'backup', 'ganti-password'];

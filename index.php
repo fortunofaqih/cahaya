@@ -226,7 +226,40 @@ switch ($page) {
     case 'cetak_aging_piutang_detail':
         include 'modul/transaksi/cetak_aging_piutang_detail.php';
         break;
-
+        
+    case 'return_invoice':
+        include 'modul/transaksi/return_invoice.php';
+        break;
+    case 'add_return':
+        include 'modul/transaksi/add_return.php';
+        break;
+    case 'save_return':
+        include 'modul/transaksi/save_return.php';
+        break;
+    case 'edit_return':
+        include 'modul/transaksi/edit_return.php';
+        break;
+    case 'update_return':
+        include 'modul/transaksi/update_return.php';
+        break;
+    case 'delete_return':
+        include 'modul/transaksi/delete_return.php';
+        break;
+    case 'ajax_return_orders':
+        include 'modul/transaksi/ajax_return_orders.php';
+        break;
+    case 'ajax_return_shipping_detail':
+        include 'modul/transaksi/ajax_return_shipping_detail.php';
+        break;
+    case 'ajax_return_shipping':
+        include 'modul/transaksi/ajax_return_shipping.php';
+        break;
+    case 'get_return_detail':
+        include 'modul/transaksi/get_return_detail.php';
+        break;
+    case 'print_return':
+        include 'modul/transaksi/print_return.php';
+        break;
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';
