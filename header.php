@@ -436,6 +436,13 @@ $groupLabels = [
                             </a>
                         </li>
                         <?php endif; ?>
+                         <?php if (canAccessMenu('register_penjualan_global', $allowedMenus)): ?>
+                        <li class="nav-item">
+                            <a class="nav-link" href="index.php?page=register_penjualan_global">
+                                <i class="fa fa-cash-register me-2"></i> Register Penjualan Global
+                            </a>
+                        </li>
+                        <?php endif; ?>
                         
                     <?php endif; ?>
 

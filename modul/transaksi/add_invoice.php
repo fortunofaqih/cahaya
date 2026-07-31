@@ -1,6 +1,7 @@
 <?php
 // modul/transaksi/add_invoice.php
 // REVISI: Pilih Sales Order terlebih dahulu, lalu pilih Shipping yang akan dibuat invoice.
+// UPDATE: Jika inventory_name mengandung "ONGKOS", subtotal = price (tidak dikalikan qty)
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -147,6 +148,8 @@ if ($gudang_rs) {
 .shipping-detail-table .text-right { text-align:right; }
 .shipping-detail-table .text-center { text-align:center; }
 .shipping-detail-table .inventory-name { white-space:normal; word-break:break-word; min-width:240px; }
+.shipping-detail-table .ongkos-row { background-color: #fff3cd !important; }
+.shipping-detail-table .ongkos-row td { background-color: #fff3cd !important; }
 .summary-panel { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; padding:12px; background:#fff; border:1px solid #dee2e6; border-radius:4px; margin-bottom:10px; }
 .summary-box label { display:block; font-size:10px; font-weight:bold; color:#0d6efd; text-transform:uppercase; margin-bottom:3px; }
 .summary-box input { width:100%; border:1px solid #ced4da; border-radius:3px; padding:6px 8px; font-size:12px; font-weight:bold; text-align:right; background:#f8f9fa; }
@@ -337,6 +340,29 @@ function getShippingItems(s){
     return s.items || s.details || s.detail || s.lines || [];
 }
 
+// Fungsi untuk mengecek apakah inventory_name mengandung "ONGKOS" (case insensitive)
+function isOngkosItem(inventoryName){
+    if(!inventoryName) return false;
+    return inventoryName.toUpperCase().indexOf('ONGKOS') !== -1;
+}
+
+// Fungsi untuk menghitung subtotal item (dengan pengecekan ONGKOS)
+function calculateItemSubtotal(item){
+    var qty = parseNum(item.qty || item.quantity || 0);
+    var qtyPack = parseNum(item.qty_pack || item.quantity_pack || 0);
+    var price = parseNum(item.price || item.unit_price || 0);
+    var inventoryName = item.inventory_name || '';
+    
+    // Jika inventory_name mengandung "ONGKOS", subtotal = price (tidak dikalikan qty)
+    if(isOngkosItem(inventoryName)){
+        return price;
+    }
+    
+    // Jika tidak, subtotal = price * qty (atau qty_pack jika ada)
+    var effectiveQty = qtyPack > 0 ? qtyPack : qty;
+    return price * effectiveQty;
+}
+
 function getShippingSubtotal(s){
     var subtotal = parseNum(s.subtotal || s.shipping_subtotal || s.sub_total || s.dpp || 0);
     if(subtotal > 0) return subtotal;
@@ -345,7 +371,8 @@ function getShippingSubtotal(s){
     if(items && items.length){
         var sum = 0;
         items.forEach(function(it){
-            sum += parseNum(it.subtotal || it.sub_total || it.amount || 0);
+            // Gunakan fungsi calculateItemSubtotal untuk menghitung subtotal per item
+            sum += calculateItemSubtotal(it);
         });
         if(sum > 0) return sum;
     }
@@ -388,22 +415,44 @@ function renderShippingDetailTable(items){
         '<th style="width:90px;">UoM Pack</th>'+
         '<th style="width:120px;">Price</th>'+
         '<th style="width:130px;">Subtotal</th>'+
+        '<th style="width:100px;">Status</th>'+
         '</tr></thead><tbody>';
 
     items.forEach(function(it){
         var qty = parseNum(it.qty || it.quantity || 0);
         var qtyPack = parseNum(it.qty_pack || it.quantity_pack || 0);
         var price = parseNum(it.price || it.unit_price || 0);
-        var sub = parseNum(it.subtotal || it.sub_total || it.amount || (price * (qtyPack || qty)));
-        html += '<tr>'+
+        var inventoryName = it.inventory_name || '';
+        
+        // Gunakan fungsi calculateItemSubtotal untuk menghitung subtotal
+        var sub = calculateItemSubtotal(it);
+        
+        // Tentukan apakah item adalah ONGKOS
+        var isOngkos = isOngkosItem(inventoryName);
+        
+        // Tentukan class row (highlight untuk ONGKOS)
+        var rowClass = isOngkos ? 'ongkos-row' : '';
+        
+        // Tentukan status display
+        var statusDisplay = isOngkos ? 
+            '<span style="color:#856404;font-weight:bold;">⚠️ ONGKOS/JASA</span>' : 
+            '<span style="color:#28a745;">✓ Produk</span>';
+        
+        // Tentukan display subtotal dengan info jika ONGKOS
+        var subtotalDisplay = isOngkos ? 
+            'Rp '+fmtMoney(sub)+' <span style="font-size:9px;color:#856404;">(price)</span>' : 
+            'Rp '+fmtMoney(sub);
+
+        html += '<tr class="' + rowClass + '">'+
             '<td><code>'+escHtml(it.inventory_id || '')+'</code></td>'+
-            '<td class="inventory-name">'+escHtml(it.inventory_name || '')+'</td>'+
+            '<td class="inventory-name">'+escHtml(inventoryName)+'</td>'+
             '<td class="text-right">'+fmtMoney(qty)+'</td>'+
             '<td class="text-center">'+escHtml(it.uom || '')+'</td>'+
             '<td class="text-right">'+fmtMoney(qtyPack)+'</td>'+
             '<td class="text-center">'+escHtml(it.uom_pack || it.uom_detail || '')+'</td>'+
             '<td class="text-right">Rp '+fmtMoney(price)+'</td>'+
-            '<td class="text-right"><b>Rp '+fmtMoney(sub)+'</b></td>'+
+            '<td class="text-right"><b>'+subtotalDisplay+'</b></td>'+
+            '<td class="text-center">'+statusDisplay+'</td>'+
         '</tr>';
     });
 

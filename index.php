@@ -260,6 +260,12 @@ switch ($page) {
     case 'print_return':
         include 'modul/transaksi/print_return.php';
         break;
+    case 'register_penjualan_global':
+        include 'modul/transaksi/register_penjualan_global.php';
+        break;
+    case 'cetak_register_penjualan_global':
+        include 'modul/transaksi/cetak_register_penjualan_global.php';
+        break;
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';

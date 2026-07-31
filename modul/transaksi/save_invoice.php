@@ -1,13 +1,12 @@
 <?php
 // modul/transaksi/save_invoice.php
-// VERSI AMAN:
+// VERSI AMAN DENGAN DUKUNGAN ONGKOS/JASA:
 // 1. Data customer/order diambil ulang dari head_sales_order, bukan dipercaya dari browser.
 // 2. Setiap shipping wajib milik Sales Order yang dipilih.
 // 3. Shipping yang sudah masuk invoice ditolak.
 // 4. Total invoice dihitung ulang di server.
 // 5. Harga Shipping diambil dari detail_sales_order.
-// 6. Jika satu inventory memiliki lebih dari satu harga efektif dalam Sales Order,
-//    proses dihentikan agar tidak salah menghitung.
+// 6. Jika inventory_name mengandung "ONGKOS", subtotal = price (tidak dikalikan qty)
 // 7. DP Sales Order dihitung berdasarkan sisa DP yang belum pernah dipakai.
 // 8. Nilai titip dipisahkan dari DP.
 // 9. Seluruh proses memakai transaction dan row locking.
@@ -223,6 +222,46 @@ function shippingAlreadyInvoiced(mysqli $conn, string $shippingNo): bool {
 }
 
 /**
+ * Fungsi untuk mengecek apakah inventory_name mengandung "ONGKOS" (case insensitive)
+ */
+function isOngkosItem(string $inventoryName): bool {
+    if ($inventoryName === '') {
+        return false;
+    }
+    return stripos($inventoryName, 'ONGKOS') !== false;
+}
+
+/**
+ * Mengambil inventory_name dari det_shipping berdasarkan inventory_id
+ */
+function getInventoryNameFromShipping(
+    mysqli $conn,
+    string $shippingNo,
+    string $inventoryId
+): string {
+    $stmt = mysqli_prepare($conn, "
+        SELECT ds.inventory_id, mi.inventory_name
+        FROM det_shipping ds
+        LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
+        WHERE ds.shipping_no = ?
+          AND ds.inventory_id = ?
+        LIMIT 1
+    ");
+
+    mysqli_stmt_bind_param($stmt, 'ss', $shippingNo, $inventoryId);
+    mysqli_stmt_execute($stmt);
+
+    $result = mysqli_stmt_get_result($stmt);
+    $row = $result ? mysqli_fetch_assoc($result) : null;
+
+    mysqli_stmt_close($stmt);
+
+    return $row && isset($row['inventory_name']) 
+        ? (string)$row['inventory_name'] 
+        : '';
+}
+
+/**
  * Mengambil harga efektif Sales Order untuk satu inventory.
  *
  * Harga efektif:
@@ -307,7 +346,8 @@ function getEffectiveSalesOrderPrice(
  * Hitung subtotal Shipping dari detail Shipping.
  *
  * Rumus:
- * subtotal item = qty_pack_shipping × harga Sales Order
+ * - Jika inventory_name mengandung "ONGKOS": subtotal = price (tidak dikalikan qty)
+ * - Jika tidak: subtotal = qty_pack_shipping × harga Sales Order
  */
 function calculateShippingSubtotal(
     mysqli $conn,
@@ -317,8 +357,10 @@ function calculateShippingSubtotal(
     $stmt = mysqli_prepare($conn, "
         SELECT
             ds.inventory_id,
-            COALESCE(ds.qty_pack_shipping, 0) AS qty_pack_shipping
+            COALESCE(ds.qty_pack_shipping, 0) AS qty_pack_shipping,
+            mi.inventory_name
         FROM det_shipping ds
+        LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
         WHERE ds.shipping_no = ?
         ORDER BY ds.id ASC
     ");
@@ -336,6 +378,7 @@ function calculateShippingSubtotal(
 
         $inventoryId = cleanInput($row['inventory_id'] ?? '');
         $qtyPack = (float)($row['qty_pack_shipping'] ?? 0);
+        $inventoryName = (string)($row['inventory_name'] ?? '');
 
         if ($inventoryId === '') {
             throw new Exception(
@@ -343,19 +386,29 @@ function calculateShippingSubtotal(
             );
         }
 
-        if ($qtyPack <= 0) {
-            throw new Exception(
-                "Qty Pack Shipping untuk inventory {$inventoryId} pada {$shippingNo} bernilai 0."
-            );
-        }
+        // Cek apakah item adalah ONGKOS
+        $isOngkos = isOngkosItem($inventoryName);
 
+        // Dapatkan harga dari Sales Order
         $price = getEffectiveSalesOrderPrice(
             $conn,
             $orderNo,
             $inventoryId
         );
 
-        $subtotal += ($qtyPack * $price);
+        // Hitung subtotal berdasarkan jenis item
+        if ($isOngkos) {
+            // Untuk ONGKOS: subtotal = price (tidak dikalikan qty)
+            $subtotal += $price;
+        } else {
+            // Untuk produk biasa: subtotal = qty_pack × price
+            if ($qtyPack <= 0) {
+                throw new Exception(
+                    "Qty Pack Shipping untuk inventory {$inventoryId} pada {$shippingNo} bernilai 0."
+                );
+            }
+            $subtotal += ($qtyPack * $price);
+        }
     }
 
     mysqli_stmt_close($stmt);
