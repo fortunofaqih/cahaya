@@ -2073,8 +2073,26 @@ function parseDecimalJS(value) {
 
 function formatNumber2(value) {
     let num = parseFloat(value);
-    if (!isFinite(num)) return '';
-    return num.toFixed(2);
+
+    if (!isFinite(num)) {
+        return '';
+    }
+
+    /*
+     * Potong menjadi 2 angka desimal tanpa pembulatan.
+     * Contoh:
+     * 6.2456 menjadi 6.24
+     * 6.2499 menjadi 6.24
+     */
+    let truncated;
+
+    if (num >= 0) {
+        truncated = Math.floor((num + 0.000000001) * 100) / 100;
+    } else {
+        truncated = Math.ceil((num - 0.000000001) * 100) / 100;
+    }
+
+    return truncated.toFixed(2);
 }
 
 function truncateNumber2(value) {
