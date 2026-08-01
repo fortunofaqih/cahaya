@@ -12,6 +12,54 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
+// ==========================================
+// ✅ TAMBAHKAN FUNGSI KONVERSI TANGGAL
+// ==========================================
+function convertDateToMySQL($date) {
+    if (empty($date) || $date == '0000-00-00') {
+        return null;
+    }
+    
+    $date = trim($date);
+    
+    // Cek apakah sudah format YYYY-MM-DD
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+        return $date;
+    }
+    
+    // Mapping bulan Indonesia ke angka
+    $months = [
+        'Jan' => '01', 'Feb' => '02', 'Mar' => '03', 'Apr' => '04',
+        'May' => '05', 'Mei' => '05', 'Jun' => '06', 'Jul' => '07',
+        'Aug' => '08', 'Agu' => '08', 'Ags' => '08', // ✅ Support "Ags"
+        'Sep' => '09', 'Oct' => '10', 'Okt' => '10',
+        'Nov' => '11', 'Dec' => '12', 'Des' => '12'
+    ];
+    
+    // Format: 01-Ags-2026 atau 01-Aug-2026
+    $parts = explode('-', $date);
+    
+    if (count($parts) === 3) {
+        $day = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
+        $monthText = $parts[1];
+        $year = $parts[2];
+        
+        // Coba mapping bulan
+        if (isset($months[$monthText])) {
+            return $year . '-' . $months[$monthText] . '-' . $day;
+        }
+        
+        // Coba parse dengan strtotime (fallback)
+        $timestamp = strtotime($date);
+        if ($timestamp !== false) {
+            return date('Y-m-d', $timestamp);
+        }
+    }
+    
+    // Jika semua gagal, return null
+    return null;
+}
+
 function parseRupiah($value) {
     if ($value === null || $value === '') {
         return 0;
@@ -69,7 +117,19 @@ $year_now     = date('Y');
 
 // ── Sanitize Header Fields ─────────────────────────────────────────
 $order_no           = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
-$order_date         = mysqli_real_escape_string($conn, $_POST['order_date'] ?? date('Y-m-d'));
+$order_date_raw     = $_POST['order_date'] ?? date('Y-m-d');
+$order_date         = convertDateToMySQL($order_date_raw);
+
+// ✅ VALIDASI TANGGAL
+if ($order_date === null) {
+    $_SESSION['alert'] = "<div class='alert alert-danger p-2 small'>Format tanggal tidak valid: <strong>" . htmlspecialchars($order_date_raw) . "</strong></div>";
+    echo "<script>window.history.back();</script>";
+    exit;
+}
+
+// Escape untuk query
+$order_date_esc = mysqli_real_escape_string($conn, $order_date);
+
 $po_input           = mysqli_real_escape_string($conn, trim($_POST['po'] ?? ''));
 $no_po_input        = mysqli_real_escape_string($conn, trim($_POST['no_po'] ?? ''));
 
@@ -115,7 +175,9 @@ if (empty($customer_name) && !empty($customer_id)) {
     }
 }
 
-$shipment_due_date_sql = $shipment_due_date ? "'$shipment_due_date'" : 'NULL';
+// Konversi shipment_due_date
+$shipment_due_date_mysql = convertDateToMySQL($shipment_due_date);
+$shipment_due_date_sql = $shipment_due_date_mysql ? "'" . mysqli_real_escape_string($conn, $shipment_due_date_mysql) . "'" : 'NULL';
 
 // ════════════════════════════════════════════════════════════
 // FUNGSI GENERATE PO NUMBER
@@ -145,7 +207,7 @@ if ($cek_po && mysqli_num_rows($cek_po) > 0) {
 }
 
 // ════════════════════════════════════════════════════════════
-// ✅ PERBAIKAN 1: FUNGSI CEK INVENTORY KHUSUS - SAMA DENGAN update_sales_order
+// ✅ FUNGSI CEK INVENTORY KHUSUS
 // ════════════════════════════════════════════════════════════
 function isSpecialInventory($inventoryName) {
     return strpos($inventoryName, "PE ROLL STOKAN SSB") !== false || 
@@ -154,7 +216,7 @@ function isSpecialInventory($inventoryName) {
 }
 
 // ════════════════════════════════════════════════════════════
-// ✅ PERBAIKAN 2: FUNGSI GET PRICE FORMULA FACTOR - SAMA DENGAN update_sales_order
+// ✅ FUNGSI GET PRICE FORMULA FACTOR
 // ════════════════════════════════════════════════════════════
 function getPriceFormulaFactor($inventoryName, $p, $l, $t) {
     $divisor = 1;
@@ -217,7 +279,7 @@ for ($i = 0; $i < count($inventory_ids); $i++) {
     }
 
     // ============================================================
-    // ✅ PERBAIKAN 3: LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL - SAMA DENGAN update_sales_order
+    // ✅ LOGIKA PERHITUNGAN PRICE DAN SUBTOTAL
     // ============================================================
     
     // Cek apakah inventory khusus
@@ -288,7 +350,7 @@ try {
         payment_term, payment_type, days, currency, allow_auto_correct, remarks,
         grand_total, down_payment, status, approval_status, create_user, date_created
     ) VALUES (
-        '$order_no', '$order_date', '$po_number', '$marketing_id', '$sales_id',
+        '$order_no', '$order_date_esc', '$po_number', '$marketing_id', '$sales_id',
         '$customer_id', '$customer_name', '$customer_address', '$customer_city', '$station',
         $shipment_due_date_sql, '$shipment_location', '$tolerance', '$backward_calc',
         '$payment_term', '$payment_type', '$days', '$currency', '$allow_auto_correct', '$remarks',
@@ -303,7 +365,7 @@ try {
     $sql_po = "INSERT INTO hed_po (
         no_po, tgl_order, customer, customer_id, created_by, created_at
     ) VALUES (
-        '$po_number', '$order_date', '$customer_name', '$customer_id', '$user_now', '$datetime_now'
+        '$po_number', '$order_date_esc', '$customer_name', '$customer_id', '$user_now', '$datetime_now'
     )";
 
     if (!mysqli_query($conn, $sql_po)) {

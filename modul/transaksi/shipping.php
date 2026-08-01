@@ -8,6 +8,7 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
+
 // =============================================
 // HELPER
 // =============================================
@@ -16,24 +17,27 @@ function formatDateIndonesian($date) {
         return '';
     }
 
+    // Array bulan Indonesia
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags', // <-- Ini sudah benar
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
 
+    // Parse tanggal
     $timestamp = strtotime($date);
     if (!$timestamp) {
         return '';
     }
 
+    // Ekstrak tanggal, bulan, tahun
     $tanggal = date('d', $timestamp);
     $bulan_num = (int)date('m', $timestamp);
     $tahun = date('Y', $timestamp);
 
+    // Kembalikan format Indonesia
     return $tanggal . '-' . $bulan[$bulan_num] . '-' . $tahun;
 }
-
 function convertFilterDateToMysql($date) {
     if ($date === null || trim($date) === '') {
         return '';
@@ -49,7 +53,7 @@ function convertFilterDateToMysql($date) {
         'Jan' => '01', 'Feb' => '02', 'Mar' => '03', 'Apr' => '04',
         'May' => '05', 'Mei' => '05',
         'Jun' => '06', 'Jul' => '07',
-        'Aug' => '08', 'Agu' => '08',
+        'Aug' => '08', 'Agu' => '08', 'Ags' => '08', // <-- Baris ini aman & sudah diperbaiki
         'Sep' => '09',
         'Oct' => '10', 'Okt' => '10',
         'Nov' => '11',
@@ -106,6 +110,7 @@ if ($start_date_sql > $end_date_sql) {
 $status = isset($_GET['status']) ? trim($_GET['status']) : '';
 $approval_status = isset($_GET['approval_status']) ? trim($_GET['approval_status']) : '';
 $shipping_id = isset($_GET['shipping_id']) ? trim($_GET['shipping_id']) : '';
+$customer_name = isset($_GET['customer_name']) ? trim($_GET['customer_name']) : '';
 
 // Batasi value filter agar tidak ada value aneh
 $allowed_status = ['', 'Open', 'Close', 'Closed'];
@@ -150,6 +155,12 @@ if ($approval_status !== '') {
 if ($shipping_id !== '') {
     $whereParts[] = "h.shipping_no LIKE ?";
     $params[] = '%' . $shipping_id . '%';
+    $types .= 's';
+}
+
+if ($customer_name !== '') {
+    $whereParts[] = "h.customer_name LIKE ?";
+    $params[] = '%' . $customer_name . '%';
     $types .= 's';
 }
 
@@ -429,6 +440,17 @@ if (!$query) {
                 >
             </div>
 
+            <div class="col-md-2">
+                <label class="form-label fw-bold small">Customer Name</label>
+                <input
+                    type="text"
+                    name="customer_name"
+                    class="form-control form-control-sm"
+                    placeholder="Search Customer..."
+                    value="<?= e($customer_name) ?>"
+                >
+            </div>
+
             <div class="col-md-1"></div>
 
             <div class="col-md-2">
@@ -641,7 +663,15 @@ $(document).ready(function() {
         select.data('old-value', select.val());
     });
 
+    // PERBAIKAN DI SINI: Daftarkan locale kustom Indonesia ke Flatpickr
     if ($.fn.flatpickr) {
+        flatpickr.localize({
+            months: {
+                shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+            }
+        });
+
         $(".datepicker").flatpickr({
             dateFormat: "d-M-Y",
             altFormat: "d-M-Y",

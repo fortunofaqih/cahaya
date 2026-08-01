@@ -18,9 +18,10 @@ function formatDateIndonesian($date) {
         return '';
     }
 
+    // Menggunakan 'Ags' untuk bulan Agustus
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags',
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
 
@@ -44,36 +45,26 @@ function convertFilterDateToMysql($date) {
 
     $date = trim($date);
 
-    // Jika sudah format database: 2026-06-17
+    // Jika sudah format database: 2026-08-01
     if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
         return $date;
     }
 
+    // Mapping lengkap termasuk variasi 'Aug', 'Agu', dan 'Ags' untuk keamanan data
     $months = [
-        'Jan' => '01',
-        'Feb' => '02',
-        'Mar' => '03',
-        'Apr' => '04',
-        'May' => '05',
-        'Mei' => '05',
-        'Jun' => '06',
-        'Jul' => '07',
-        'Aug' => '08',
-        'Agu' => '08',
-        'Sep' => '09',
-        'Oct' => '10',
-        'Okt' => '10',
-        'Nov' => '11',
-        'Dec' => '12',
-        'Des' => '12'
+        'Jan' => '01', 'Feb' => '02', 'Mar' => '03',
+        'Apr' => '04', 'May' => '05', 'Mei' => '05',
+        'Jun' => '06', 'Jul' => '07', 
+        'Aug' => '08', 'Agu' => '08', 'Ags' => '08',
+        'Sep' => '09', 'Oct' => '10', 'Okt' => '10', 
+        'Nov' => '11', 'Dec' => '12', 'Des' => '12'
     ];
 
-    // Format dari datepicker: 17-Jun-2026
     $parts = explode('-', $date);
 
     if (count($parts) === 3) {
         $day = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
-        $monthText = $parts[1];
+        $monthText = substr(trim($parts[1]), 0, 3); // Mengambil 3 karakter pertama
         $year = $parts[2];
 
         if (isset($months[$monthText])) {
@@ -633,32 +624,33 @@ function confirmDelete(orderNo) {
 }
 // Fungsi Reset Filter
 function resetFilter() {
-    // Reset semua input text
     document.querySelectorAll('#filterForm input[type="text"]').forEach(function(input) {
         input.value = '';
     });
     
-    // Reset semua select
     document.querySelectorAll('#filterForm select').forEach(function(select) {
         select.value = '';
     });
     
-    // Set date ke hari ini
     var today = new Date();
     var day = String(today.getDate()).padStart(2, '0');
-    var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    
+    // Samakan mapping array bulan di JS menggunakan 'Ags'
+    var monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'];
     var month = monthNames[today.getMonth()];
     var year = today.getFullYear();
     var dateString = day + '-' + month + '-' + year;
     
-    // Set tanggal start dan end ke hari ini
     var dateInputs = document.querySelectorAll('#filterForm .datepicker');
-    if (dateInputs.length >= 2) {
-        dateInputs[0].value = dateString;
-        dateInputs[1].value = dateString;
-    }
+    dateInputs.forEach(function(input) {
+        if(input._flatpickr) {
+            // Set tanggal objek Flatpickr agar sinkron secara internal
+            input._flatpickr.setDate(today, true);
+        } else {
+            input.value = dateString;
+        }
+    });
     
-    // Submit form
     document.getElementById('filterForm').submit();
 }
 // Fungsi untuk update approval status via AJAX
@@ -758,11 +750,16 @@ $(document).ready(function() {
     });
 });
 $(document).ready(function() {
-    // Inisialisasi datepicker dengan format d-M-Y
+    // Inisialisasi datepicker dengan kustomisasi nama bulan Indonesia
     $(".datepicker").flatpickr({
         dateFormat: "d-M-Y",
-        altFormat: "d-M-Y",
-        allowInput: true
+        allowInput: true,
+        locale: {
+            months: {
+                shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+            }
+        }
     });
 });
 </script>

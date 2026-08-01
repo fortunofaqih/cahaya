@@ -1,7 +1,7 @@
 <?php
 // modul/transaksi/cetak_slip_without_uom_default.php
 // Format cetak untuk Surat Jalan pre-printed Marketing - Mode Default UOM
-// REVISI: koordinat CSS dikalibrasi ulang berdasarkan pengukuran manual pada foto nota fisik
+// UPDATE: Menampilkan remarks shipping dengan format vertical
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -26,6 +26,45 @@ function e($value) {
 
 function safeText($value) {
     return trim((string)($value ?? ''));
+}
+
+/**
+ * Fungsi untuk memformat remarks shipping menjadi multi-baris
+ * Mendukung format:
+ * 1. BR : 1347.5    BB : 44.2   NT : 1303.3
+ * 2. BR : 1347.5\r\nBB : 44.2\r\nNT : 1303.3
+ * 3. BR : 1347.5\nBB : 44.2\nNT : 1303.3
+ */
+function formatRemarksText($text) {
+    $text = safeText($text);
+    
+    if ($text === '') {
+        return '';
+    }
+    
+    // Cek apakah ada newline character
+    if (strpos($text, "\r\n") !== false || strpos($text, "\n") !== false || strpos($text, "\r") !== false) {
+        // Ubah semua line ending ke \n
+        $text = str_replace("\r\n", "\n", $text);
+        $text = str_replace("\r", "\n", $text);
+        return $text;
+    }
+    
+    // Jika tidak ada newline, coba parsing berdasarkan pola
+    // BR : 1347.5    BB : 44.2   NT : 1303.3
+    // atau BR:1347.5 BB:44.2 NT:1303.3
+    
+    // Cek apakah ada pola "BR", "BB", "NT" dengan titik dua
+    if (preg_match_all('/(BR|BB|NT)\s*:\s*([0-9.,]+)/', $text, $matches, PREG_SET_ORDER)) {
+        $lines = [];
+        foreach ($matches as $match) {
+            $lines[] = $match[1] . ' : ' . $match[2];
+        }
+        return implode("\n", $lines);
+    }
+    
+    // Jika tidak ada pola yang cocok, return text asli
+    return $text;
 }
 
 function fmtNumber($number, $decimals = 2) {
@@ -143,11 +182,6 @@ function addQtyUomEntry(&$entries, $qty, $uom) {
         return;
     }
 
-    /*
-     * Satu UoM hanya ditampilkan satu kali.
-     * Contoh Qty = 10 KG dan Qty Pack = 10 KG:
-     * KG tetap hanya dicetak satu kali.
-     */
     if (!isset($entries[$uom])) {
         $entries[$uom] = $qty;
     }
@@ -160,12 +194,6 @@ function parseCombinedQtyUomText($text, &$entries) {
         return;
     }
 
-    /*
-     * Mendukung format:
-     * 1 BAL, 10 ROLL
-     * 1 BAL | 10 ROLL
-     * 1 BAL; 10 ROLL
-     */
     $parts = preg_split('/\s*(?:\||,|;)\s*/', $text);
 
     foreach ($parts as $part) {
@@ -183,11 +211,6 @@ function addSeparatedDetailUoms($qtyText, $uomText, &$entries) {
         return;
     }
 
-    /*
-     * Mendukung jika quantity dan UoM detail disimpan terpisah:
-     * qty_detail_shipping = "1,10"
-     * uom_detail_shipping = "BAL,ROLL"
-     */
     $qtyParts = preg_split('/\s*(?:\||,|;)\s*/', $qtyText);
     $uomParts = preg_split('/\s*(?:\||,|;)\s*/', $uomText);
 
@@ -204,40 +227,24 @@ function addSeparatedDetailUoms($qtyText, $uomText, &$entries) {
 function getQtyDisplay($detail) {
     $entries = [];
 
-    /*
-     * Ambil UoM Detail dari det_shipping_uom_detail.
-     * Contoh:
-     * 1 BAL | 10 ROLL
-     */
     $multiUomText = safeText(
         $detail['multi_uom_detail_text'] ?? ''
     );
 
     parseCombinedQtyUomText($multiUomText, $entries);
 
-    /*
-     * Tambahkan Qty Pack Shipping.
-     */
     addQtyUomEntry(
         $entries,
         $detail['qty_pack_shipping'] ?? 0,
         $detail['uom_pack_shipping'] ?? ''
     );
 
-    /*
-     * Tambahkan Qty utama Shipping.
-     * Biasanya berupa KG.
-     */
     addQtyUomEntry(
         $entries,
         $detail['qty_shipping'] ?? 0,
         $detail['uom_shipping'] ?? ''
     );
 
-    /*
-     * Fallback ke kolom detail lama jika tabel
-     * det_shipping_uom_detail tidak berisi data.
-     */
     if ($multiUomText === '') {
         addQtyUomEntry(
             $entries,
@@ -246,24 +253,14 @@ function getQtyDisplay($detail) {
         );
     }
 
-    /*
-     * Rule ditentukan dari detail_sales_order.uom_pack,
-     * bukan dari det_shipping.uom_pack_shipping.
-     */
     $soUomPack = normalizeUomName(
         $detail['so_uom_pack'] ?? ''
     );
 
-    /*
-     * qtyCol1 selalu khusus BAL.
-     */
     $qtyCol1 = isset($entries['BAL'])
         ? fmtNumber($entries['BAL']) . ' BAL'
         : '';
 
-    /*
-     * qtyCol2 untuk UoM selain BAL dan KG.
-     */
     $qtyCol2 = '';
 
     $otherPriority = [
@@ -305,10 +302,6 @@ function getQtyDisplay($detail) {
         break;
     }
 
-    /*
-     * qtyCol3 hanya dicetak jika UoM Pack
-     * pada detail_sales_order adalah KG.
-     */
     $qtyCol3 = '';
 
     if ($soUomPack === 'KG' && isset($entries['KG'])) {
@@ -443,7 +436,10 @@ $customerLines = splitAddressLines(
 
 $vehicleText = safeText($header['transporter'] ?? '');
 $truckNoText = safeText($header['truck_no'] ?? '');
-$remarksShippingText = safeText($header['remarks_shipping'] ?? '');
+
+// Proses remarks shipping dengan formatRemarksText
+$remarksShippingRaw = safeText($header['remarks_shipping'] ?? '');
+$remarksShippingText = formatRemarksText($remarksShippingRaw);
 
 // Nota fisik mempunyai 10 slot baris.
 $maxRowSlots = 10;
@@ -502,7 +498,6 @@ $maxRowSlots = 10;
             font-size: 12px;
         }
 
-        /* Container halaman fisik kertas F4 portrait. */
         .page {
             position: relative;
             width: 215mm;
@@ -541,11 +536,6 @@ $maxRowSlots = 10;
             font-size: 11pt;
         }
 
-        /*
-         * Order No digeser 20 mm lagi ke kiri dan 15 mm ke atas.
-         * Posisi sebelumnya: left 30mm, top 45mm.
-         * Posisi baru: left 10mm, top 30mm.
-         */
         .order-no-field {
             left: 10mm;
             top: 30mm;
@@ -613,13 +603,14 @@ $maxRowSlots = 10;
             position: absolute;
             left: 89mm;
             width: 115mm;
-            max-height: 15mm;
+            max-height: 30mm;
             overflow: hidden;
             color: #000;
             font-size: 10pt;
             line-height: 5mm;
-            white-space: normal;
+            white-space: normal !important;
             word-wrap: break-word;
+            word-break: break-word;
         }
 
         .extra-warning {
@@ -730,17 +721,11 @@ $maxRowSlots = 10;
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-     // Baris pertama tabel.
     $startTop = 85;
-
-    // Tinggi tiap baris tabel = 5mm.
     $rowHeight = 5.0;
-
     $currentTop = $startTop;
     $usedSlots = 0;
     $hasMoreRows = false;
-    
-    // Flag untuk menentukan apakah ini barang pertama
     $isFirstItem = true;
 
     foreach ($details as $detail):
@@ -759,22 +744,12 @@ $maxRowSlots = 10;
         $qtyCol2 = $qtyParts[1] ?? '';
         $qtyCol3 = $qtyParts[2] ?? '';
 
-        // Tentukan posisi vertikal untuk qtyCol2 dan qtyCol3
-        // Jika ini adalah barang pertama, tidak ada pergeseran
-        // Jika ini adalah barang kedua atau seterusnya, geser 0.5cm ke bawah
         $topOffset = ($isFirstItem) ? 0 : 0.5;
-        
-        // Untuk qtyCol1 dan nama barang, tetap di posisi normal
         $qtyTop = $currentTop;
         $qtyCol2Top = $currentTop + $topOffset;
         $qtyCol3Top = $currentTop + $topOffset;
     ?>
 
-        <!--
-            Urutan kolom quantity dari kiri ke kanan:
-            $qtyCol1, $qtyCol2, $qtyCol3.
-            Contoh: 1 BAL | 10 ROLL | 10 KG.
-        -->
         <div
             class="field row-field qty-col-1"
             style="top: <?= e($qtyTop) ?>mm;"
@@ -800,17 +775,11 @@ $maxRowSlots = 10;
     <?php
         $currentTop += $rowHeight * $lineCount;
         $usedSlots += $lineCount;
-        
-        // Setelah iterasi pertama, set flag menjadi false
         $isFirstItem = false;
     endforeach;
     ?>
 
     <?php
-    // Remarks Shipping dicetak 15 mm di bawah baris nama barang terakhir.
-    // Posisi horizontal 35 mm di kanan tepi qtyCol3:
-    // qtyCol3 mulai 39 mm, lebar 15 mm, sehingga tepi kanannya 54 mm.
-    // 54 mm + 35 mm = 89 mm.
     $remarksTop = $currentTop + 15;
     ?>
 

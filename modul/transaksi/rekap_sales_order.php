@@ -19,9 +19,10 @@ function formatDateIndonesian($date) {
         return '';
     }
 
+    // Menggunakan 'Ags' untuk bulan Agustus
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags',
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
 
@@ -31,7 +32,11 @@ function formatDateIndonesian($date) {
         return '';
     }
 
-    return date('d', $timestamp) . '-' . $bulan[(int)date('m', $timestamp)] . '-' . date('Y', $timestamp);
+    $tanggal = date('d', $timestamp);
+    $bulan_num = (int)date('m', $timestamp);
+    $tahun = date('Y', $timestamp);
+
+    return $tanggal . '-' . $bulan[$bulan_num] . '-' . $tahun;
 }
 
 function convertFilterDateToMysql($date) {
@@ -41,36 +46,26 @@ function convertFilterDateToMysql($date) {
 
     $date = trim($date);
 
-    // Format database: 2026-06-18
+    // Jika sudah format database: 2026-08-01
     if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
         return $date;
     }
 
+    // Mapping lengkap termasuk variasi 'Aug', 'Agu', dan 'Ags' untuk keamanan data
     $months = [
-        'Jan' => '01',
-        'Feb' => '02',
-        'Mar' => '03',
-        'Apr' => '04',
-        'May' => '05',
-        'Mei' => '05',
-        'Jun' => '06',
-        'Jul' => '07',
-        'Aug' => '08',
-        'Agu' => '08',
-        'Sep' => '09',
-        'Oct' => '10',
-        'Okt' => '10',
-        'Nov' => '11',
-        'Dec' => '12',
-        'Des' => '12'
+        'Jan' => '01', 'Feb' => '02', 'Mar' => '03',
+        'Apr' => '04', 'May' => '05', 'Mei' => '05',
+        'Jun' => '06', 'Jul' => '07', 
+        'Aug' => '08', 'Agu' => '08', 'Ags' => '08',
+        'Sep' => '09', 'Oct' => '10', 'Okt' => '10', 
+        'Nov' => '11', 'Dec' => '12', 'Des' => '12'
     ];
 
-    // Format datepicker: 18-Jun-2026
     $parts = explode('-', $date);
 
     if (count($parts) === 3) {
         $day = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
-        $monthText = $parts[1];
+        $monthText = substr(trim($parts[1]), 0, 3); // Mengambil 3 karakter pertama
         $year = $parts[2];
 
         if (isset($months[$monthText])) {
@@ -78,7 +73,7 @@ function convertFilterDateToMysql($date) {
         }
     }
 
-    return '';
+  return '';
 }
 
 function isStokanRemark($remark) {
@@ -892,14 +887,21 @@ $(document).ready(function() {
 
 </script>
 <script>
-// Menambahkan judul saat print
 $(document).ready(function() {
+    // Inisialisasi Flatpickr dengan konfigurasi nama bulan Indonesia (Ags)
     flatpickr(".datepicker", {
         dateFormat: "d-M-Y",
         allowInput: true,
-        disableMobile: true
+        disableMobile: true,
+        locale: {
+            months: {
+                shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+            }
+        }
     });
 
+    // Menambahkan judul saat print rekap
     $('.print-title').remove();
 
     var titleHtml = '<div class="print-title" style="text-align: center; margin-bottom: 20px;">' +
@@ -909,9 +911,13 @@ $(document).ready(function() {
         '<hr>' +
         '</div>';
 
+    // Sisipkan judul print sebelum tabel/konten utama rekap Anda
+    // Contoh jika ditaruh di atas wrapper table: $('.table-wrapper-so').before(titleHtml);
+
     var style = document.createElement('style');
     style.innerHTML = '@media print { .filter-box, .rekap-header, .no-print { display: none !important; } }';
     document.head.appendChild(style);
 });
 </script>
+
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>

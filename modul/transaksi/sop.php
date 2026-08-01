@@ -25,8 +25,9 @@ function normalizeMysqlDate($date) {
     $months = [
         'Jan' => '01', 'Feb' => '02', 'Mar' => '03', 'Apr' => '04',
         'May' => '05', 'Mei' => '05', 'Jun' => '06', 'Jul' => '07',
-        'Aug' => '08', 'Agu' => '08', 'Sep' => '09', 'Oct' => '10',
-        'Okt' => '10', 'Nov' => '11', 'Dec' => '12', 'Des' => '12'
+        'Aug' => '08', 'Agu' => '08', 'Ags' => '08',
+        'Sep' => '09', 'Oct' => '10', 'Okt' => '10', 
+        'Nov' => '11', 'Dec' => '12', 'Des' => '12'
     ];
 
     $parts = explode('-', $date);
@@ -283,7 +284,6 @@ if (isset($_GET['action'])) {
                 miu.id ASC
             LIMIT 1
         ), '') AS inventory_berat_rol,
-        -- TAMBAHKAN JOIN KE m_category
         mc.categori_id,
         mc.name AS category_name,
         ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
@@ -296,7 +296,7 @@ if (isset($_GET['action'])) {
         ds.no_mesin_rol, ds.code_rol
         FROM det_sop ds
         LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
-        LEFT JOIN m_category mc ON mi.category = mc.categori_id  -- TAMBAHKAN JOIN INI
+        LEFT JOIN m_category mc ON mi.category = mc.categori_id
         WHERE ds.sop_id = '$sop_id'
         ORDER BY ds.id ASC");
         
@@ -318,51 +318,50 @@ if (isset($_GET['action'])) {
 
     // ENDPOINT: AMBIL DATA LENGKAP SOP
     if ($_GET['action'] == 'get_sop_detail_complete' && isset($_GET['sop_id'])) {
-    $sop_id = mysqli_real_escape_string($conn, $_GET['sop_id']);
-    
-    $head_query = mysqli_query($conn, "SELECT * FROM head_sop WHERE sop_id = '$sop_id' LIMIT 1");
-    $head = mysqli_fetch_assoc($head_query);
-    
-    if (!$head) {
-        echo json_encode(['error' => 'SOP not found']);
-        exit;
-    }
-    
-    $items_query = mysqli_query($conn, "SELECT 
-        ds.id, ds.sop_id, ds.inventory_id, ds.inventory_name, ds.qty, ds.uom, ds.qty_pack, ds.uom_detail, ds.price, ds.density, ds.remarks,
-        ds.previous_inventory, ds.previous_inventory_name, ds.component, ds.value, ds.shipment_due_date, ds.remarks_shipment,
-        COALESCE(mi.category, '') AS inventory_category,
-        COALESCE(mi.l, 0) AS inventory_l,
-        COALESCE(mi.t, 0) AS inventory_t,
-        COALESCE(mi.density, ds.density, 0) AS inventory_density,
-        COALESCE(mi.catalog, '') AS inventory_catalog,
-        COALESCE(mi.colour, '') AS inventory_colour,
-        COALESCE((
-            SELECT CONCAT(REPLACE(FORMAT(miu.Value, 2), ',', ''), ' KG/ROL')
-            FROM m_inventory_uom miu
-            WHERE miu.inventory_id = ds.inventory_id
-              AND UPPER(TRIM(miu.unit)) IN ('ROLL', 'ROL')
-            ORDER BY 
-                CASE WHEN UPPER(TRIM(miu.unit)) = 'ROLL' THEN 0 ELSE 1 END,
-                miu.id ASC
-            LIMIT 1
-        ), '') AS inventory_berat_rol,
-        -- TAMBAHKAN JOIN KE m_category
-        mc.categori_id,
-        mc.name AS category_name,
-        ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
-        ds.keterangan_potong, ds.no_mesin_potong, ds.nat_warna_potong, 
-        ds.berat_rol_warna, ds.code_potong, ds.jarak_seal,
-        ds.berat_jenis_rol, ds.ukuran_rol, ds.berat_rol, ds.isi_bal_rol, ds.jml_order_rol, ds.treat_rol,
-        ds.nat_warna_rol, ds.bobin_krepyak_rol, ds.kirim_las_rol, ds.standar_cek_rol,
-        ds.gramatur_asli_rol, ds.tebal_asli_rol, ds.spec_rol, ds.gramatur_rol, ds.tebal_rol,
-        ds.keterangan_rol, ds.gramatur_plus_rol, ds.gramatur_min_rol, ds.tebal_plus_rol, ds.tebal_minus_rol,
-        ds.no_mesin_rol, ds.code_rol
-        FROM det_sop ds
-        LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
-        LEFT JOIN m_category mc ON mi.category = mc.categori_id  -- TAMBAHKAN JOIN INI
-        WHERE ds.sop_id = '$sop_id'
-        ORDER BY ds.id ASC");
+        $sop_id = mysqli_real_escape_string($conn, $_GET['sop_id']);
+        
+        $head_query = mysqli_query($conn, "SELECT * FROM head_sop WHERE sop_id = '$sop_id' LIMIT 1");
+        $head = mysqli_fetch_assoc($head_query);
+        
+        if (!$head) {
+            echo json_encode(['error' => 'SOP not found']);
+            exit;
+        }
+        
+        $items_query = mysqli_query($conn, "SELECT 
+            ds.id, ds.sop_id, ds.inventory_id, ds.inventory_name, ds.qty, ds.uom, ds.qty_pack, ds.uom_detail, ds.price, ds.density, ds.remarks,
+            ds.previous_inventory, ds.previous_inventory_name, ds.component, ds.value, ds.shipment_due_date, ds.remarks_shipment,
+            COALESCE(mi.category, '') AS inventory_category,
+            COALESCE(mi.l, 0) AS inventory_l,
+            COALESCE(mi.t, 0) AS inventory_t,
+            COALESCE(mi.density, ds.density, 0) AS inventory_density,
+            COALESCE(mi.catalog, '') AS inventory_catalog,
+            COALESCE(mi.colour, '') AS inventory_colour,
+            COALESCE((
+                SELECT CONCAT(REPLACE(FORMAT(miu.Value, 2), ',', ''), ' KG/ROL')
+                FROM m_inventory_uom miu
+                WHERE miu.inventory_id = ds.inventory_id
+                  AND UPPER(TRIM(miu.unit)) IN ('ROLL', 'ROL')
+                ORDER BY 
+                    CASE WHEN UPPER(TRIM(miu.unit)) = 'ROLL' THEN 0 ELSE 1 END,
+                    miu.id ASC
+                LIMIT 1
+            ), '') AS inventory_berat_rol,
+            mc.categori_id,
+            mc.name AS category_name,
+            ds.berat_jenis_potong, ds.spec_potong, ds.ukuran_potong, ds.jml_order_potong, ds.isi_pakbal_potong,
+            ds.keterangan_potong, ds.no_mesin_potong, ds.nat_warna_potong, 
+            ds.berat_rol_warna, ds.code_potong, ds.jarak_seal,
+            ds.berat_jenis_rol, ds.ukuran_rol, ds.berat_rol, ds.isi_bal_rol, ds.jml_order_rol, ds.treat_rol,
+            ds.nat_warna_rol, ds.bobin_krepyak_rol, ds.kirim_las_rol, ds.standar_cek_rol,
+            ds.gramatur_asli_rol, ds.tebal_asli_rol, ds.spec_rol, ds.gramatur_rol, ds.tebal_rol,
+            ds.keterangan_rol, ds.gramatur_plus_rol, ds.gramatur_min_rol, ds.tebal_plus_rol, ds.tebal_minus_rol,
+            ds.no_mesin_rol, ds.code_rol
+            FROM det_sop ds
+            LEFT JOIN m_inventory mi ON mi.inventory_id = ds.inventory_id
+            LEFT JOIN m_category mc ON mi.category = mc.categori_id
+            WHERE ds.sop_id = '$sop_id'
+            ORDER BY ds.id ASC");
         
         $items = [];
         if ($items_query) {
@@ -697,7 +696,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                 $price     = (float)$item['price'];
                 $rem       = mysqli_real_escape_string($conn, $item['remarks']);
                 
-                // PERBAIKAN: Kolom Spesifikasi Potong - SEMUA VARCHAR sekarang
                 $berat_jenis_potong   = mysqli_real_escape_string($conn, $item['berat_jenis_potong'] ?? '');
                 $spec_potong          = mysqli_real_escape_string($conn, $item['spec_potong'] ?? '');
                 $ukuran_potong        = mysqli_real_escape_string($conn, $item['ukuran_potong'] ?? '');
@@ -709,12 +707,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                 $shipment_due_date        = $shipment_due_date_mysql !== '' ? mysqli_real_escape_string($conn, $shipment_due_date_mysql) : NULL;
                 $no_mesin_potong      = mysqli_real_escape_string($conn, $item['no_mesin_potong'] ?? '');
                 $nat_warna_potong     = mysqli_real_escape_string($conn, $item['nat_warna_potong'] ?? '');
-                // PERBAIKAN: berat_rol_warna sekarang VARCHAR
                 $berat_rol_warna      = mysqli_real_escape_string($conn, $item['berat_rol_warna'] ?? '');
                 $code_potong          = mysqli_real_escape_string($conn, $item['code_potong'] ?? '');
                 $jarak_seal           = (float)($item['jarak_seal'] ?? 0);
                 
-                // PERBAIKAN: Kolom Spesifikasi Roll - SEMUA VARCHAR
                 $berat_jenis_rol      = mysqli_real_escape_string($conn, $item['berat_jenis_rol'] ?? '');
                 $ukuran_rol           = mysqli_real_escape_string($conn, $item['ukuran_rol'] ?? '');
                 $berat_rol            = mysqli_real_escape_string($conn, $item['berat_rol'] ?? '');
@@ -738,7 +734,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                 $no_mesin_rol         = mysqli_real_escape_string($conn, $item['no_mesin_rol'] ?? '');
                 $code_rol             = mysqli_real_escape_string($conn, $item['code_rol'] ?? '');
 
-                // PERBAIKAN: Query INSERT dengan semua kolom VARCHAR
                 $sql_det = "INSERT INTO det_sop (
                     sop_id, inventory_id, inventory_name, qty, uom, qty_pack, uom_detail, price, shipment_due_date, remarks,
                     berat_jenis_potong, spec_potong, ukuran_potong, jml_order_potong, isi_pakbal_potong,
@@ -783,7 +778,7 @@ function formatDateIndonesian($date) {
 
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags',
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
 
@@ -822,6 +817,7 @@ function convertFilterDateToMysql($date) {
         'Jul' => '07',
         'Aug' => '08',
         'Agu' => '08',
+        'Ags' => '08',
         'Sep' => '09',
         'Oct' => '10',
         'Okt' => '10',
@@ -1212,7 +1208,6 @@ $f_so_safe = mysqli_real_escape_string($conn, $f_so);
                                     <tr><td><b>Tanggal Kirim</b></td><td><input type="date" id="shipment_due_date_potong" class="form-control form-control-sm shipment-due-date-input"></td></tr>
                                     <tr><td><b>No. Mesin Potong</b></td><td><input type="text" id="no_mesin_potong" class="form-control form-control-sm" placeholder="Nomor mesin"></td></tr>
                                     <tr><td><b>Nat/Warna Potong</b></td><td><input type="text" id="nat_warna_potong" class="form-control form-control-sm" placeholder="Natural/Warna"></td></tr>
-                                    <!-- PERBAIKAN: Ubah type menjadi text untuk VARCHAR -->
                                     <tr><td><b>Berat/Rol Potong</b></td><td><input type="text" id="berat_rol_warna" class="form-control form-control-sm" placeholder="Berat per roll (contoh: 15.5 KG/ROL)"></td></tr>
                                     <tr><td><b>Code</b></td><td><input type="text" id="code_potong" class="form-control form-control-sm" placeholder="Kode potong"></td></tr>
                                     <tr><td><b>Jarak Seal</b></td><td><input type="number" step="0.01" id="jarak_seal" class="form-control form-control-sm" value="0"></td></tr>
@@ -1228,7 +1223,6 @@ $f_so_safe = mysqli_real_escape_string($conn, $f_so);
                                 <tbody id="roll_tbody">
                                     <tr><td width="30%"><b>Berat Jenis Roll</b></td><td><input type="text" id="berat_jenis_rol" class="form-control form-control-sm" placeholder="Berat jenis roll (contoh:18)"></td></tr>
                                     <tr><td><b>Ukuran Roll</b></td><td><input type="text" id="ukuran_rol" class="form-control form-control-sm" placeholder="Ukuran roll"></td></tr>
-                                    <!-- PERBAIKAN: Ubah type menjadi text untuk VARCHAR -->
                                     <tr><td><b>Berat/Rol</b></td><td><input type="text" id="berat_rol" class="form-control form-control-sm" placeholder="Berat per roll (contoh: 16.70 KG/ROL)"></td></tr>
                                     <tr><td><b>Isi/Bal</b></td><td><input type="text" id="isi_bal_rol" class="form-control form-control-sm" placeholder="Isi per bal"></td></tr>
                                     <tr><td><b>Jumlah Order</b></td><td><input type="text" id="jml_order_rol" class="form-control form-control-sm" placeholder="Jumlah order"></td></tr>
@@ -1394,37 +1388,110 @@ let currentRollAutoItem = null;
 let currentSOHead = null;
 let currentSODetails = [];
 let isSubmitting = false;
-
-// Menandai bahwa form sedang berasal dari Copy SOP
 let isCopyMode = false;
-
-// Menyimpan spesifikasi SOP sumber selama user memilih SO baru
 let copiedSpecificationData = null;
 
 // ==========================================
 // INITIALIZATION
 // ==========================================
 $(document).ready(function() {
-    // Initialize Flatpickr
+    // Inisialisasi Flatpickr untuk datepicker di halaman utama (bukan di modal)
     flatpickr(".datepicker", {
         dateFormat: "d-M-Y",
         allowInput: true,
-        disableMobile: true
+        disableMobile: true,
+        locale: {
+            months: {
+                shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+            },
+            weekdays: {
+                shorthand: ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'],
+                longhand: ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
+            }
+        }
     });
 
-    flatpickr(".datepicker-sql", {
-        dateFormat: "Y-m-d",
-        altInput: true,
-        altFormat: "d-M-Y",
-        allowInput: true,
-        disableMobile: true
+    // ==========================================
+    // INISIALISASI DATEPICKER DI DALAM MODAL
+    // ==========================================
+    function initModalDatepickers() {
+        // Hapus instance lama jika ada (untuk menghindari duplikasi)
+        if ($('#form_sop_date')[0] && $('#form_sop_date')[0]._flatpickr) {
+            $('#form_sop_date')[0]._flatpickr.destroy();
+        }
+        if ($('#form_target_date')[0] && $('#form_target_date')[0]._flatpickr) {
+            $('#form_target_date')[0]._flatpickr.destroy();
+        }
+        if ($('#modal_so_start')[0] && $('#modal_so_start')[0]._flatpickr) {
+            $('#modal_so_start')[0]._flatpickr.destroy();
+        }
+        if ($('#modal_so_end')[0] && $('#modal_so_end')[0]._flatpickr) {
+            $('#modal_so_end')[0]._flatpickr.destroy();
+        }
+
+        // Inisialisasi ulang
+        flatpickr("#form_sop_date, #form_target_date, #modal_so_start, #modal_so_end", {
+            dateFormat: "Y-m-d",
+            altInput: true,
+            altFormat: "d-M-Y",
+            allowInput: true,
+            disableMobile: true,
+            locale: {
+                months: {
+                    shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                    longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+                }
+            }
+        });
+    }
+
+    // ==========================================
+    // MODAL EVENTS
+    // ==========================================
+    // Saat modal SOP dibuka
+    $('#sopModal').on('shown.bs.modal', function() {
+        initModalDatepickers();
+        
+        // Set default dates jika kosong
+        if (!$('#form_sop_date').val()) {
+            if ($('#form_sop_date')[0] && $('#form_sop_date')[0]._flatpickr) {
+                $('#form_sop_date')[0]._flatpickr.setDate(new Date(), true);
+            }
+        }
+        if (!$('#form_target_date').val()) {
+            if ($('#form_target_date')[0] && $('#form_target_date')[0]._flatpickr) {
+                $('#form_target_date')[0]._flatpickr.setDate(new Date(), true);
+            }
+        }
     });
 
-    // Initialize Modals
+    // Saat modal SO Browse dibuka
+    $('#soBrowseModal').on('shown.bs.modal', function() {
+        initModalDatepickers();
+        
+        // Set default dates jika kosong
+        if (!$('#modal_so_start').val()) {
+            if ($('#modal_so_start')[0] && $('#modal_so_start')[0]._flatpickr) {
+                $('#modal_so_start')[0]._flatpickr.setDate(new Date(), true);
+            }
+        }
+        if (!$('#modal_so_end').val()) {
+            if ($('#modal_so_end')[0] && $('#modal_so_end')[0]._flatpickr) {
+                $('#modal_so_end')[0]._flatpickr.setDate(new Date(), true);
+            }
+        }
+    });
+
+    // ==========================================
+    // INITIALIZE MODALS
+    // ==========================================
     sopModal = new bootstrap.Modal(document.getElementById('sopModal'));
     soBrowseModal = new bootstrap.Modal(document.getElementById('soBrowseModal'));
 
-    // Initialize DataTable Master
+    // ==========================================
+    // INITIALIZE DATATABLE MASTER
+    // ==========================================
     if ($.fn.DataTable.isDataTable('#sopMasterTable')) {
         $('#sopMasterTable').DataTable().destroy();
     }
@@ -1443,7 +1510,9 @@ $(document).ready(function() {
         }
     });
 
-    // Event handler untuk expand row
+    // ==========================================
+    // EVENT HANDLER UNTUK EXPAND ROW
+    // ==========================================
     $('#sopMasterTable tbody').off('click').on('click', 'td.details-control', function(e) {
         e.preventDefault();
         let tr = $(this).closest('tr');
@@ -1473,10 +1542,11 @@ $(document).ready(function() {
         }
     });
 
-    // Auto update roll calculations
-    // Berat Jenis, Standar Cek, dan Ukuran Roll mempengaruhi hitungan Gramatur/Tebal.
+    // ==========================================
+    // AUTO UPDATE ROLL CALCULATIONS
+    // ==========================================
     $(document).on('input change keyup', '#berat_jenis_rol, #standar_cek_rol, #ukuran_rol', function() {
-        
+        // Kosong - placeholder untuk event
     });
 
     $(document).on('input change', '#gramatur_plus_rol, #gramatur_min_rol, #tebal_plus_rol, #tebal_minus_rol', function() {
@@ -1491,115 +1561,58 @@ $(document).ready(function() {
         syncRollToleranceInputsFromSpecText(true);
         updateRollSpecFromToleranceInputs();
     });
-        /*
-    * Keterangan Roll dan Keterangan Potong:
-    * Shift + Enter membuat baris baru.
-    *
-    * Jika baris sebelumnya menggunakan nomor list,
-    * nomor berikutnya otomatis dibuat.
-    *
-    * Contoh:
-    * 1. Unit 1 : Produksi
-    *
-    * Shift + Enter menghasilkan:
-    * 2.
-    */
-    $(document).on(
-        'keydown',
-        '#keterangan_rol, #keterangan_potong',
-        function(event) {
-            if (!(event.key === 'Enter' && event.shiftKey)) {
-                return;
-            }
 
-            event.preventDefault();
-
-            let textarea = this;
-            let value = textarea.value;
-            let start = textarea.selectionStart;
-            let end = textarea.selectionEnd;
-
-            let textBeforeCursor = value.substring(0, start);
-            let textAfterCursor = value.substring(end);
-
-            // Ambil isi baris tempat kursor berada
-            let currentLine = textBeforeCursor.split('\n').pop() || '';
-
-            // Pertahankan spasi/indentasi pada awal baris
-            let indentationMatch = currentLine.match(/^(\s*)/);
-            let indentation = indentationMatch
-                ? indentationMatch[1]
-                : '';
-
-            let nextPrefix = indentation;
-
-            /*
-            * Deteksi number list:
-            * 1. Text
-            * 2. Text
-            * 3) Text
-            */
-            let numberedListMatch = currentLine.match(
-                /^(\s*)(\d+)([.)])\s*/
-            );
-
-            if (numberedListMatch) {
-                let currentNumber = parseInt(
-                    numberedListMatch[2],
-                    10
-                );
-
-                let separator = numberedListMatch[3];
-
-                nextPrefix =
-                    numberedListMatch[1] +
-                    (currentNumber + 1) +
-                    separator +
-                    ' ';
-            } else {
-                /*
-                * Deteksi bullet sederhana:
-                * - Text
-                * • Text
-                * * Text
-                */
-                let bulletMatch = currentLine.match(
-                    /^(\s*)([-•*])\s*/
-                );
-
-                if (bulletMatch) {
-                    nextPrefix =
-                        bulletMatch[1] +
-                        bulletMatch[2] +
-                        ' ';
-                }
-            }
-
-            let insertedText = '\n' + nextPrefix;
-
-            textarea.value =
-                textBeforeCursor +
-                insertedText +
-                textAfterCursor;
-
-            let newCursorPosition =
-                start + insertedText.length;
-
-            textarea.selectionStart =
-                newCursorPosition;
-
-            textarea.selectionEnd =
-                newCursorPosition;
-
-            /*
-            * Trigger input agar perubahan dikenali
-            * oleh proses lain yang mendengarkan event input.
-            */
-            $(textarea).trigger('input');
+    // ==========================================
+    // KEYDOWN UNTUK KETERANGAN (Shift+Enter)
+    // ==========================================
+    $(document).on('keydown', '#keterangan_rol, #keterangan_potong', function(event) {
+        if (!(event.key === 'Enter' && event.shiftKey)) {
+            return;
         }
-    );
 
-    // SO Browse Modal buttons
+        event.preventDefault();
+
+        let textarea = this;
+        let value = textarea.value;
+        let start = textarea.selectionStart;
+        let end = textarea.selectionEnd;
+
+        let textBeforeCursor = value.substring(0, start);
+        let textAfterCursor = value.substring(end);
+
+        let currentLine = textBeforeCursor.split('\n').pop() || '';
+
+        let indentationMatch = currentLine.match(/^(\s*)/);
+        let indentation = indentationMatch ? indentationMatch[1] : '';
+
+        let nextPrefix = indentation;
+
+        let numberedListMatch = currentLine.match(/^(\s*)(\d+)([.)])\s*/);
+
+        if (numberedListMatch) {
+            let currentNumber = parseInt(numberedListMatch[2], 10);
+            let separator = numberedListMatch[3];
+            nextPrefix = numberedListMatch[1] + (currentNumber + 1) + separator + ' ';
+        } else {
+            let bulletMatch = currentLine.match(/^(\s*)([-•*])\s*/);
+            if (bulletMatch) {
+                nextPrefix = bulletMatch[1] + bulletMatch[2] + ' ';
+            }
+        }
+
+        let insertedText = '\n' + nextPrefix;
+
+        textarea.value = textBeforeCursor + insertedText + textAfterCursor;
+        let newCursorPosition = start + insertedText.length;
+        textarea.selectionStart = newCursorPosition;
+        textarea.selectionEnd = newCursorPosition;
+
+        $(textarea).trigger('input');
+    });
+
+    // ==========================================
+    // SO BROWSE MODAL BUTTONS
+    // ==========================================
     $('#btnFilterSOModal').off('click').on('click', function() {
         if (typeof soTable !== 'undefined' && soTable !== null) {
             soTable.ajax.reload();
@@ -1618,7 +1631,9 @@ $(document).ready(function() {
         }
     });
 
-    // Form submit handler
+    // ==========================================
+    // FORM SUBMIT HANDLER
+    // ==========================================
     $('#sopForm').on('submit', function() {
         if (isSubmitting) {
             return false;
@@ -1682,6 +1697,13 @@ $(document).ready(function() {
         
         return true;
     });
+
+    // ==========================================
+    // SHIPMENT DUE DATE SYNC
+    // ==========================================
+    $(document).on('change input', '.shipment-due-date-input', function() {
+        $('.shipment-due-date-input').val($(this).val());
+    });
 });
 
 // ==========================================
@@ -1734,11 +1756,8 @@ function openSOPModal(isEdit = false, isCopy = false) {
         '</td></tr>'
     );
 
-    // Atur status Copy SOP
     isCopyMode = isCopy === true;
 
-    // Kosongkan data copy hanya jika membuka Create New SOP biasa
-    // atau membuka Edit SOP.
     if (!isCopyMode) {
         copiedSpecificationData = null;
     }
@@ -1986,14 +2005,12 @@ function commitSelectedSOItems() {
         return;
     }
 
-    // Header mengikuti Sales Order baru
     $('#customer_id').val(currentSOHead.customer_id || '');
     $('#customer_name').val(currentSOHead.customer_name || '');
     $('#old_code').val(currentSOHead.old_code || '');
     $('#remarks_head').val(currentSOHead.remarks || '');
     $('#form_order_no').val(currentSOHead.order_no || '');
 
-    // BOM mengikuti inventory yang dipilih dari Sales Order baru
     let html = '';
 
     selectedItems.forEach(function(item, index) {
@@ -2005,35 +2022,12 @@ function commitSelectedSOItems() {
     let firstSelectedItem = selectedItems[0] || {};
 
     if (isCopyMode && copiedSpecificationData) {
-        /*
-         * COPY SOP:
-         * Jangan reset spesifikasi yang berasal dari SOP lama.
-         *
-         * Inventory, qty, UoM dan BOM mengikuti Sales Order baru.
-         * Spesifikasi Roll dan Potong tetap mengikuti SOP yang dicopy.
-         */
-
         currentRollAutoItem = firstSelectedItem;
-
         populatePotongSpec(copiedSpecificationData);
-       populateRollSpec(copiedSpecificationData, true);
-
-        /*
-         * Jangan memanggil refreshRollCalculatedFields() di sini,
-         * karena fungsi tersebut akan menghitung ulang dan dapat
-         * menimpa Gramatur Asli, Tebal Asli, Spesifikasi Roll,
-         * Gramatur Roll dan Tebal Roll hasil copy.
-         */
-
+        populateRollSpec(copiedSpecificationData, true);
     } else {
-        /*
-         * CREATE NEW SOP biasa:
-         * Reset lalu isi otomatis berdasarkan inventory SO.
-         */
         resetSpecificationForms();
-
         currentRollAutoItem = firstSelectedItem;
-
         fillRollAutoFieldsFromItem(firstSelectedItem);
         fillPotongAutoFieldsFromItem(firstSelectedItem);
     }
@@ -2077,6 +2071,7 @@ function formatNumber2(value) {
     if (!isFinite(num)) return '';
     return num.toFixed(2);
 }
+
 function truncateNumber2(value) {
     let num = parseFloat(value);
 
@@ -2084,14 +2079,6 @@ function truncateNumber2(value) {
         return '';
     }
 
-    /*
-     * Potong sampai 2 angka desimal tanpa pembulatan.
-     *
-     * Contoh:
-     * 2.667  menjadi 2.66
-     * 2.669  menjadi 2.66
-     * 2.600  menjadi 2.60
-     */
     let truncated;
 
     if (num >= 0) {
@@ -2111,14 +2098,6 @@ function formatQtyText(value) {
     }
     return String(num).replace(/\.?(0+)$/, '');
 }
-
-
-
-
-
-
-
-
 
 function getAutoBeratJenisRol(item) {
     let density = item.inventory_density ?? item.density ?? '';
@@ -2148,30 +2127,12 @@ function getAutoNatWarnaRol(item) {
     return String(item.inventory_colour || item.colour || '');
 }
 
-/* ----------------------------------------------------------
-   1. MASTER KODE KATEGORI (sesuai tabel m_category Anda)
-   ----------------------------------------------------------
-   HD  : CAT005, CAT006, CAT007, CAT008, CAT009, CAT010, CAT011, CAT012
-   PE  : CAT022, CAT023, CAT024, CAT025, CAT026, CAT027, CAT028, CAT044 (PE SABLON)
-   PP  : CAT029, CAT030, CAT031, CAT032, CAT033, CAT034, CAT035, CAT045 (PP SABLON)
-
-   Catatan: kalau nanti master kategori bertambah/berubah kode,
-   cukup update 3 array ini saja, seluruh perhitungan lain otomatis ikut.
----------------------------------------------------------- */
 const MATERIAL_CATEGORY_MAP = {
     PP: ['CAT029', 'CAT030', 'CAT031', 'CAT032', 'CAT033', 'CAT034', 'CAT035', 'CAT045'],
     PE: ['CAT022', 'CAT023', 'CAT024', 'CAT025', 'CAT026', 'CAT027', 'CAT028', 'CAT044'],
     HD: ['CAT005', 'CAT006', 'CAT007', 'CAT008', 'CAT009', 'CAT010', 'CAT011', 'CAT012']
 };
 
-/* ----------------------------------------------------------
-   2. DETEKSI JENIS MATERIAL (PP / PE / HD)
-   ----------------------------------------------------------
-   Prioritas:
-   a) categori_id (paling akurat, karena berbasis kode master, bukan teks)
-   b) fallback ke nama kategori / nama inventory (jaga-jaga bila
-      categori_id belum ter-join atau data lama belum lengkap)
----------------------------------------------------------- */
 function detectMaterialType(item) {
     let categoriId = String(item.categori_id || '').trim().toUpperCase();
 
@@ -2181,7 +2142,6 @@ function detectMaterialType(item) {
         if (MATERIAL_CATEGORY_MAP.HD.includes(categoriId)) return 'HD';
     }
 
-    // Fallback berbasis teks (dipakai hanya jika categori_id kosong/tidak dikenali)
     let fallbackText = String(
         item.category_name ||
         item.inventory_category ||
@@ -2198,14 +2158,6 @@ function detectMaterialType(item) {
     return '';
 }
 
-/* ----------------------------------------------------------
-   3. LEBAR ROLL (dengan fallback dari teks "Ukuran Roll")
-   ----------------------------------------------------------
-   Prioritas:
-   a) mi.l / inventory_l (master inventory) -> paling akurat
-   b) ekstraksi dari teks Ukuran Roll, contoh:
-      "0.2000X300/160X51 M" -> tebal=0.2000, lebar=300
----------------------------------------------------------- */
 function getRollWidthValue(item) {
     let lebar = parseDecimalJS(item.inventory_l ?? item.l ?? 0);
     if (lebar > 0) {
@@ -2221,7 +2173,6 @@ function getRollWidthValue(item) {
         ''
     ).trim().replace(',', '.');
 
-    // Format umum: [tebal]X[lebar]/... contoh: 0.2000X300/160X51 M
     let match = ukuranText.match(/\d+(?:\.\d+)?\s*[xX]\s*(\d+(?:\.\d+)?)/);
     if (match) {
         return parseFloat(match[1]) || 0;
@@ -2230,14 +2181,6 @@ function getRollWidthValue(item) {
     return 0;
 }
 
-/* ----------------------------------------------------------
-   4. TEBAL ROLL (t) — logika lama dipertahankan, hanya dirapikan
-   ----------------------------------------------------------
-   Prioritas:
-   a) mi.t / inventory_t (master inventory)
-   b) ekstraksi angka pertama sebelum "X" dari teks Ukuran Roll
-   c) fallback terakhir: angka pertama yang ditemukan di teks
----------------------------------------------------------- */
 function getRollThicknessValue(item) {
     let directT = parseDecimalJS(item.inventory_t ?? item.t ?? 0);
     if (directT > 0) {
@@ -2262,15 +2205,6 @@ function getRollThicknessValue(item) {
     return firstNumber ? (parseFloat(firstNumber[0]) || 0) : 0;
 }
 
-/* ----------------------------------------------------------
-   5. STANDAR PENGECEKAN
-   ----------------------------------------------------------
-   Aturan:
-   - PP           -> selalu 100 (tidak terpengaruh lebar)
-   - PE atau HD   -> lebar < 100  -> 50
-                     lebar >= 100 -> 25
-   - Material lain / tidak terdeteksi -> '' (kosong, tidak dihitung)
----------------------------------------------------------- */
 function getAutoStandarCekRol(item) {
     let material = detectMaterialType(item);
     let lebar = getRollWidthValue(item);
@@ -2286,14 +2220,6 @@ function getAutoStandarCekRol(item) {
     return '';
 }
 
-/* ----------------------------------------------------------
-   6. PEMBAGI UNTUK TEBAL ASLI
-   ----------------------------------------------------------
-   Aturan (sesuai kode lama, sekarang berbasis detectMaterialType):
-   - PP          -> 17
-   - PE atau HD  -> 18
-   - default     -> 18
----------------------------------------------------------- */
 function getRollDivider(item) {
     let material = detectMaterialType(item);
 
@@ -2305,20 +2231,14 @@ function getRollDivider(item) {
         return 18;
     }
 
-    return 18; // default
+    return 18;
 }
 
-/* ----------------------------------------------------------
-   7. GRAMATUR ASLI
-   ----------------------------------------------------------
-   Rumus:
-   Gramatur Asli = (tebal x 100) x lebar x density x standar_pengecekan / 10000
----------------------------------------------------------- */
 function getAutoGramaturAsliRol(item) {
-    let tebal = getRollThicknessValue(item);                     // t
-    let lebar = getRollWidthValue(item);                         // l (dengan fallback konsisten)
-    let beratJenis = parseDecimalJS($('#berat_jenis_rol').val() || getAutoBeratJenisRol(item)); // density
-    let standarCek = parseDecimalJS($('#standar_cek_rol').val() || getAutoStandarCekRol(item));  // standar pengecekan
+    let tebal = getRollThicknessValue(item);
+    let lebar = getRollWidthValue(item);
+    let beratJenis = parseDecimalJS($('#berat_jenis_rol').val() || getAutoBeratJenisRol(item));
+    let standarCek = parseDecimalJS($('#standar_cek_rol').val() || getAutoStandarCekRol(item));
 
     if (tebal <= 0 || lebar <= 0 || beratJenis <= 0 || standarCek <= 0) {
         return '';
@@ -2327,12 +2247,6 @@ function getAutoGramaturAsliRol(item) {
     return formatNumber2((tebal * 100 * lebar * beratJenis * standarCek) / 10000);
 }
 
-/* ----------------------------------------------------------
-   8. TEBAL ASLI
-   ----------------------------------------------------------
-   Rumus:
-   Tebal Asli = (tebal x 100) x density / pembagi
----------------------------------------------------------- */
 function getAutoTebalAsliRol(item) {
     let tebal = getRollThicknessValue(item);
     let density = parseDecimalJS($('#berat_jenis_rol').val() || getAutoBeratJenisRol(item));
@@ -2344,7 +2258,6 @@ function getAutoTebalAsliRol(item) {
 
     return formatNumber2((tebal * 100 * density) / pembagi);
 }
-
 
 function getDefaultSpecRolText() {
     return 'Gram: +/-%  Tebal: +/-%';
@@ -2452,10 +2365,6 @@ function calculateToleranceRange(baseValue, minusPercent, plusPercent) {
     let minValue = base - (base * minPercent / 100);
     let maxValue = base + (base * maxPercent / 100);
 
-    /*
-     * Jangan gunakan formatNumber2() karena akan membulatkan.
-     * Gunakan truncateNumber2() agar nilai hanya dipotong.
-     */
     return truncateNumber2(minValue) + ' -- ' + truncateNumber2(maxValue);
 }
 
@@ -2520,8 +2429,6 @@ function fillRollAutoFieldsFromItem(item) {
     if (!$('#spec_rol').val()) {
         $('#spec_rol').val(getDefaultSpecRolText());
     }
-
-    
 }
 
 // ==========================================
@@ -2543,8 +2450,6 @@ function renderDetailRowForCreate(item, index) {
     let autoUkuranPotong = getAutoUkuranPotong(item);
     let autoJumlahOrderPotong = getAutoJumlahOrderPotong(item);
     
-    // Format berat_rol_warna dengan KG/ROLL jika numeric
-    //let beratRolWarna = autoBeratRol || '';
     let beratRolWarna = formatBeratRol(autoBeratRol || '');
     if (beratRolWarna && !beratRolWarna.includes('KG/ROLL') && !beratRolWarna.includes('KG/ROL')) {
         if (!isNaN(parseFloat(beratRolWarna)) && isFinite(beratRolWarna)) {
@@ -2552,8 +2457,6 @@ function renderDetailRowForCreate(item, index) {
         }
     }
     
-    // Format berat_rol dengan KG/ROLL jika numeric
-    //let beratRol = autoBeratRol || '';
     let beratRol = formatBeratRol(autoBeratRol || '');
     if (beratRol && !beratRol.includes('KG/ROLL') && !beratRol.includes('KG/ROL')) {
         if (!isNaN(parseFloat(beratRol)) && isFinite(beratRol)) {
@@ -2639,7 +2542,7 @@ function renderDetailRowForCreate(item, index) {
 }
 
 // ==========================================
-// EDIT SOP FUNCTION - PERBAIKAN UTAMA
+// EDIT SOP FUNCTION
 // ==========================================
 function editSOP(rowData) {
     console.log("Edit SOP called with:", rowData);
@@ -2651,7 +2554,6 @@ function editSOP(rowData) {
     $('#form_sop_id').val(rowData.sop_id);
     $('#form_sop_date').val(rowData.sop_date).prop('readonly', true);
     
-    // Set date with flatpickr if available
     if ($('#form_sop_date')[0]._flatpickr) {
         $('#form_sop_date')[0]._flatpickr.setDate(rowData.sop_date, true);
     }
@@ -2674,7 +2576,6 @@ function editSOP(rowData) {
     
     $('#formItemGrid tbody').html('<tr><td colspan="7" class="text-center py-3"><i class="bi bi-hourglass-split"></i> Loading item lines...</td></tr>');
     
-    // Gunakan endpoint get_sop_detail_complete
     let urlComplete = 'index.php?page=sop&action=get_sop_detail_complete&sop_id=' + encodeURIComponent(rowData.sop_id);
     console.log("Fetching from:", urlComplete);
     
@@ -2688,23 +2589,15 @@ function editSOP(rowData) {
             if (response.status === 'success' && response.items && response.items.length > 0) {
                 let item = response.items[0];
                 
-                // Render BOM
                 let bomHtml = '';
                 response.items.forEach((item, index) => {
                     bomHtml += renderBOMRow(item, index);
                 });
                 $('#formItemGrid tbody').html(bomHtml);
                 
-                // Set currentRollAutoItem lebih dulu agar kalkulasi realtime punya data t, l, category dari m_inventory
                 currentRollAutoItem = item;
-
-                // Populate Potong Spec - PASTIKAN data terisi
                 populatePotongSpec(item);
-                
-                // Populate Roll Spec - PASTIKAN data terisi
                 populateRollSpec(item, true);
-
-                
                 
             } else {
                 console.warn("No items found or invalid response");
@@ -2788,18 +2681,13 @@ function renderBOMRow(item, index) {
 }
 
 // ==========================================
-// POPULATE SPECIFICATIONS - PERBAIKAN UTAMA
+// POPULATE SPECIFICATIONS
 // ==========================================
-// Fungsi populatePotongSpec - untuk field berat_rol_warna
 function populatePotongSpec(item) {
-    
     console.log("populatePotongSpec called with:", item);
     
-    // Format nilai berat_rol_warna dengan KG/ROLL
-    //let beratRolWarna = item.berat_rol_warna || '';
     let beratRolWarna = formatBeratRol(item.berat_rol_warna || '');
     if (beratRolWarna && !beratRolWarna.includes('KG/ROLL') && !beratRolWarna.includes('KG/ROL')) {
-        // Jika hanya angka, tambahkan KG/ROLL
         if (!isNaN(parseFloat(beratRolWarna)) && isFinite(beratRolWarna)) {
             beratRolWarna = beratRolWarna + ' KG/ROLL';
         }
@@ -2827,15 +2715,11 @@ function populatePotongSpec(item) {
             <td><input type="text" id="isi_pakbal_potong" class="form-control form-control-sm" value="${item.isi_pakbal_potong || ''}"></td>
         </tr>
         <tr>
-                <td><b>Keterangan Potong</b></td>
-                <td>
-                    <textarea
-                        id="keterangan_potong"
-                        rows="6"
-                        class="form-control form-control-sm specification-notes"
-                        >${item.keterangan_potong || ''}</textarea>
-                </td>
-            </tr>
+            <td><b>Keterangan Potong</b></td>
+            <td>
+                <textarea id="keterangan_potong" rows="6" class="form-control form-control-sm specification-notes">${item.keterangan_potong || ''}</textarea>
+            </td>
+        </tr>
         <tr>
             <td><b>Tanggal Kirim</b></td>
             <td><input type="date" id="shipment_due_date_potong" class="form-control form-control-sm shipment-due-date-input" value="${item.shipment_due_date || ''}"></td>
@@ -2866,12 +2750,9 @@ function populatePotongSpec(item) {
     console.log("Potong specs populated successfully");
 }
 
-// Fungsi populateRollSpec - untuk field berat_rol
 function populateRollSpec(item, preserveCalculatedValues = false) {
     console.log("populateRollSpec called with:", item);
     
-    // Format nilai berat_rol dengan KG/ROLL
-    //let beratRol = item.berat_rol || '';
     let beratRol = formatBeratRol(item.berat_rol || '');
     if (beratRol && !beratRol.includes('KG/ROLL') && !beratRol.includes('KG/ROL')) {
         if (!isNaN(parseFloat(beratRol)) && isFinite(beratRol)) {
@@ -2946,14 +2827,10 @@ function populateRollSpec(item, preserveCalculatedValues = false) {
             <td><b>Tebal Roll</b></td>
             <td><input type="text" id="tebal_rol" class="form-control form-control-sm" value="${item.tebal_rol || ''}"></td>
         </tr>
-       <tr>
+        <tr>
             <td><b>Keterangan Roll</b></td>
             <td>
-                <textarea
-                    id="keterangan_rol"
-                    rows="6"
-                    class="form-control form-control-sm specification-notes"
-                    >${item.keterangan_rol || ''}</textarea>
+                <textarea id="keterangan_rol" rows="6" class="form-control form-control-sm specification-notes">${item.keterangan_rol || ''}</textarea>
             </td>
         </tr>
         <tr>
@@ -2988,18 +2865,13 @@ function populateRollSpec(item, preserveCalculatedValues = false) {
     
     $('#roll_tbody').html(rollHtml);
 
-        syncRollToleranceInputsFromSpecText(false);
+    syncRollToleranceInputsFromSpecText(false);
 
-        /*
-        * Pada Create/Edit biasa boleh dihitung ulang.
-        * Pada Copy SOP, pertahankan nilai Gramatur Roll,
-        * Tebal Roll, dan Spesifikasi Roll dari SOP sumber.
-        */
-        if (!preserveCalculatedValues) {
-            updateRollSpecFromToleranceInputs();
-        }
+    if (!preserveCalculatedValues) {
+        updateRollSpecFromToleranceInputs();
+    }
 
-        console.log("Roll specs populated successfully");
+    console.log("Roll specs populated successfully");
 }
 
 // ==========================================
@@ -3049,80 +2921,42 @@ function resetSpecificationForms() {
 // COPY SOP FUNCTION
 // ==========================================
 function copySOP(sopId) {
-    if (!confirm(
-        "Salin SOP " + sopId + " ke dokumen baru?\n\n" +
-        "Semua data item dan spesifikasi akan digandakan."
-    )) {
+    if (!confirm("Salin SOP " + sopId + " ke dokumen baru?\n\nSemua data item dan spesifikasi akan digandakan.")) {
         return;
     }
 
-    $('#formItemGrid tbody').html(
-        '<tr><td colspan="7" class="text-center py-3">' +
-        '<i class="bi bi-hourglass-split"></i> Loading data for copy...' +
-        '</td></tr>'
-    );
+    $('#formItemGrid tbody').html('<tr><td colspan="7" class="text-center py-3"><i class="bi bi-hourglass-split"></i> Loading data for copy...</td></tr>');
 
     $.ajax({
-        url: 'index.php?page=sop&action=get_sop_for_copy&sop_id=' +
-             encodeURIComponent(sopId),
+        url: 'index.php?page=sop&action=get_sop_for_copy&sop_id=' + encodeURIComponent(sopId),
         method: 'GET',
         dataType: 'json',
-
         success: function(response) {
-            if (
-                response.status !== 'success' ||
-                !response.items ||
-                response.items.length === 0
-            ) {
+            if (response.status !== 'success' || !response.items || response.items.length === 0) {
                 alert('Gagal memuat data untuk disalin.');
                 return;
             }
 
-            // Membuka modal dalam mode COPY
             openSOPModal(false, true);
 
-            $('#form_sop_date').val(
-                new Date().toISOString().slice(0, 10)
-            );
-
+            $('#form_sop_date').val(new Date().toISOString().slice(0, 10));
             if ($('#form_sop_date')[0]._flatpickr) {
-                $('#form_sop_date')[0]._flatpickr.setDate(
-                    new Date(),
-                    true
-                );
+                $('#form_sop_date')[0]._flatpickr.setDate(new Date(), true);
             }
 
-            $('#form_target_date').val(
-                response.head.target_date || ''
-            );
-
+            $('#form_target_date').val(response.head.target_date || '');
             if ($('#form_target_date')[0]._flatpickr) {
-                $('#form_target_date')[0]._flatpickr.setDate(
-                    response.head.target_date || new Date(),
-                    true
-                );
+                $('#form_target_date')[0]._flatpickr.setDate(response.head.target_date || new Date(), true);
             }
 
-            /*
-             * Sales Order dan customer sengaja dikosongkan.
-             * User harus memilih Reference SO yang baru.
-             */
             $('#form_order_no').val('');
             $('#customer_id').val('');
             $('#customer_name').val('');
             $('#old_code').val('');
 
-            $('#form_no_urut_roll').val(
-                response.head.no_urut_roll || ''
-            );
-
-            $('#form_no_urut_potong').val(
-                response.head.no_urut_potong || ''
-            );
-
-            $('#remarks_head').val(
-                response.head.remarks || ''
-            );
+            $('#form_no_urut_roll').val(response.head.no_urut_roll || '');
+            $('#form_no_urut_potong').val(response.head.no_urut_potong || '');
+            $('#remarks_head').val(response.head.remarks || '');
 
             resetSpecificationForms();
 
@@ -3133,46 +2967,20 @@ function copySOP(sopId) {
                 bomHtml += renderBOMRow(item, index);
 
                 if (index === 0) {
-                    /*
-                     * Simpan spesifikasi SOP sumber.
-                     * Data ini dipakai kembali setelah user
-                     * memilih SO dan inventory baru.
-                     */
-                    copiedSpecificationData = {
-                        ...item
-                    };
-
+                    copiedSpecificationData = {...item};
                     currentRollAutoItem = item;
-
-                    populatePotongSpec(
-                        copiedSpecificationData
-                    );
-
-                    populateRollSpec(
-                        copiedSpecificationData,
-                        true
-                    );
+                    populatePotongSpec(copiedSpecificationData);
+                    populateRollSpec(copiedSpecificationData, true);
                 }
             });
 
             $('#formItemGrid tbody').html(bomHtml);
 
-            alert(
-                "Data SOP berhasil disalin.\n\n" +
-                "Silakan pilih Sales Order baru. " +
-                "Spesifikasi Roll dan Potong akan tetap dipertahankan."
-            );
+            alert("Data SOP berhasil disalin.\n\nSilakan pilih Sales Order baru. Spesifikasi Roll dan Potong akan tetap dipertahankan.");
         },
-
         error: function(xhr, status, error) {
-            console.error(
-                "Copy Error:",
-                xhr.responseText
-            );
-
-            alert(
-                'Terjadi kesalahan saat menyalin data SOP.'
-            );
+            console.error("Copy Error:", xhr.responseText);
+            alert('Terjadi kesalahan saat menyalin data SOP.');
         }
     });
 }
@@ -3207,20 +3015,14 @@ function getShipmentDueDateValue() {
     return $('#shipment_due_date_potong').val() || $('#shipment_due_date_rol').val() || '';
 }
 
-$(document).on('change input', '.shipment-due-date-input', function() {
-    $('.shipment-due-date-input').val($(this).val());
-});
-// Fungsi untuk memformat nilai dengan KG/ROLL
 function formatBeratRol(value) {
     if (!value) return '';
     let strValue = String(value).trim();
     
-    // Jika sudah mengandung KG/ROLL atau KG/ROL, return asli
     if (strValue.includes('KG/ROLL') || strValue.includes('KG/ROL')) {
         return strValue;
     }
     
-    // Jika numeric murni, tambahkan KG/ROLL
     if (!isNaN(parseFloat(strValue)) && isFinite(strValue)) {
         return strValue + ' KG/ROLL';
     }

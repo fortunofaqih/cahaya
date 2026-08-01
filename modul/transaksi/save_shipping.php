@@ -13,6 +13,10 @@ if (!isset($_SESSION['username'])) {
 include __DIR__ . '/../../koneksi.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+// ==========================================
+// ✅ TAMBAHKAN LOGGING
+// ==========================================
+error_log('===== SAVE SHIPPING START =====');
 
 function cleanInput($data) {
     if (is_array($data)) {
@@ -73,8 +77,8 @@ function toDbDate($date) {
     $months = [
         'jan' => '01', 'feb' => '02', 'mar' => '03', 'apr' => '04',
         'mei' => '05', 'may' => '05', 'jun' => '06', 'jul' => '07',
-        'agu' => '08', 'aug' => '08', 'sep' => '09', 'okt' => '10',
-        'oct' => '10', 'nov' => '11', 'des' => '12', 'dec' => '12'
+        'agu' => '08', 'aug' => '08', 'ags' => '08', 'sep' => '09', 
+		'okt' => '10', 'oct' => '10', 'nov' => '11', 'des' => '12', 'dec' => '12'
     ];
 
     $parts = explode('-', $date);

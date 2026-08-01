@@ -124,7 +124,10 @@ while ($uom = mysqli_fetch_assoc($inventory_uom_rs)) {
     ];
 }
 
-// Fungsi format tanggal ke dd-MMM-yyyy
+
+// modul/transaksi/add_sales_order.php
+
+// Fungsi format tanggal ke dd-MMM-yyyy (Menggunakan singkatan 'Ags')
 function formatDateIndonesian($date) {
     if (empty($date) || $date == '0000-00-00') {
         return '';
@@ -132,11 +135,16 @@ function formatDateIndonesian($date) {
     
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags',
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
     
     $timestamp = strtotime($date);
+    
+    if (!$timestamp) {
+        return '';
+    }
+    
     $tanggal = date('d', $timestamp);
     $bulan_num = (int)date('m', $timestamp);
     $tahun = date('Y', $timestamp);
@@ -148,9 +156,10 @@ function formatDateIndonesian($date) {
 $order_date = date('Y-m-d');
 $order_date_display = formatDateIndonesian($order_date);
 
-$order_no     = generateOrderNo($conn);
-$tahun        = date('Y');
-$no_po    = generatePONumber($conn, $tahun);
+// Inisialisasi nomor dokumen otomatis
+$order_no  = generateOrderNo($conn);
+$tahun     = date('Y');
+$no_po     = generatePONumber($conn, $tahun);
 ?>
 
 <!-- CSS & JS -->
@@ -1588,12 +1597,21 @@ $(document).on('change', '#chkAutoCorrect', function() {
 });
 
 $(document).ready(function() {
-    flatpickr(".datepicker", {
-        dateFormat: "d-M-Y",
-        altFormat: "d-M-Y",
-        allowInput: true,
-        disableMobile: true
-    });
+    if (typeof flatpickr !== 'undefined') {
+        flatpickr.localize({
+            months: {
+                shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+            }
+        });
+
+        flatpickr('.datepicker', {
+            dateFormat: 'd-M-Y',
+            altFormat: 'd-M-Y',
+            allowInput: true,
+            disableMobile: true
+        });
+    }
 
     $('#marketing_id, #sales_id, #customer_id').select2({
         width: '100%',

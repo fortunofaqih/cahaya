@@ -66,11 +66,12 @@ function normalizeSqlDate($value) {
         }
     }
 
-    $bulanIndonesia = [
-        'Jan' => 'Jan', 'Feb' => 'Feb', 'Mar' => 'Mar', 'Apr' => 'Apr',
-        'Mei' => 'May', 'Jun' => 'Jun', 'Jul' => 'Jul', 'Agu' => 'Aug',
-        'Sep' => 'Sep', 'Okt' => 'Oct', 'Nov' => 'Nov', 'Des' => 'Dec'
-    ];
+	$bulanIndonesia = [
+		'Jan' => 'Jan', 'Feb' => 'Feb', 'Mar' => 'Mar', 'Apr' => 'Apr',
+		'Mei' => 'May', 'Jun' => 'Jun', 'Jul' => 'Jul', 
+		'Agu' => 'Aug', 'Ags' => 'Aug', 
+		'Sep' => 'Sep', 'Okt' => 'Oct', 'Nov' => 'Nov', 'Des' => 'Dec'
+	];
 
     $parts = explode('-', $value);
     if (count($parts) === 3) {

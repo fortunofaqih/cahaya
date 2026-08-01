@@ -128,20 +128,26 @@ function formatDateIndonesian($date) {
     if (empty($date) || $date == '0000-00-00') {
         return '';
     }
-    
+
+    // Array bulan Indonesia
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags', // <-- Ini sudah benar
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
-    
+
+    // Parse tanggal
     $timestamp = strtotime($date);
-    if (!$timestamp) return '';
-    
+    if (!$timestamp) {
+        return '';
+    }
+
+    // Ekstrak tanggal, bulan, tahun
     $tanggal = date('d', $timestamp);
     $bulan_num = (int)date('m', $timestamp);
     $tahun = date('Y', $timestamp);
-    
+
+    // Kembalikan format Indonesia
     return $tanggal . '-' . $bulan[$bulan_num] . '-' . $tahun;
 }
 
@@ -1297,12 +1303,21 @@ $(document).on('change', '#order_no', function() {
 });
 
 $(document).ready(function() {
-    flatpickr('.datepicker', {
-        dateFormat: 'd-M-Y',
-        altFormat: 'd-M-Y',
-        allowInput: true,
-        disableMobile: true
-    });
+       if (typeof flatpickr !== 'undefined') {
+        flatpickr.localize({
+            months: {
+                shorthand: ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'],
+                longhand: ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
+            }
+        });
+
+        flatpickr('.datepicker', {
+            dateFormat: 'd-M-Y',
+            altFormat: 'd-M-Y',
+            allowInput: true,
+            disableMobile: true
+        });
+    }
 
     $('#order_no, #gudang_id').select2({
         width: '100%',
