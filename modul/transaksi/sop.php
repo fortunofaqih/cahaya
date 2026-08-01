@@ -1546,7 +1546,12 @@ $(document).ready(function() {
     // AUTO UPDATE ROLL CALCULATIONS
     // ==========================================
     $(document).on('input change keyup', '#berat_jenis_rol, #standar_cek_rol, #ukuran_rol', function() {
-        // Kosong - placeholder untuk event
+        /*
+         * Hitung ulang otomatis Gramatur Asli dan Tebal Asli
+         * ketika Berat Jenis Roll, Standar Pengecekan, atau Ukuran Roll
+         * diubah manual oleh user.
+         */
+        refreshRollCalculatedFields();
     });
 
     $(document).on('input change', '#gramatur_plus_rol, #gramatur_min_rol, #tebal_plus_rol, #tebal_minus_rol', function() {
@@ -2429,6 +2434,12 @@ function fillRollAutoFieldsFromItem(item) {
     if (!$('#spec_rol').val()) {
         $('#spec_rol').val(getDefaultSpecRolText());
     }
+
+    /*
+     * Setelah BOM dipilih, langsung isi Gramatur Asli
+     * dan Tebal Asli berdasarkan item pertama yang dipilih.
+     */
+    refreshRollCalculatedFields();
 }
 
 // ==========================================
