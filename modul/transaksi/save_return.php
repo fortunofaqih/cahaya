@@ -182,6 +182,7 @@ try {
         $detailId      = (int)($item['shipping_detail_id'] ?? 0);
         $returnQty     = returnDecimalValue($item['return_quantity'] ?? 0);
         $returnPack    = returnDecimalValue($item['return_quantity_pack'] ?? 0);
+        $inputPrice    = returnDecimalValue($item['price'] ?? 0);
         $remarksDetail = trim((string)($item['remarks_detail'] ?? ''));
 
         if ($detailId <= 0 || $returnQty <= 0) {
@@ -189,7 +190,9 @@ try {
         }
 
         /*
-         * Harga per inventory diambil dari detail_sales_order.
+         * Price dikirim dari add_return.php agar dapat diubah oleh user.
+         * Data Sales Order tetap diambil sebagai referensi dan sumber
+         * informasi inventory, UoM, price_unit, serta original_subtotal.
          */
         $detailSql = "
             SELECT
@@ -244,9 +247,9 @@ try {
             );
         }
 
-        if ((float)$source['price'] <= 0) {
+        if ($inputPrice <= 0) {
             throw new RuntimeException(
-                "Price Sales Order untuk inventory {$source['inventory_id']} tidak ditemukan atau bernilai 0."
+                "Price Return untuk inventory {$source['inventory_id']} wajib lebih dari 0."
             );
         }
 
@@ -322,7 +325,11 @@ try {
          * Mengikuti add_sales_order:
          * Return Subtotal = Price x Qty Pack Return
          */
-        $price          = (float)$source['price'];
+        /*
+         * Price menggunakan nilai yang diinput atau diubah user
+         * pada add_return.php.
+         */
+        $price          = round($inputPrice, 4);
         $priceUnit      = (float)$source['price_unit'];
         $returnSubtotal = round($price * $returnPack, 2);
 

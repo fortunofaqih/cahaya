@@ -380,7 +380,7 @@ function renderItems(details){
             '<td><input type="number" step="0.0001" min="0" max="'+Number(item.remaining_quantity || 0)+'" name="items['+index+'][return_quantity]" class="return-qty" value="0"></td>' +
             '<td><input type="number" step="0.0001" min="0" max="'+Number(item.remaining_quantity_pack || 0)+'" name="items['+index+'][return_quantity_pack]" class="return-pack" value="0"></td>' +
             '<td class="text-center">'+escHtml(item.original_uom_detail)+'</td>' +
-            '<td class="text-right">Rp '+fmtMoney(item.price || 0)+'</td>' +
+            '<td><input type="number" step="0.01" min="0" name="items['+index+'][price]" class="return-price text-right" value="'+Number(item.price || 0).toFixed(2)+'"></td>' +
             '<td class="text-right"><b>Rp <span class="return-subtotal-display">0.00</span></b></td>' +
             '<td><input type="text" name="items['+index+'][remarks_detail]" maxlength="255" placeholder="Remarks..."></td>';
 
@@ -396,6 +396,7 @@ function bindItemEvents(){
         var checkbox = row.querySelector('.item-selected');
         var qty = row.querySelector('.return-qty');
         var pack = row.querySelector('.return-pack');
+        var price = row.querySelector('.return-price');
 
         checkbox.addEventListener('change', function(){
             if(!checkbox.checked){
@@ -413,6 +414,13 @@ function bindItemEvents(){
         pack.addEventListener('input', function(){
             checkbox.checked = Number(pack.value || 0) > 0;
             syncFromPack(row);
+        });
+
+        price.addEventListener('input', function(){
+            var priceValue = Math.max(0, Number(price.value || 0));
+            price.value = Number.isFinite(priceValue) ? priceValue : 0;
+            row.dataset.price = price.value || '0';
+            calculateRow(row);
         });
     });
 }
@@ -470,7 +478,9 @@ function calculateRow(row){
     var qtyPackReturn = checked
         ? Number(row.querySelector('.return-pack').value || 0)
         : 0;
-    var price = Number(row.dataset.price || 0);
+    var priceInput = row.querySelector('.return-price');
+    var price = Math.max(0, Number(priceInput ? priceInput.value : row.dataset.price || 0));
+    row.dataset.price = price;
 
     /*
      * Mengikuti add_sales_order:
