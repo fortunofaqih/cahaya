@@ -340,9 +340,22 @@ for ($i = 0; $i < $total_rows; $i++) {
     // Hitung Harga/Kg.
     $harga_kg = 0;
 
+    //if ($qty_raw > 0 && $subtotal_raw > 0) {
+      //  $harga_kg = $subtotal_raw / $qty_raw;
+    //}
     if ($qty_raw > 0 && $subtotal_raw > 0) {
-        $harga_kg = $subtotal_raw / $qty_raw;
+    $harga_kg = $subtotal_raw / $qty_raw;
+
+    // Cek pecahan terhadap kelipatan 1.000.
+    // Contoh: 38.981 / 1.000 = 38,981
+    $nilai_ribuan = $harga_kg / 1000;
+    $pecahan_ribuan = $nilai_ribuan - floor($nilai_ribuan);
+
+    // Jika pecahannya 0,98 atau lebih, bulatkan ke ribuan berikutnya.
+    if ($pecahan_ribuan >= 0.98) {
+        $harga_kg = ceil($nilai_ribuan) * 1000;
     }
+}
 
     /*
      * Jika Harga/Kg = 0 atau 1,
