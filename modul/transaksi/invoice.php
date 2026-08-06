@@ -484,35 +484,41 @@ if ($detailStmt) {
                             $paymentTerm = $row['payment_term'] ?: $row['days'];
                         ?>
                         <tr>
-                          <td class="sticky-aksi text-center">
-                                <button type="button"
-                                        class="btn-vs btn-expand btn-action js-expand-invoice"
-                                        data-target="detail-<?= h(md5($invoiceNo)) ?>"
-                                        title="Lihat detail invoice">
-                                    <span class="app-icon"><?= appIcon('expand') ?></span>
-                                </button>
+                         <td class="sticky-aksi text-center">
+									<button type="button"
+											class="btn-vs btn-expand btn-action js-expand-invoice"
+											data-target="detail-<?= h(md5($invoiceNo)) ?>"
+											title="Lihat detail invoice">
+										<span class="app-icon"><?= appIcon('expand') ?></span>
+									</button>
 
-                                <a class="btn-vs btn-primary btn-action"
-                                   href="modul/transaksi/cetak_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
-                                   target="_blank"
-                                   title="Cetak harga invoice">
-                                    <span class="app-icon"><?= appIcon('print') ?></span>
-                                </a>
+									<a class="btn-vs btn-warning btn-action"
+									   href="modul/transaksi/edit_invoice.php?invoice_no=<?= urlencode($invoiceNo) ?>"
+									   title="Edit Invoice">
+										<span class="app-icon"><?= appIcon('edit') ?></span>
+									</a>
 
-                                <a class="btn-vs btn-success btn-action"
-                                   href="modul/transaksi/cetak_invoice_full.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
-                                   target="_blank"
-                                   title="Cetak invoice lengkap">
-                                    <span class="app-icon"><?= appIcon('print') ?></span>
-                                </a>
+									<a class="btn-vs btn-primary btn-action"
+									   href="modul/transaksi/cetak_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
+									   target="_blank"
+									   title="Cetak harga invoice">
+										<span class="app-icon"><?= appIcon('print') ?></span>
+									</a>
 
-                                <a class="btn-vs btn-danger btn-action"
-                                   href="modul/transaksi/delete_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
-                                   onclick="return confirm('Hapus invoice <?= htmlspecialchars($row['invoice_no'], ENT_QUOTES, 'UTF-8') ?>?')"
-                                   title="Delete">
-                                    <span class="app-icon"><?= appIcon('delete') ?></span>
-                                </a>
-                            </td>
+									<a class="btn-vs btn-success btn-action"
+									   href="modul/transaksi/cetak_invoice_full.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
+									   target="_blank"
+									   title="Cetak invoice lengkap">
+										<span class="app-icon"><?= appIcon('print') ?></span>
+									</a>
+
+									<a class="btn-vs btn-danger btn-action"
+									   href="modul/transaksi/delete_invoice.php?invoice_no=<?= urlencode($row['invoice_no']) ?>"
+									   onclick="return confirm('Hapus invoice <?= htmlspecialchars($row['invoice_no'], ENT_QUOTES, 'UTF-8') ?>?')"
+									   title="Delete">
+										<span class="app-icon"><?= appIcon('delete') ?></span>
+									</a>
+								</td>
                             <td class="text-bold text-blue"><?= h($invoiceNo) ?></td>
                             <td><?= h(formatDateDisplay($row['invoice_date'])) ?></td>
                             <td><?= h($row['shipping_nos']) ?></td>

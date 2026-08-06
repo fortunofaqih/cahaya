@@ -502,6 +502,9 @@ $nota_date_display = formatDateIndonesian(date('Y-m-d'));
                             <input type="checkbox" id="auto_generate_shipping_no" name="auto_generate_shipping_no" value="1">
                             <label for="auto_generate_shipping_no">Auto Generate Number</label>
                         </div>
+                        <div style="font-size:9px;color:#6c757d;margin-top:4px;">
+                            Mode Auto menampilkan nomor preview. Nomor final akan diperiksa dan ditetapkan kembali saat Save.
+                        </div>
                     </div>
                     <div class="ff">
                         <label>Shipping Date <span class="required">*</span></label>
@@ -1761,7 +1764,15 @@ $(document).ready(function() {
             return false;
         }
 
-        if (shippingNoExists) {
+        /*
+         * Untuk mode manual, nomor yang sudah terdeteksi duplikat tetap
+         * dicegah dari browser.
+         *
+         * Untuk mode Auto Generate, nomor pada layar hanya preview.
+         * save_shipping.php akan mengunci penomoran dan menentukan nomor
+         * final berdasarkan database saat transaksi disimpan.
+         */
+        if (!isAutoGenerateShippingNo && shippingNoExists) {
             e.preventDefault();
             alert('Gagal Simpan: Shipping No sudah ada di database. Silakan gunakan nomor lain.');
             $('#shipping_no').focus();

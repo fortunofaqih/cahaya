@@ -106,6 +106,104 @@ function parseRupiah($value) {
     return floatval($value);
 }
 
+/**
+ * Membuat prefix nomor Sales Order berdasarkan tanggal order.
+ * Format: SO.YYYYFCMM.
+ */
+function buildSalesOrderPrefix(string $orderDate): string
+{
+    $timestamp = strtotime($orderDate);
+
+    if ($timestamp === false) {
+        throw new RuntimeException('Tanggal Sales Order tidak valid untuk membuat Order No.');
+    }
+
+    return 'SO.' . date('Y', $timestamp) . 'FC' . date('m', $timestamp) . '.';
+}
+
+/**
+ * Mengambil nomor Sales Order berikutnya.
+ *
+ * Fungsi ini wajib dipanggil setelah advisory lock berhasil diperoleh
+ * dan transaksi database sudah dimulai.
+ */
+function generateFinalOrderNo(mysqli $conn, string $orderDate): string
+{
+    $prefix = buildSalesOrderPrefix($orderDate);
+    $prefixSafe = mysqli_real_escape_string($conn, $prefix);
+
+    $sql = "
+        SELECT order_no
+        FROM head_sales_order
+        WHERE order_no LIKE '{$prefixSafe}%'
+        ORDER BY CAST(RIGHT(order_no, 5) AS UNSIGNED) DESC
+        LIMIT 1
+        FOR UPDATE
+    ";
+
+    $result = mysqli_query($conn, $sql);
+
+    if (!$result) {
+        throw new RuntimeException(
+            'Gagal membaca nomor Sales Order terakhir: ' . mysqli_error($conn)
+        );
+    }
+
+    $row = mysqli_fetch_assoc($result);
+    $nextNumber = $row
+        ? ((int)substr((string)$row['order_no'], -5) + 1)
+        : 1;
+
+    return $prefix . str_pad((string)$nextNumber, 5, '0', STR_PAD_LEFT);
+}
+
+/**
+ * Mengambil MySQL advisory lock khusus penomoran Sales Order per tahun-bulan.
+ */
+function acquireSalesOrderNumberLock(mysqli $conn, string $orderDate): string
+{
+    $prefix = buildSalesOrderPrefix($orderDate);
+    $lockName = 'sales_order_number_' . preg_replace('/[^A-Za-z0-9_]/', '_', $prefix);
+
+    $stmt = mysqli_prepare($conn, 'SELECT GET_LOCK(?, 15) AS lock_status');
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            'Gagal menyiapkan database lock Sales Order: ' . mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $lockName);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+
+    if ((int)($row['lock_status'] ?? 0) !== 1) {
+        throw new RuntimeException(
+            'Sistem sedang memproses nomor Sales Order lain. Silakan klik Save kembali.'
+        );
+    }
+
+    return $lockName;
+}
+
+function releaseSalesOrderNumberLock(mysqli $conn, ?string $lockName): void
+{
+    if (!$lockName) {
+        return;
+    }
+
+    $stmt = mysqli_prepare($conn, 'SELECT RELEASE_LOCK(?)');
+
+    if ($stmt) {
+        mysqli_stmt_bind_param($stmt, 's', $lockName);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+    }
+}
+
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header('Location: index.php?page=sales_order');
     exit;
@@ -116,7 +214,12 @@ $datetime_now = date('Y-m-d H:i:s');
 $year_now     = date('Y');
 
 // ── Sanitize Header Fields ─────────────────────────────────────────
-$order_no           = mysqli_real_escape_string($conn, trim($_POST['order_no'] ?? ''));
+/*
+ * Order No dari form hanya preview. Nomor final akan dibuat kembali
+ * di dalam transaction dan advisory lock.
+ */
+$order_no_preview   = trim((string)($_POST['order_no'] ?? ''));
+$order_no           = '';
 $order_date_raw     = $_POST['order_date'] ?? date('Y-m-d');
 $order_date         = convertDateToMySQL($order_date_raw);
 
@@ -153,19 +256,16 @@ $remarks            = mysqli_real_escape_string($conn, trim($_POST['remarks'] ??
 $down_payment       = parseRupiah($_POST['down_payment'] ?? 0);
 
 // ── Validasi Header ───────────────────────────────────────────────
-if (empty($order_no) || empty($customer_id)) {
-    $_SESSION['alert'] = "<div class='alert alert-danger p-2 small'>Order No dan Customer wajib diisi!</div>";
+if (empty($customer_id)) {
+    $_SESSION['alert'] = "<div class='alert alert-danger p-2 small'>Customer wajib diisi!</div>";
     echo "<script>window.history.back();</script>";
     exit;
 }
 
-// Cek duplikat Order No
-$chk = mysqli_query($conn, "SELECT order_no FROM head_sales_order WHERE order_no='$order_no' LIMIT 1");
-if ($chk && mysqli_num_rows($chk) > 0) {
-    $_SESSION['alert'] = "<div class='alert alert-danger p-2 small'>Order No <strong>$order_no</strong> sudah terpakai!</div>";
-    echo "<script>window.history.back();</script>";
-    exit;
-}
+/*
+ * Tidak melakukan penolakan berdasarkan Order No preview.
+ * Nomor final ditentukan secara atomik di dalam transaction.
+ */
 
 // Auto resolve nama customer
 if (empty($customer_name) && !empty($customer_id)) {
@@ -339,9 +439,20 @@ $balance = $calculated_grand_total - $down_payment;
 // ════════════════════════════════════════════════════════════
 // DATABASE TRANSACTION START
 // ════════════════════════════════════════════════════════════
+$orderNumberLock = null;
+
 mysqli_begin_transaction($conn);
 
 try {
+    /*
+     * Kunci proses generate nomor berdasarkan periode Order Date.
+     * User kedua akan menunggu user pertama selesai, lalu memperoleh
+     * nomor berikutnya secara otomatis.
+     */
+    $orderNumberLock = acquireSalesOrderNumberLock($conn, $order_date);
+    $order_no = generateFinalOrderNo($conn, $order_date);
+    $order_no_esc = mysqli_real_escape_string($conn, $order_no);
+
     // ── INSERT HEAD SALES ORDER ───────────────────────────────────
     $sql_head = "INSERT INTO head_sales_order (
         order_no, order_date, po, marketing_id, sales_id,
@@ -350,7 +461,7 @@ try {
         payment_term, payment_type, days, currency, allow_auto_correct, remarks,
         grand_total, down_payment, status, approval_status, create_user, date_created
     ) VALUES (
-        '$order_no', '$order_date_esc', '$po_number', '$marketing_id', '$sales_id',
+        '$order_no_esc', '$order_date_esc', '$po_number', '$marketing_id', '$sales_id',
         '$customer_id', '$customer_name', '$customer_address', '$customer_city', '$station',
         $shipment_due_date_sql, '$shipment_location', '$tolerance', '$backward_calc',
         '$payment_term', '$payment_type', '$days', '$currency', '$allow_auto_correct', '$remarks',
@@ -389,7 +500,7 @@ try {
             quantity_pack, uom_pack, uom_detail,
             price_unit, price, subtotal, remarks
         ) VALUES (
-            '$order_no',
+            '$order_no_esc',
             '$inventory_id_esc',
             '$inventory_name_esc',
             '{$det['quantity']}',
@@ -428,6 +539,8 @@ try {
     }
 
     mysqli_commit($conn);
+    releaseSalesOrderNumberLock($conn, $orderNumberLock);
+    $orderNumberLock = null;
 
     $_SESSION['alert'] = "
         <div class='alert alert-success p-2 small'>
@@ -442,8 +555,10 @@ try {
 
     echo "<script>window.location.href='index.php?page=sales_order';</script>";
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
     mysqli_rollback($conn);
+    releaseSalesOrderNumberLock($conn, $orderNumberLock);
+    $orderNumberLock = null;
 
     $_SESSION['alert'] = "
         <div class='alert alert-danger p-2 small'>

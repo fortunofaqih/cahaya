@@ -12,14 +12,33 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
-// Fungsi generate nomor SO otomatis saat halaman dibuka
+/*
+ * Nomor SO yang ditampilkan pada halaman ini hanya preview.
+ * Nomor final akan ditentukan kembali secara aman di save_sales_order.php
+ * menggunakan database lock agar dua user tidak memperoleh nomor yang sama.
+ */
 function generateOrderNo($conn) {
-    $year  = date('Y');
-    $month = date('m');
-    $query = mysqli_query($conn, "SELECT order_no FROM head_sales_order WHERE order_no LIKE 'SO.$year%' ORDER BY order_no DESC LIMIT 1");
-    $row   = mysqli_fetch_assoc($query);
-    $next_num = $row ? (intval(substr($row['order_no'], -5)) + 1) : 1;
-    return "SO.$year" . "FC" . $month . "." . str_pad($next_num, 5, '0', STR_PAD_LEFT);
+    $year   = date('Y');
+    $month  = date('m');
+    $prefix = "SO.{$year}FC{$month}.";
+
+    $prefixSafe = mysqli_real_escape_string($conn, $prefix);
+
+    $query = mysqli_query(
+        $conn,
+        "SELECT order_no
+         FROM head_sales_order
+         WHERE order_no LIKE '{$prefixSafe}%'
+         ORDER BY CAST(RIGHT(order_no, 5) AS UNSIGNED) DESC
+         LIMIT 1"
+    );
+
+    $row = $query ? mysqli_fetch_assoc($query) : null;
+    $nextNum = $row
+        ? ((int)substr((string)$row['order_no'], -5) + 1)
+        : 1;
+
+    return $prefix . str_pad((string)$nextNum, 5, '0', STR_PAD_LEFT);
 }
 
 // Fungsi generate nomor PO otomatis
@@ -465,7 +484,15 @@ $no_po     = generatePONumber($conn, $tahun);
                 <div class="so-panel-body">
                     <div class="ff">
                         <label>Order No</label>
-                        <input type="text" name="order_no" value="<?= htmlspecialchars($order_no) ?>" readonly style="font-weight:bold; color:var(--accent-blue);">
+                        <input type="text"
+                               name="order_no"
+                               id="order_no"
+                               value="<?= htmlspecialchars($order_no) ?>"
+                               readonly
+                               style="font-weight:bold; color:var(--accent-blue);">
+                        <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">
+                            Nomor ini adalah preview. Sistem akan mengecek dan menetapkan nomor final saat Save.
+                        </small>
                     </div>
                     <div class="ff">
                         <label>Order Date</label>

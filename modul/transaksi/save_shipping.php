@@ -401,11 +401,169 @@ function calculateAutoCorrectShippingQty(
         'qty_pack_shipping' => $totalQtyDefault / $packFactor,
     ];
 }
+
+/**
+ * Membuat nama MySQL advisory lock dengan panjang maksimal 64 karakter.
+ *
+ * Format:
+ * shipping_auto_<hash>
+ * shipping_manual_<hash>
+ */
+function createShippingLockName(string $mode, string $value): string
+{
+    $mode = strtolower(trim($mode));
+
+    if (!in_array($mode, ['auto', 'manual'], true)) {
+        $mode = 'general';
+    }
+
+    $prefix = 'shipping_' . $mode . '_';
+
+    /*
+     * MySQL membatasi nama user-level lock maksimal 64 karakter.
+     * Karena panjang prefix berbeda-beda, panjang hash disesuaikan otomatis.
+     */
+    $availableHashLength = 64 - strlen($prefix);
+
+    if ($availableHashLength <= 0) {
+        throw new RuntimeException('Prefix nama lock terlalu panjang.');
+    }
+
+    return $prefix . substr(
+        hash('sha256', $value),
+        0,
+        $availableHashLength
+    );
+}
+
+/**
+ * Mengambil MySQL advisory lock.
+ */
+function acquireShippingLock(mysqli $conn, string $lockName, int $timeout = 15): void
+{
+    $stmt = mysqli_prepare($conn, 'SELECT GET_LOCK(?, ?) AS lock_status');
+    mysqli_stmt_bind_param($stmt, 'si', $lockName, $timeout);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+
+    if ((int)($row['lock_status'] ?? 0) !== 1) {
+        throw new RuntimeException(
+            'Sistem sedang memproses nomor Shipping lain. Silakan klik Save kembali.'
+        );
+    }
+}
+
+function releaseShippingLock(mysqli $conn, ?string $lockName): void
+{
+    if (!$lockName) {
+        return;
+    }
+
+    $stmt = mysqli_prepare($conn, 'SELECT RELEASE_LOCK(?)');
+    if ($stmt) {
+        mysqli_stmt_bind_param($stmt, 's', $lockName);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+    }
+}
+
+/**
+ * Memecah nomor preview menjadi prefix dan angka terakhir.
+ *
+ * Contoh:
+ * SJ.2026.00123 => prefix SJ.2026. dan angka 00123
+ * 000123        => prefix kosong dan angka 000123
+ */
+function parseShippingNumberPattern(string $shippingNo): array
+{
+    $shippingNo = strtoupper(trim($shippingNo));
+
+    if (!preg_match('/^(.*?)(\d+)$/', $shippingNo, $matches)) {
+        throw new RuntimeException(
+            'Format Shipping No otomatis harus diakhiri angka.'
+        );
+    }
+
+    return [
+        'prefix' => $matches[1],
+        'number' => (int)$matches[2],
+        'width'  => strlen($matches[2]),
+    ];
+}
+
+/**
+ * Membuat nomor Shipping final berdasarkan pola nomor preview.
+ *
+ * Nomor preview hanya dipakai untuk mengetahui prefix dan panjang digit.
+ * Nomor urut sebenarnya selalu dibaca ulang dari database.
+ */
+function generateFinalShippingNo(mysqli $conn, string $previewNo): string
+{
+    $pattern = parseShippingNumberPattern($previewNo);
+    $prefix = $pattern['prefix'];
+    $width = $pattern['width'];
+
+    $likePattern = $prefix . '%';
+
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT shipping_no
+         FROM hed_shipping
+         WHERE shipping_no LIKE ?
+         ORDER BY CAST(RIGHT(shipping_no, ?) AS UNSIGNED) DESC
+         LIMIT 1
+         FOR UPDATE"
+    );
+
+    mysqli_stmt_bind_param($stmt, 'si', $likePattern, $width);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+    $row = mysqli_fetch_assoc($result);
+    mysqli_stmt_close($stmt);
+
+    $nextNumber = 1;
+
+    if ($row && isset($row['shipping_no'])) {
+        $lastPattern = parseShippingNumberPattern((string)$row['shipping_no']);
+
+        if ($lastPattern['prefix'] === $prefix) {
+            $nextNumber = $lastPattern['number'] + 1;
+        }
+    }
+
+    return $prefix . str_pad(
+        (string)$nextNumber,
+        $width,
+        '0',
+        STR_PAD_LEFT
+    );
+}
+
+function shippingNoExists(mysqli $conn, string $shippingNo): bool
+{
+    $stmt = mysqli_prepare(
+        $conn,
+        'SELECT shipping_no FROM hed_shipping WHERE shipping_no = ? LIMIT 1'
+    );
+    mysqli_stmt_bind_param($stmt, 's', $shippingNo);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_store_result($stmt);
+    $exists = mysqli_stmt_num_rows($stmt) > 0;
+    mysqli_stmt_close($stmt);
+
+    return $exists;
+}
+
 try {
     $username = $_SESSION['username'];
 
     // Header
-    $shipping_no = strtoupper(postValue('shipping_no'));
+    $shipping_no_preview = strtoupper(postValue('shipping_no'));
+    $shipping_no = $shipping_no_preview;
+    $auto_generate_shipping_no =
+        postValue('auto_generate_shipping_no') === '1';
     $shipping_date = toDbDate(postValue('shipping_date'));
     $nota_date = toDbDate(postValue('nota_date'));
     $order_no = postValue('order_no');
@@ -429,7 +587,7 @@ try {
     $uom_detail_shipping_jsons = postArray('uom_detail_shipping_json');
     $remarks_inventory_shippings = postArray('remarks_inventory_shipping');
 
-    if ($shipping_no === '') {
+    if ($shipping_no_preview === '') {
         failAndBack('Shipping No tidak boleh kosong!');
     }
 
@@ -541,20 +699,55 @@ try {
         failAndBack("Gudang $gudang_id tidak ditemukan.");
     }
 
+    $shippingNumberLock = null;
+
     mysqli_begin_transaction($conn);
 
-    // Validasi duplicate shipping_no di server side
-    $stmtCheck = mysqli_prepare($conn, "SELECT shipping_no FROM hed_shipping WHERE shipping_no = ? LIMIT 1");
-    mysqli_stmt_bind_param($stmtCheck, 's', $shipping_no);
-    mysqli_stmt_execute($stmtCheck);
-    mysqli_stmt_store_result($stmtCheck);
+    /*
+     * MODE AUTO:
+     * Nomor dari browser hanya preview. Lock dibuat berdasarkan prefix,
+     * kemudian nomor terakhir dibaca ulang dari database.
+     *
+     * MODE MANUAL:
+     * Lock dibuat berdasarkan nomor manual yang diketik. Setelah lock
+     * didapat, sistem mengecek ulang apakah nomor sudah dipakai.
+     */
+    if ($auto_generate_shipping_no) {
+        $pattern = parseShippingNumberPattern($shipping_no_preview);
 
-    if (mysqli_stmt_num_rows($stmtCheck) > 0) {
-        mysqli_stmt_close($stmtCheck);
-        mysqli_rollback($conn);
-        failAndBack("Shipping No $shipping_no sudah ada! Gunakan nomor yang berbeda.");
+        $shippingNumberLock = createShippingLockName(
+            'auto',
+            $pattern['prefix'] . '|' . $pattern['width']
+        );
+
+        acquireShippingLock($conn, $shippingNumberLock);
+        $shipping_no = generateFinalShippingNo(
+            $conn,
+            $shipping_no_preview
+        );
+    } else {
+        $shipping_no = strtoupper(trim($shipping_no_preview));
+
+        $shippingNumberLock = createShippingLockName(
+            'manual',
+            $shipping_no
+        );
+
+        acquireShippingLock($conn, $shippingNumberLock);
+
+        if (shippingNoExists($conn, $shipping_no)) {
+            throw new RuntimeException(
+                "Shipping No $shipping_no sudah ada! Gunakan nomor yang berbeda."
+            );
+        }
     }
-    mysqli_stmt_close($stmtCheck);
+
+    // Perlindungan tambahan sebelum INSERT.
+    if (shippingNoExists($conn, $shipping_no)) {
+        throw new RuntimeException(
+            "Shipping No $shipping_no sudah ada! Gunakan nomor yang berbeda."
+        );
+    }
 
     // Insert header. Field transporter, driver, truck, shipment_location tidak diisi karena sudah dihilangkan dari add_shipping.php.
     $stmtHeader = mysqli_prepare($conn, "
@@ -912,6 +1105,9 @@ try {
     }
 
     mysqli_commit($conn);
+    releaseShippingLock($conn, $shippingNumberLock ?? null);
+    $shippingNumberLock = null;
+
     successRedirect("Shipping $shipping_no berhasil disimpan! ($inserted_count item)");
 
 } catch (Throwable $e) {
@@ -920,6 +1116,12 @@ try {
             mysqli_rollback($conn);
         } catch (Throwable $rollbackError) {
             // Abaikan jika transaksi belum aktif.
+        }
+
+        try {
+            releaseShippingLock($conn, $shippingNumberLock ?? null);
+        } catch (Throwable $lockReleaseError) {
+            // Abaikan jika lock belum pernah diperoleh.
         }
     }
 

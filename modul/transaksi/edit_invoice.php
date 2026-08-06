@@ -311,7 +311,7 @@ mysqli_stmt_close($stmtShip);
 <div class="wrap">
     <?php if (isset($_SESSION['alert'])): ?><?= $_SESSION['alert']; unset($_SESSION['alert']); ?><?php endif; ?>
 
-    <form method="POST">
+    <form method="POST" action="update_invoice.php" id="formEditInvoice">
         <input type="hidden" name="update_invoice" value="1">
         <input type="hidden" name="invoice_no" value="<?= h($invoiceNo) ?>">
         <div class="card shadow-sm mb-3">

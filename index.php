@@ -55,11 +55,11 @@ switch ($page) {
             ";
         }
         
-        echo "
+       echo "
         <div class='d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom'>
             <h1 class='h4'>Dashboard Utama</h1>
         </div>
-        <div class='alert alert-info'>Selamat Datang kembali, <b>".htmlspecialchars($_SESSION['username'])."</b>! Selamat Bekerja <b>".htmlspecialchars($_SESSION['nama_role'])."</b>.</div>
+        <div class='alert alert-info'>Selamat Datang kembali, <b>".htmlspecialchars($_SESSION['username'] ?? '')."</b>! Selamat Bekerja, anda terdaftar sebagai petugas <b>".htmlspecialchars($_SESSION['nama_role'] ?? '')."</b>.</div>
         ";
         break;
 
@@ -153,7 +153,7 @@ switch ($page) {
     case 'cetak_rekap_sales_order':
         include 'modul/transaksi/cetak_rekap_sales_order.php';
         break;
-    case 'kartu_stok_order_customer':
+	 case 'kartu_stok_order_customer':
         include 'modul/transaksi/kartu_stok_order_customer.php';
         break;
     case 'cetak_kartu_stok_order_customer':
@@ -174,22 +174,25 @@ switch ($page) {
     case 'cetak_invoice':
         include 'modul/transaksi/cetak_invoice.php';
         break;
-    case 'cetak_invoice_full':
+	case 'cetak_invoice_full':
         include 'modul/transaksi/cetak_invoice_full.php';
         break;
     case 'edit_invoice':
         include 'modul/transaksi/edit_invoice.php';
         break;
+	 case 'update_invoice':
+        include 'modul/transaksi/update_invoice.php';
+        break;
     case 'delete_invoice':
         include 'modul/transaksi/delete_invoice.php';
         break;
-    case 'cetak_slip_shipping':
+	 case 'cetak_slip_shipping':
         include 'modul/transaksi/cetak_slip_shipping.php';
         break;
     case 'cetak_slip_without_uom_default':
         include 'modul/transaksi/cetak_slip_without_uom_default.php';
         break;
-    case 'kartu_piutang':
+	case 'kartu_piutang':
         include 'modul/transaksi/kartu_piutang.php';
         break;
     case 'cetak_kartu_piutang':
@@ -201,11 +204,11 @@ switch ($page) {
     case 'add_bayar':
         include 'modul/transaksi/add_bayar.php';
         break;
-    
     case 'edit_bayar':
         include 'modul/transaksi/edit_bayar.php';
         break;
-    case 'titip_uang':
+	 
+	case 'titip_uang':
         include 'modul/transaksi/titip_uang.php';
         break;
     case 'add_titip':
@@ -217,7 +220,7 @@ switch ($page) {
     case 'detail_titip':
         include 'modul/transaksi/detail_titip.php';
         break;
-    case 'aging_piutang':
+	case 'aging_piutang':
         include 'modul/transaksi/aging_piutang.php';
         break;
     case 'cetak_aging_piutang_global':
@@ -226,8 +229,7 @@ switch ($page) {
     case 'cetak_aging_piutang_detail':
         include 'modul/transaksi/cetak_aging_piutang_detail.php';
         break;
-        
-    case 'return_invoice':
+	    case 'return_invoice':
         include 'modul/transaksi/return_invoice.php';
         break;
     case 'add_return':
@@ -260,12 +262,13 @@ switch ($page) {
     case 'print_return':
         include 'modul/transaksi/print_return.php';
         break;
-    case 'register_penjualan_global':
+	case 'register_penjualan_global':
         include 'modul/transaksi/register_penjualan_global.php';
         break;
     case 'cetak_register_penjualan_global':
         include 'modul/transaksi/cetak_register_penjualan_global.php';
         break;
+        
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';
