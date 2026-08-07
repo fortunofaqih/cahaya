@@ -58,6 +58,7 @@ function convertFilterDateToMysql($date) {
         'Jul' => '07',
         'Aug' => '08',
         'Agu' => '08',
+        'Ags' => '08',
         'Sep' => '09',
         'Oct' => '10',
         'Okt' => '10',
@@ -393,7 +394,16 @@ while ($row = mysqli_fetch_assoc($query)) {
 
         .customer-section {
             margin-bottom: 10px;
+            page-break-inside: auto;
+            break-inside: auto;
+        }
+
+        /* Jaga satu Sales Order tetap rapi saat memungkinkan.
+           Berbeda dengan customer-section, ini tidak memindahkan
+           seluruh customer ke halaman baru sehingga lebih hemat kertas. */
+        .order-block {
             page-break-inside: avoid;
+            break-inside: avoid-page;
         }
 
         .customer-header {
@@ -546,7 +556,30 @@ while ($row = mysqli_fetch_assoc($query)) {
             }
 
             .customer-section {
+                page-break-inside: auto;
+                break-inside: auto;
+            }
+
+            .order-block {
                 page-break-inside: avoid;
+                break-inside: avoid-page;
+            }
+
+            /* Jangan potong satu baris item di tengah pergantian halaman. */
+            .rekap-table tr,
+            .order-info tr {
+                page-break-inside: avoid;
+                break-inside: avoid-page;
+            }
+
+            /* Jika tabel memang harus lanjut ke halaman berikutnya,
+               header kolom akan dicetak ulang. */
+            .rekap-table thead {
+                display: table-header-group;
+            }
+
+            .rekap-table tfoot {
+                display: table-footer-group;
             }
 
             @page {
@@ -626,6 +659,7 @@ while ($row = mysqli_fetch_assoc($query)) {
 
                 <?php foreach ($customer['orders'] as $order): ?>
 
+                    <div class="order-block">
                     <table class="order-info">
                         <tr>
                             <td style="width: 25%;">
@@ -807,6 +841,7 @@ while ($row = mysqli_fetch_assoc($query)) {
                         </tr>
                         </tbody>
                     </table>
+                    </div>
 
                 <?php endforeach; ?>
             </div>

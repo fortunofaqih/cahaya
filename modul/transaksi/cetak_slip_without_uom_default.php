@@ -141,28 +141,52 @@ function getItemNameWithRemarks($detail) {
 }
 
 // Pecah nama barang panjang menjadi beberapa baris.
-function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 3) {
-    $text = trim((string)$text);
+// Tidak memakai ellipsis (...). Teks akan diteruskan ke baris berikutnya.
+function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 4) {
+    $text = preg_replace('/\s+/', ' ', trim((string)$text));
 
     if ($text === '') {
         return [''];
     }
 
-    // Estimasi lebar karakter font Courier New bold.
-    $charWidthMm = $fontPt * 0.6 * 0.3528;
+    // Estimasi lebar karakter untuk area cetak.
+    // Nilai 0.50 dibuat sedikit lebih longgar agar teks tidak terlalu cepat turun baris.
+    $charWidthMm = $fontPt * 0.50 * 0.3528;
     $maxChars = max(1, (int)floor($maxWidthMm / $charWidthMm));
 
-    $wrapped = wordwrap($text, $maxChars, "\n", true);
+    // false = jangan memotong kata normal di tengah.
+    // Jika ada satu token sangat panjang tanpa spasi, baru dipecah manual di bawah.
+    $wrapped = wordwrap($text, $maxChars, "\n", false);
     $lines = explode("\n", $wrapped);
 
-    if (count($lines) > $maxLines) {
-        $lines = array_slice($lines, 0, $maxLines);
-        $lastIdx = $maxLines - 1;
-        $cut = max(0, $maxChars - 3);
-        $lines[$lastIdx] = mb_substr($lines[$lastIdx], 0, $cut) . '...';
+    $result = [];
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+
+        if ($line === '') {
+            continue;
+        }
+
+        // Antisipasi kode/nama tanpa spasi yang lebih panjang dari area kolom.
+        while (mb_strlen($line) > $maxChars) {
+            $result[] = mb_substr($line, 0, $maxChars);
+            $line = mb_substr($line, $maxChars);
+        }
+
+        if ($line !== '') {
+            $result[] = $line;
+        }
     }
 
-    return $lines;
+    if (empty($result)) {
+        $result[] = '';
+    }
+
+    // Batas maksimal mengikuti kapasitas fisik nota.
+    // Tidak menambahkan "..."; jika lebih panjang, mekanisme $maxRowSlots
+    // tetap mencegah item berikutnya menabrak area bawah nota.
+    return array_slice($result, 0, $maxLines);
 }
 
 function normalizeUomName($uom) {
@@ -594,9 +618,13 @@ $maxRowSlots = 10;
         .name-col {
             left: 70mm;
             width: 70mm;
-            overflow: hidden;
+            overflow: visible;
             text-align: left;
-            text-overflow: ellipsis;
+            white-space: normal !important;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            word-break: normal;
+            text-overflow: clip;
         }
 
         .remarks-shipping-field {
@@ -730,7 +758,7 @@ $maxRowSlots = 10;
 
     foreach ($details as $detail):
         $itemName = getItemNameWithRemarks($detail);
-        $nameLines = wrapItemName($itemName, 70, 11, 3);
+        $nameLines = wrapItemName($itemName, 70, 11, 4);
         $lineCount = count($nameLines);
 
         if ($usedSlots + $lineCount > $maxRowSlots) {
