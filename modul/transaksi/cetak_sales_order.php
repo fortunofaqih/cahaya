@@ -426,7 +426,7 @@ for ($i = 0; $i < $total_rows; $i++) {
             </div>
             <div class="sig-box-right">
                 <p>Dibuat Oleh :</p>
-                <div>( <?= strtoupper(htmlspecialchars($h['created_by'])); ?> )</div>
+                <div>( <?= strtoupper(htmlspecialchars($h['create_user'])); ?> )</div>
             </div>
         </div>
     </div>
