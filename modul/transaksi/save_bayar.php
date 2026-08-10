@@ -165,6 +165,13 @@ function applyTitipUsage(
         ";
 
         $stmtDetailTitip = mysqli_prepare($conn, $sqlDetailTitip);
+
+        if (!$stmtDetailTitip) {
+            throw new Exception(
+                'Gagal prepare INSERT detail_titip: ' . mysqli_error($conn)
+            );
+        }
+
         mysqli_stmt_bind_param(
             $stmtDetailTitip,
             'sssssddss',
@@ -197,6 +204,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $shippingNo = trim((string)($_POST['shipping_no'] ?? ''));
 $postedInvoiceNo = trim((string)($_POST['invoice_no'] ?? ''));
+$returnId = trim((string)($_POST['return_id'] ?? ''));
 $bayarDate = parseDateInput($_POST['bayar_date'] ?? '');
 $nominalBayar = parseNumber($_POST['nominal_bayar'] ?? 0);
 $pakaiTitip = isset($_POST['pakai_titip']) && (string)$_POST['pakai_titip'] === '1';
@@ -211,7 +219,7 @@ if (
     $shippingNo === '' ||
     $postedInvoiceNo === '' ||
     !$bayarDate ||
-    $totalBayarShipping <= 0 ||
+    ($totalBayarShipping <= 0 && $returnId === '') ||
     $keterangan === ''
 ) {
     redirectWithAlert('error', 'Data pembayaran belum lengkap.', 'add_bayar');
@@ -289,14 +297,81 @@ try {
     mysqli_stmt_close($stmtPaidShipping);
 
     $paidShipping = (float)($rowPaidShipping['paid_amount'] ?? 0);
-    $sisaShipping = $shippingAmount - $paidShipping;
 
-    if ($sisaShipping <= 0.0001) {
-        throw new Exception('No. Shipping ' . $shippingNo . ' sudah lunas.');
+    /*
+     * Jika No. Retur dipilih, validasi bahwa retur tersebut benar-benar
+     * milik pasangan invoice_no + shipping_no dan tidak Cancelled.
+     */
+    $selectedReturnAmount = 0.0;
+
+    if ($returnId !== '') {
+        $sqlReturnSelected = "
+            SELECT
+                return_id,
+                return_amount
+            FROM head_retur_invoice
+            WHERE return_id = ?
+              AND invoice_no = ?
+              AND shipping_no = ?
+              AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+            LIMIT 1
+            FOR UPDATE
+        ";
+
+        $stmtReturnSelected = mysqli_prepare($conn, $sqlReturnSelected);
+        mysqli_stmt_bind_param(
+            $stmtReturnSelected,
+            'sss',
+            $returnId,
+            $invoiceNo,
+            $shippingNo
+        );
+        mysqli_stmt_execute($stmtReturnSelected);
+        $resReturnSelected = mysqli_stmt_get_result($stmtReturnSelected);
+        $selectedReturn = mysqli_fetch_assoc($resReturnSelected);
+        mysqli_stmt_close($stmtReturnSelected);
+
+        if (!$selectedReturn) {
+            throw new Exception(
+                'No. Retur tidak ditemukan atau tidak sesuai dengan Invoice / Shipping yang dipilih.'
+            );
+        }
+
+        $selectedReturnAmount =
+            (float)($selectedReturn['return_amount'] ?? 0);
     }
 
-    if ($totalBayarShipping > ($sisaShipping + 0.0001)) {
-        throw new Exception('Total bayar melebihi sisa tagihan Shipping No. ' . $shippingNo . '.');
+    /*
+     * Retur TIDAK mengurangi batas maksimum pembayaran.
+     * Pembayaran dan Retur sengaja dipisah agar bisa dicross-check
+     * di Kartu Piutang / Aging.
+     *
+     * Sisa sisi pembayaran = Shipping - pembayaran sebelumnya.
+     */
+    $sisaShipping = max(
+        $shippingAmount - $paidShipping,
+        0
+    );
+
+    if (
+        $totalBayarShipping > ($sisaShipping + 0.0001)
+    ) {
+        throw new Exception(
+            'Total bayar melebihi sisa Shipping dari sisi pembayaran. Sisa: Rp ' .
+            number_format($sisaShipping, 2, ',', '.')
+        );
+    }
+
+    /*
+     * Pembayaran Rp 0,00 hanya sah jika No. Retur dipilih.
+     */
+    if (
+        $totalBayarShipping <= 0.0001 &&
+        $returnId === ''
+    ) {
+        throw new Exception(
+            'Pembayaran Rp 0,00 hanya dapat disimpan jika No. Retur dipilih.'
+        );
     }
 
     $customerId = $shipping['customer_id'];
@@ -350,6 +425,13 @@ try {
     ";
 
     $stmtHead = mysqli_prepare($conn, $sqlHead);
+
+    if (!$stmtHead) {
+        throw new Exception(
+            'Gagal prepare INSERT head_bayar: ' . mysqli_error($conn)
+        );
+    }
+
     mysqli_stmt_bind_param(
         $stmtHead,
         'ssssssdssss',
@@ -374,6 +456,7 @@ try {
             bayar_no,
             invoice_no,
             shipping_no,
+            return_id,
             invoice_date,
             invoice_amount,
             cash_amount,
@@ -384,16 +467,24 @@ try {
             create_user,
             date_created
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     ";
 
     $stmtDetail = mysqli_prepare($conn, $sqlDetail);
+
+    if (!$stmtDetail) {
+        throw new Exception(
+            'Gagal prepare INSERT detail_bayar: ' . mysqli_error($conn)
+        );
+    }
+
     mysqli_stmt_bind_param(
         $stmtDetail,
-        'ssssdddddss',
+        'sssssdddddss',
         $bayarNo,
         $invoiceNo,
         $shippingNo,
+        $returnId,
         $shipping['invoice_date'],
         $shippingAmount,
         $nominalBayar,
@@ -432,15 +523,29 @@ try {
                 FROM det_invoice di
                 WHERE di.invoice_no = ?
             ), 0) AS invoice_amount,
+
             COALESCE((
                 SELECT SUM(db.bayar_amount)
                 FROM detail_bayar db
                 WHERE db.invoice_no = ?
-            ), 0) AS paid_amount
+            ), 0) AS paid_amount,
+
+            COALESCE((
+                SELECT SUM(hri.return_amount)
+                FROM head_retur_invoice hri
+                WHERE hri.invoice_no = ?
+                  AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+            ), 0) AS return_amount
     ";
 
     $stmtInvoiceBalance = mysqli_prepare($conn, $sqlInvoiceBalance);
-    mysqli_stmt_bind_param($stmtInvoiceBalance, 'ss', $invoiceNo, $invoiceNo);
+    mysqli_stmt_bind_param(
+        $stmtInvoiceBalance,
+        'sss',
+        $invoiceNo,
+        $invoiceNo,
+        $invoiceNo
+    );
     mysqli_stmt_execute($stmtInvoiceBalance);
     $resultInvoiceBalance = mysqli_stmt_get_result($stmtInvoiceBalance);
     $rowInvoiceBalance = mysqli_fetch_assoc($resultInvoiceBalance);
@@ -448,9 +553,25 @@ try {
 
     $invoiceAmount = (float)($rowInvoiceBalance['invoice_amount'] ?? 0);
     $invoicePaid = (float)($rowInvoiceBalance['paid_amount'] ?? 0);
-    $invoiceBalance = max($invoiceAmount - $invoicePaid, 0);
+    $invoiceRetur = (float)($rowInvoiceBalance['return_amount'] ?? 0);
 
-    $newStatus = $invoiceBalance <= 0.0001 ? 'Paid' : 'Partial';
+    /*
+     * Saldo invoice setelah retur aktif dan seluruh pembayaran.
+     */
+    $invoiceBalance = max(
+        $invoiceAmount
+        - $invoiceRetur
+        - $invoicePaid,
+        0
+    );
+
+    if ($invoiceBalance <= 0.0001) {
+        $newStatus = 'Paid';
+    } elseif ($invoicePaid > 0.0001 || $invoiceRetur > 0.0001) {
+        $newStatus = 'Partial';
+    } else {
+        $newStatus = 'Open';
+    }
 
     $sqlUpdateInvoice = "
         UPDATE head_invoice
@@ -478,7 +599,11 @@ try {
 
     redirectWithAlert(
         'success',
-        'Pembayaran Shipping No. ' . $shippingNo . ' berhasil disimpan dengan No. Bayar ' . $bayarNo . '.',
+        'Pembayaran Shipping No. ' . $shippingNo .
+        ' berhasil disimpan dengan No. Bayar ' . $bayarNo .
+        ($returnId !== ''
+            ? ' dan terhubung ke Retur ' . $returnId . '.'
+            : '.'),
         'pembayaran'
     );
 } catch (Throwable $e) {

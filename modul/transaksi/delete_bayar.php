@@ -1,5 +1,11 @@
 <?php
 // modul/transaksi/delete_bayar.php
+// REVISI RETUR:
+// 1. rollback penggunaan titip jika pembayaran dihapus.
+// 2. hapus detail_bayar lalu head_bayar.
+// 3. saldo invoice dihitung ulang:
+//    total invoice - retur aktif - pembayaran tersisa.
+// 4. retur Cancelled tidak dihitung.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -14,21 +20,38 @@ include __DIR__ . '/../../koneksi.php';
 
 function redirectWithAlert($type, $message) {
     $_SESSION['alert'] = "
-        <div style='padding:10px;margin-bottom:10px;border-radius:4px;background:" . ($type === 'success' ? '#d1e7dd' : '#f8d7da') . ";color:" . ($type === 'success' ? '#0f5132' : '#842029') . ";border:1px solid " . ($type === 'success' ? '#badbcc' : '#f5c2c7') . ";'>
-            " . htmlspecialchars($message, ENT_QUOTES, 'UTF-8') . "
-        </div>
+        <div style='padding:10px;margin-bottom:10px;border-radius:4px;background:" .
+        ($type === 'success' ? '#d1e7dd' : '#f8d7da') .
+        ";color:" .
+        ($type === 'success' ? '#0f5132' : '#842029') .
+        ";border:1px solid " .
+        ($type === 'success' ? '#badbcc' : '#f5c2c7') .
+        ";'>" .
+        htmlspecialchars($message, ENT_QUOTES, 'UTF-8') .
+        "</div>
     ";
+
     header("Location: ../../index.php?page=pembayaran");
     exit;
 }
+
 function rollbackTitipUsage($conn, $bayar_no, $username) {
     $sqlOldUsage = "
         SELECT titip_no, amount_out
         FROM detail_titip
         WHERE transaction_type = 'PAKAI'
           AND ref_no = ?
+        FOR UPDATE
     ";
+
     $stmtOldUsage = mysqli_prepare($conn, $sqlOldUsage);
+
+    if (!$stmtOldUsage) {
+        throw new Exception(
+            'Gagal prepare rollback titip: ' . mysqli_error($conn)
+        );
+    }
+
     mysqli_stmt_bind_param($stmtOldUsage, 's', $bayar_no);
     mysqli_stmt_execute($stmtOldUsage);
     $resOldUsage = mysqli_stmt_get_result($stmtOldUsage);
@@ -40,15 +63,25 @@ function rollbackTitipUsage($conn, $bayar_no, $username) {
         $sqlReturn = "
             UPDATE head_titip
             SET
-                used_amount = GREATEST(used_amount - ?, 0),
-                balance_amount = balance_amount + ?,
+                used_amount = GREATEST(COALESCE(used_amount, 0) - ?, 0),
+                balance_amount = COALESCE(balance_amount, 0) + ?,
                 status = 'Open',
                 user_modified = ?,
                 date_modified = NOW()
             WHERE titip_no = ?
         ";
+
         $stmtReturn = mysqli_prepare($conn, $sqlReturn);
-        mysqli_stmt_bind_param($stmtReturn, 'ddss', $amount_out, $amount_out, $username, $titip_no);
+
+        mysqli_stmt_bind_param(
+            $stmtReturn,
+            'ddss',
+            $amount_out,
+            $amount_out,
+            $username,
+            $titip_no
+        );
+
         mysqli_stmt_execute($stmtReturn);
         mysqli_stmt_close($stmtReturn);
     }
@@ -60,6 +93,7 @@ function rollbackTitipUsage($conn, $bayar_no, $username) {
         WHERE transaction_type = 'PAKAI'
           AND ref_no = ?
     ";
+
     $stmtDeleteUsage = mysqli_prepare($conn, $sqlDeleteUsage);
     mysqli_stmt_bind_param($stmtDeleteUsage, 's', $bayar_no);
     mysqli_stmt_execute($stmtDeleteUsage);
@@ -76,12 +110,19 @@ if ($bayar_no === '') {
 mysqli_begin_transaction($conn);
 
 try {
+    /*
+     * Ambil invoice + shipping sebelum data pembayaran dihapus.
+     */
     $sqlOld = "
-        SELECT invoice_no
+        SELECT
+            invoice_no,
+            shipping_no
         FROM detail_bayar
         WHERE bayar_no = ?
         LIMIT 1
+        FOR UPDATE
     ";
+
     $stmtOld = mysqli_prepare($conn, $sqlOld);
     mysqli_stmt_bind_param($stmtOld, 's', $bayar_no);
     mysqli_stmt_execute($stmtOld);
@@ -93,79 +134,148 @@ try {
         throw new Exception('Data pembayaran tidak ditemukan.');
     }
 
-    $invoice_no = $old['invoice_no'];
-    rollbackTitipUsage($conn, $bayar_no, $username);
-    $sqlDelete = "DELETE FROM head_bayar WHERE bayar_no = ?";
-    $stmtDelete = mysqli_prepare($conn, $sqlDelete);
-    mysqli_stmt_bind_param($stmtDelete, 's', $bayar_no);
-    mysqli_stmt_execute($stmtDelete);
-    mysqli_stmt_close($stmtDelete);
+    $invoice_no = trim((string)$old['invoice_no']);
+    $shipping_no = trim((string)($old['shipping_no'] ?? ''));
 
-    $sqlInv = "
-        SELECT
-            invoice_no,
-            CASE
-            WHEN COALESCE(piutang, 0) > 0 THEN COALESCE(piutang, 0)
-            WHEN COALESCE(grand_total, 0) > 0 THEN COALESCE(grand_total, 0)
-            ELSE COALESCE(subtotal, 0)
-        END AS invoice_amount
-        FROM head_invoice
-        WHERE invoice_no = ?
-        LIMIT 1
+    /*
+     * Kembalikan semua titip yang dipakai oleh No. Bayar ini.
+     */
+    rollbackTitipUsage(
+        $conn,
+        $bayar_no,
+        $username
+    );
+
+    /*
+     * Hapus detail lebih dulu agar tidak bergantung pada FK cascade.
+     */
+    $sqlDeleteDetail = "
+        DELETE FROM detail_bayar
+        WHERE bayar_no = ?
     ";
-    $stmtInv = mysqli_prepare($conn, $sqlInv);
-    mysqli_stmt_bind_param($stmtInv, 's', $invoice_no);
-    mysqli_stmt_execute($stmtInv);
-    $resInv = mysqli_stmt_get_result($stmtInv);
-    $inv = mysqli_fetch_assoc($resInv);
-    mysqli_stmt_close($stmtInv);
 
-    if ($inv) {
-        $invoice_amount = (float)$inv['invoice_amount'];
+    $stmtDeleteDetail = mysqli_prepare($conn, $sqlDeleteDetail);
+    mysqli_stmt_bind_param($stmtDeleteDetail, 's', $bayar_no);
+    mysqli_stmt_execute($stmtDeleteDetail);
+    mysqli_stmt_close($stmtDeleteDetail);
 
-        $sqlPaid = "
-            SELECT COALESCE(SUM(bayar_amount), 0) AS paid_amount
-            FROM detail_bayar
-            WHERE invoice_no = ?
-        ";
-        $stmtPaid = mysqli_prepare($conn, $sqlPaid);
-        mysqli_stmt_bind_param($stmtPaid, 's', $invoice_no);
-        mysqli_stmt_execute($stmtPaid);
-        $resPaid = mysqli_stmt_get_result($stmtPaid);
-        $paid = mysqli_fetch_assoc($resPaid);
-        mysqli_stmt_close($stmtPaid);
+    /*
+     * Hapus header.
+     */
+    $sqlDeleteHead = "
+        DELETE FROM head_bayar
+        WHERE bayar_no = ?
+    ";
 
-        $paid_amount = (float)($paid['paid_amount'] ?? 0);
-        $payment_balance = $invoice_amount - $paid_amount;
+    $stmtDeleteHead = mysqli_prepare($conn, $sqlDeleteHead);
+    mysqli_stmt_bind_param($stmtDeleteHead, 's', $bayar_no);
+    mysqli_stmt_execute($stmtDeleteHead);
+    mysqli_stmt_close($stmtDeleteHead);
 
-        if ($paid_amount <= 0) {
-            $status = 'Open';
-        } elseif ($payment_balance <= 0) {
-            $status = 'Paid';
-        } else {
-            $status = 'Partial';
-        }
+    /*
+     * Hitung ulang posisi invoice:
+     * total invoice - retur aktif - pembayaran yang masih tersimpan.
+     */
+    $sqlInvoiceBalance = "
+        SELECT
+            COALESCE((
+                SELECT SUM(
+                    CASE
+                        WHEN COALESCE(di.total, 0) > 0
+                            THEN COALESCE(di.total, 0)
+                        ELSE COALESCE(di.subtotal, 0)
+                    END
+                )
+                FROM det_invoice di
+                WHERE di.invoice_no = ?
+            ), 0) AS invoice_amount,
 
-        $sqlUpdateInv = "
-            UPDATE head_invoice
-            SET
-                payment_balance = ?,
-                status = ?,
-                user_modified = ?,
-                date_modified = NOW()
-            WHERE invoice_no = ?
-        ";
-        $stmtUpdateInv = mysqli_prepare($conn, $sqlUpdateInv);
-        mysqli_stmt_bind_param($stmtUpdateInv, 'dsss', $payment_balance, $status, $username, $invoice_no);
-        mysqli_stmt_execute($stmtUpdateInv);
-        mysqli_stmt_close($stmtUpdateInv);
+            COALESCE((
+                SELECT SUM(db.bayar_amount)
+                FROM detail_bayar db
+                WHERE db.invoice_no = ?
+            ), 0) AS paid_amount,
+
+            COALESCE((
+                SELECT SUM(hri.return_amount)
+                FROM head_retur_invoice hri
+                WHERE hri.invoice_no = ?
+                  AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+            ), 0) AS return_amount
+    ";
+
+    $stmtInvoiceBalance = mysqli_prepare($conn, $sqlInvoiceBalance);
+
+    mysqli_stmt_bind_param(
+        $stmtInvoiceBalance,
+        'sss',
+        $invoice_no,
+        $invoice_no,
+        $invoice_no
+    );
+
+    mysqli_stmt_execute($stmtInvoiceBalance);
+    $resInvoiceBalance = mysqli_stmt_get_result($stmtInvoiceBalance);
+    $rowInvoiceBalance = mysqli_fetch_assoc($resInvoiceBalance);
+    mysqli_stmt_close($stmtInvoiceBalance);
+
+    $invoice_amount =
+        (float)($rowInvoiceBalance['invoice_amount'] ?? 0);
+
+    $paid_amount =
+        (float)($rowInvoiceBalance['paid_amount'] ?? 0);
+
+    $return_amount =
+        (float)($rowInvoiceBalance['return_amount'] ?? 0);
+
+    $payment_balance = max(
+        $invoice_amount
+        - $return_amount
+        - $paid_amount,
+        0
+    );
+
+    if ($payment_balance <= 0.0001) {
+        $status = 'Paid';
+    } elseif ($paid_amount > 0.0001 || $return_amount > 0.0001) {
+        $status = 'Partial';
+    } else {
+        $status = 'Open';
     }
+
+    $sqlUpdateInv = "
+        UPDATE head_invoice
+        SET
+            payment_balance = ?,
+            status = ?,
+            user_modified = ?,
+            date_modified = NOW()
+        WHERE invoice_no = ?
+    ";
+
+    $stmtUpdateInv = mysqli_prepare($conn, $sqlUpdateInv);
+
+    mysqli_stmt_bind_param(
+        $stmtUpdateInv,
+        'dsss',
+        $payment_balance,
+        $status,
+        $username,
+        $invoice_no
+    );
+
+    mysqli_stmt_execute($stmtUpdateInv);
+    mysqli_stmt_close($stmtUpdateInv);
 
     mysqli_commit($conn);
 
-    redirectWithAlert('success', 'Pembayaran berhasil dihapus.');
+    redirectWithAlert(
+        'success',
+        'Pembayaran ' . $bayar_no .
+        ' berhasil dihapus. Saldo invoice telah dihitung ulang setelah retur.'
+    );
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
     mysqli_rollback($conn);
     redirectWithAlert('error', $e->getMessage());
 }

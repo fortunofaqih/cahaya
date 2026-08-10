@@ -268,7 +268,24 @@ switch ($page) {
     case 'cetak_register_penjualan_global':
         include 'modul/transaksi/cetak_register_penjualan_global.php';
         break;
-        
+    case 'saldo_awal':
+        include 'modul/transaksi/saldo_awal.php';
+        break;
+     case 'add_saldo_awal':
+        include 'modul/transaksi/add_saldo_awal.php';
+        break;   
+    case 'save_saldo_awal':
+        include 'modul/transaksi/save_saldo_awal.php';
+        break;
+     case 'edit_saldo_awal':
+        include 'modul/transaksi/edit_saldo_awal.php';
+        break;
+     case 'update_saldo_awal':
+        include 'modul/transaksi/update_saldo_awal.php';
+        break;
+     case 'delete_saldo_awal':
+        include 'modul/transaksi/delete_saldo_awal.php';
+        break;
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';

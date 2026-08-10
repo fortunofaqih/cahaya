@@ -249,6 +249,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 $bayar_no = trim((string)($_POST['bayar_no'] ?? ''));
 $invoice_no = trim((string)($_POST['invoice_no'] ?? ''));
+$shipping_no = trim((string)($_POST['shipping_no'] ?? ''));
+$return_id = trim((string)($_POST['return_id'] ?? ''));
 $bayar_date = parseDateInput($_POST['bayar_date'] ?? '');
 $nominal_bayar = parseNumber($_POST['nominal_bayar'] ?? 0);
 $keterangan = trim((string)($_POST['keterangan'] ?? ''));
@@ -259,7 +261,14 @@ $pakai_titip = isset($_POST['pakai_titip']) && $_POST['pakai_titip'] == '1';
 $nominal_titip = $pakai_titip ? parseNumber($_POST['nominal_titip'] ?? 0) : 0;
 $total_bayar_invoice = $nominal_bayar + $nominal_titip;
 
-if ($bayar_no === '' || $invoice_no === '' || !$bayar_date || $total_bayar_invoice <= 0 || $keterangan === '') {
+if (
+    $bayar_no === '' ||
+    $invoice_no === '' ||
+    $shipping_no === '' ||
+    !$bayar_date ||
+    ($total_bayar_invoice <= 0 && $return_id === '') ||
+    $keterangan === ''
+) {
     redirectWithAlert('error', 'Data pembayaran belum lengkap.', 'edit_bayar&bayar_no=' . urlencode($bayar_no));
 }
 
@@ -272,7 +281,8 @@ try {
     $sqlOld = "
         SELECT 
             hb.bayar_no,
-            db.invoice_no
+            db.invoice_no,
+            db.shipping_no
         FROM head_bayar hb
         INNER JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
         WHERE hb.bayar_no = ?
@@ -292,8 +302,15 @@ try {
         throw new Exception('Data pembayaran tidak ditemukan.');
     }
 
+    if (
+        trim((string)$old['invoice_no']) !== $invoice_no ||
+        trim((string)$old['shipping_no']) !== $shipping_no
+    ) {
+        throw new Exception('Pasangan Invoice / Shipping pembayaran tidak sesuai dengan data lama.');
+    }
+
     // ============================================================
-    // QUERY 2: Ambil data invoice
+    // QUERY 2: Ambil data invoice + shipping
     // ============================================================
     $sqlInv = "
         SELECT
@@ -303,57 +320,134 @@ try {
             hi.customer_name,
             hi.customer_address,
             hi.customer_city,
-            CASE
-                WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
-                WHEN COALESCE(hi.grand_total, 0) > 0 THEN COALESCE(hi.grand_total, 0)
-                ELSE COALESCE(hi.subtotal, 0)
-            END AS invoice_amount
+            di.shipping_no,
+            SUM(
+                CASE
+                    WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                    ELSE COALESCE(di.subtotal, 0)
+                END
+            ) AS shipping_amount
         FROM head_invoice hi
+        INNER JOIN det_invoice di
+            ON di.invoice_no = hi.invoice_no
         WHERE hi.invoice_no = ?
+          AND di.shipping_no = ?
+        GROUP BY
+            hi.invoice_no,
+            hi.invoice_date,
+            hi.customer_id,
+            hi.customer_name,
+            hi.customer_address,
+            hi.customer_city,
+            di.shipping_no
         LIMIT 1
+        FOR UPDATE
     ";
+
     $stmtInv = mysqli_prepare($conn, $sqlInv);
     if (!$stmtInv) {
-        throw new Exception('Gagal prepare query ambil invoice: ' . mysqli_error($conn));
+        throw new Exception('Gagal prepare query ambil invoice/shipping: ' . mysqli_error($conn));
     }
-    mysqli_stmt_bind_param($stmtInv, 's', $invoice_no);
+
+    mysqli_stmt_bind_param($stmtInv, 'ss', $invoice_no, $shipping_no);
     mysqli_stmt_execute($stmtInv);
     $resInv = mysqli_stmt_get_result($stmtInv);
     $inv = mysqli_fetch_assoc($resInv);
     mysqli_stmt_close($stmtInv);
 
     if (!$inv) {
-        throw new Exception('Invoice tidak ditemukan.');
+        throw new Exception('Invoice / Shipping tidak ditemukan.');
+    }
+
+    $shipping_amount = (float)($inv['shipping_amount'] ?? 0);
+
+    if ($shipping_amount <= 0) {
+        throw new Exception('Nilai Shipping tidak valid atau bernilai nol.');
     }
 
     // Rollback penggunaan titip sebelumnya
     rollbackTitipUsage($conn, $bayar_no, $username);
 
-    $invoice_amount = (float)$inv['invoice_amount'];
-
     // ============================================================
-    // QUERY 3: Hitung pembayaran yang sudah dilakukan (selain ini)
+    // QUERY 3: Hitung pembayaran lain + retur aktif pada shipping
     // ============================================================
     $sqlPaid = "
-        SELECT COALESCE(SUM(CASE WHEN bayar_no <> ? THEN bayar_amount ELSE 0 END), 0) AS paid_except_current
+        SELECT COALESCE(SUM(bayar_amount), 0) AS paid_except_current
         FROM detail_bayar
         WHERE invoice_no = ?
+          AND shipping_no = ?
+          AND bayar_no <> ?
+        FOR UPDATE
     ";
     $stmtPaid = mysqli_prepare($conn, $sqlPaid);
-    if (!$stmtPaid) {
-        throw new Exception('Gagal prepare query hitung pembayaran: ' . mysqli_error($conn));
-    }
-    mysqli_stmt_bind_param($stmtPaid, 'ss', $bayar_no, $invoice_no);
+    mysqli_stmt_bind_param($stmtPaid, 'sss', $invoice_no, $shipping_no, $bayar_no);
     mysqli_stmt_execute($stmtPaid);
     $resPaid = mysqli_stmt_get_result($stmtPaid);
     $paid = mysqli_fetch_assoc($resPaid);
     mysqli_stmt_close($stmtPaid);
 
     $paid_except_current = (float)($paid['paid_except_current'] ?? 0);
-    $sisa_before_current = $invoice_amount - $paid_except_current;
 
-    if ($total_bayar_invoice > $sisa_before_current) {
-        throw new Exception('Total bayar melebihi sisa invoice.');
+    /*
+     * No. Retur hanya sebagai link cross-check.
+     * Retur tidak mengurangi batas maksimum pembayaran.
+     */
+    $selected_return_amount = 0.0;
+
+    if ($return_id !== '') {
+        $sqlReturnSelected = "
+            SELECT return_amount
+            FROM head_retur_invoice
+            WHERE return_id = ?
+              AND invoice_no = ?
+              AND shipping_no = ?
+              AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+            LIMIT 1
+            FOR UPDATE
+        ";
+
+        $stmtReturnSelected = mysqli_prepare($conn, $sqlReturnSelected);
+        mysqli_stmt_bind_param(
+            $stmtReturnSelected,
+            'sss',
+            $return_id,
+            $invoice_no,
+            $shipping_no
+        );
+        mysqli_stmt_execute($stmtReturnSelected);
+        $resReturnSelected = mysqli_stmt_get_result($stmtReturnSelected);
+        $selectedReturn = mysqli_fetch_assoc($resReturnSelected);
+        mysqli_stmt_close($stmtReturnSelected);
+
+        if (!$selectedReturn) {
+            throw new Exception(
+                'No. Retur tidak ditemukan atau tidak sesuai dengan Invoice / Shipping.'
+            );
+        }
+
+        $selected_return_amount =
+            (float)($selectedReturn['return_amount'] ?? 0);
+    }
+
+    $sisa_before_current = max(
+        $shipping_amount - $paid_except_current,
+        0
+    );
+
+    if ($total_bayar_invoice > ($sisa_before_current + 0.0001)) {
+        throw new Exception(
+            'Total bayar melebihi sisa Shipping dari sisi pembayaran. Sisa: Rp ' .
+            number_format($sisa_before_current, 2, ',', '.')
+        );
+    }
+
+    if (
+        $total_bayar_invoice <= 0.0001 &&
+        $return_id === ''
+    ) {
+        throw new Exception(
+            'Pembayaran Rp 0,00 hanya dapat disimpan jika No. Retur dipilih.'
+        );
     }
 
     // ============================================================
@@ -433,6 +527,8 @@ try {
         UPDATE detail_bayar
         SET
             invoice_no = ?,
+            shipping_no = ?,
+            return_id = ?,
             invoice_date = ?,
             invoice_amount = ?,
             cash_amount = ?,
@@ -450,10 +546,12 @@ try {
     }
     mysqli_stmt_bind_param(
         $stmtDetail,
-        'ssdddddsss',
+        'ssssdddddsss',
         $invoice_no,
+        $shipping_no,
+        $return_id,
         $inv['invoice_date'],
-        $invoice_amount,
+        $shipping_amount,
         $nominal_bayar,
         $nominal_titip,
         $total_bayar_invoice,
@@ -479,12 +577,66 @@ try {
     );
 
     // ============================================================
-    // QUERY 7: Update status invoice
+    // QUERY 7: Hitung ulang saldo seluruh invoice setelah retur
     // ============================================================
-    $newStatus = $sisa_after <= 0 ? 'Paid' : 'Partial';
+    $sqlInvoiceBalance = "
+        SELECT
+            COALESCE((
+                SELECT SUM(
+                    CASE
+                        WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                        ELSE COALESCE(di.subtotal, 0)
+                    END
+                )
+                FROM det_invoice di
+                WHERE di.invoice_no = ?
+            ), 0) AS invoice_amount,
+            COALESCE((
+                SELECT SUM(db.bayar_amount)
+                FROM detail_bayar db
+                WHERE db.invoice_no = ?
+            ), 0) AS paid_amount,
+            COALESCE((
+                SELECT SUM(hri.return_amount)
+                FROM head_retur_invoice hri
+                WHERE hri.invoice_no = ?
+                  AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+            ), 0) AS return_amount
+    ";
+
+    $stmtInvoiceBalance = mysqli_prepare($conn, $sqlInvoiceBalance);
+    mysqli_stmt_bind_param(
+        $stmtInvoiceBalance,
+        'sss',
+        $invoice_no,
+        $invoice_no,
+        $invoice_no
+    );
+    mysqli_stmt_execute($stmtInvoiceBalance);
+    $resInvoiceBalance = mysqli_stmt_get_result($stmtInvoiceBalance);
+    $rowInvoiceBalance = mysqli_fetch_assoc($resInvoiceBalance);
+    mysqli_stmt_close($stmtInvoiceBalance);
+
+    $invoice_amount_total = (float)($rowInvoiceBalance['invoice_amount'] ?? 0);
+    $invoice_paid = (float)($rowInvoiceBalance['paid_amount'] ?? 0);
+    $invoice_retur = (float)($rowInvoiceBalance['return_amount'] ?? 0);
+
+    $invoice_balance = max(
+        $invoice_amount_total - $invoice_retur - $invoice_paid,
+        0
+    );
+
+    if ($invoice_balance <= 0.0001) {
+        $newStatus = 'Paid';
+    } elseif ($invoice_paid > 0.0001 || $invoice_retur > 0.0001) {
+        $newStatus = 'Partial';
+    } else {
+        $newStatus = 'Open';
+    }
+
     $sqlUpdateInvoice = "
         UPDATE head_invoice
-        SET 
+        SET
             payment_balance = ?,
             status = ?,
             user_modified = ?,
@@ -492,10 +644,14 @@ try {
         WHERE invoice_no = ?
     ";
     $stmtUpdateInvoice = mysqli_prepare($conn, $sqlUpdateInvoice);
-    if (!$stmtUpdateInvoice) {
-        throw new Exception('Gagal prepare query update invoice: ' . mysqli_error($conn));
-    }
-    mysqli_stmt_bind_param($stmtUpdateInvoice, 'dsss', $sisa_after, $newStatus, $username, $invoice_no);
+    mysqli_stmt_bind_param(
+        $stmtUpdateInvoice,
+        'dsss',
+        $invoice_balance,
+        $newStatus,
+        $username,
+        $invoice_no
+    );
     mysqli_stmt_execute($stmtUpdateInvoice);
     mysqli_stmt_close($stmtUpdateInvoice);
 

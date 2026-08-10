@@ -57,6 +57,8 @@ $sql = "
         hb.bank_name,
         hb.remarks,
         db.invoice_no,
+        db.shipping_no,
+        db.return_id,
         db.invoice_date,
         db.invoice_amount,
         db.cash_amount,
@@ -85,32 +87,124 @@ if (!$data) {
 $invoice_no = $data['invoice_no'];
 
 // ============================================================
-// QUERY HITUNG SISA INVOICE - DIPERBAIKI
+// QUERY HITUNG SISA SHIPPING + RETUR
 // ============================================================
+$shipping_no = trim((string)($data['shipping_no'] ?? ''));
+
+if ($shipping_no === '') {
+    die('Shipping No. pada pembayaran ini tidak ditemukan.');
+}
+
 $sqlSisa = "
     SELECT
         hi.invoice_no,
-        CASE
-            WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
-            WHEN COALESCE(hi.grand_total, 0) > 0 THEN COALESCE(hi.grand_total, 0)
-            ELSE COALESCE(hi.subtotal, 0)
-        END AS invoice_amount,
-        COALESCE(SUM(CASE WHEN db.bayar_no <> ? THEN db.bayar_amount ELSE 0 END), 0) AS paid_except_current
+
+        COALESCE((
+            SELECT SUM(
+                CASE
+                    WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                    ELSE COALESCE(di.subtotal, 0)
+                END
+            )
+            FROM det_invoice di
+            WHERE di.invoice_no = hi.invoice_no
+              AND di.shipping_no = ?
+        ), 0) AS shipping_amount,
+
+        COALESCE((
+            SELECT SUM(hri.return_amount)
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.shipping_no = ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        ), 0) AS retur_amount,
+
+        COALESCE((
+            SELECT SUM(db.bayar_amount)
+            FROM detail_bayar db
+            WHERE db.invoice_no = hi.invoice_no
+              AND db.shipping_no = ?
+              AND db.bayar_no <> ?
+        ), 0) AS paid_except_current
+
     FROM head_invoice hi
-    LEFT JOIN detail_bayar db ON db.invoice_no = hi.invoice_no
     WHERE hi.invoice_no = ?
-    GROUP BY hi.invoice_no, hi.piutang, hi.grand_total, hi.subtotal
     LIMIT 1
 ";
+
 $stmtSisa = mysqli_prepare($conn, $sqlSisa);
+
 if (!$stmtSisa) {
-    die('Error preparing query: ' . mysqli_error($conn));
+    die('Error preparing query sisa shipping: ' . mysqli_error($conn));
 }
-mysqli_stmt_bind_param($stmtSisa, 'ss', $bayar_no, $invoice_no);
+
+mysqli_stmt_bind_param(
+    $stmtSisa,
+    'sssss',
+    $shipping_no,
+    $shipping_no,
+    $shipping_no,
+    $bayar_no,
+    $invoice_no
+);
+
 mysqli_stmt_execute($stmtSisa);
 $resSisa = mysqli_stmt_get_result($stmtSisa);
 $sisaData = mysqli_fetch_assoc($resSisa);
 mysqli_stmt_close($stmtSisa);
+
+$shipping_amount = (float)($sisaData['shipping_amount'] ?? 0);
+$retur_amount = (float)($sisaData['retur_amount'] ?? 0);
+$paid_except_current = (float)($sisaData['paid_except_current'] ?? 0);
+
+$sisa_before_current = max(
+    $shipping_amount - $paid_except_current,
+    0
+);
+
+// ============================================================
+// DAFTAR RETUR AKTIF UNTUK SHIPPING INI
+// ============================================================
+$returnOptions = [];
+
+$sqlReturnOptions = "
+    SELECT
+        return_id,
+        return_date,
+        return_amount,
+        reason_return
+    FROM head_retur_invoice
+    WHERE invoice_no = ?
+      AND shipping_no = ?
+      AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+    ORDER BY return_date DESC, return_id DESC
+";
+
+$stmtReturnOptions = mysqli_prepare($conn, $sqlReturnOptions);
+mysqli_stmt_bind_param(
+    $stmtReturnOptions,
+    'ss',
+    $invoice_no,
+    $shipping_no
+);
+mysqli_stmt_execute($stmtReturnOptions);
+$resReturnOptions = mysqli_stmt_get_result($stmtReturnOptions);
+
+while ($ret = mysqli_fetch_assoc($resReturnOptions)) {
+    $returnOptions[] = $ret;
+}
+
+mysqli_stmt_close($stmtReturnOptions);
+
+$current_return_id = trim((string)($data['return_id'] ?? ''));
+$current_return_amount = 0.0;
+
+foreach ($returnOptions as $ret) {
+    if ((string)$ret['return_id'] === $current_return_id) {
+        $current_return_amount = (float)$ret['return_amount'];
+        break;
+    }
+}
 
 // ============================================================
 // QUERY CEK SALDO TITIP
@@ -134,9 +228,6 @@ mysqli_stmt_close($stmtSaldoTitip);
 $current_titip_amount = (float)($data['titip_amount'] ?? 0);
 $saldo_titip_available = (float)($rowSaldoTitip['saldo_titip'] ?? 0) + $current_titip_amount;
 
-$invoice_amount = (float)($sisaData['invoice_amount'] ?? $data['invoice_amount']);
-$paid_except_current = (float)($sisaData['paid_except_current'] ?? 0);
-$sisa_before_current = $invoice_amount - $paid_except_current;
 ?>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -372,6 +463,31 @@ $sisa_before_current = $invoice_amount - $paid_except_current;
         <div class="form-section-body">
             <div class="form-grid-3">
                 <div class="ff">
+                    <label>No. Shipping</label>
+                    <input type="text" name="shipping_no" id="shipping_no" value="<?= h($shipping_no) ?>" class="readonly-highlight" readonly>
+                </div>
+
+                <div class="ff">
+                    <label>No. Retur</label>
+                    <select name="return_id" id="return_id">
+                        <option value="">-- Tidak Ada / Pilih No. Retur --</option>
+                        <?php foreach ($returnOptions as $ret): ?>
+                            <option
+                                value="<?= h($ret['return_id']) ?>"
+                                data-return-amount="<?= h($ret['return_amount']) ?>"
+                                <?= $current_return_id === (string)$ret['return_id'] ? 'selected' : '' ?>
+                            >
+                                <?= h(
+                                    $ret['return_id'] .
+                                    ' | ' . formatDateDisplay($ret['return_date']) .
+                                    ' | Rp ' . formatMoney($ret['return_amount'])
+                                ) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="ff">
                     <label>No. Invoice</label>
                     <input type="text" name="invoice_no" id="invoice_no" value="<?= h($data['invoice_no']) ?>" class="readonly-highlight" readonly>
                 </div>
@@ -447,14 +563,20 @@ $sisa_before_current = $invoice_amount - $paid_except_current;
                 </div>
 
                 <div class="ff">
-                    <label>Sisa Invoice Sebelum Pembayaran Ini</label>
-                    <input type="text" id="sisa_invoice_display" value="Rp <?= h(formatMoney($sisa_before_current)) ?>" class="readonly-highlight" readonly>
-                    <input type="hidden" name="sisa_invoice" id="sisa_invoice" value="<?= h($sisa_before_current) ?>">
-                    <input type="hidden" name="invoice_amount" id="invoice_amount" value="<?= h($invoice_amount) ?>">
+                    <label>Retur Invoice</label>
+                    <input type="text" id="retur_invoice_display" value="Rp <?= h(formatMoney($current_return_amount)) ?>" class="readonly-highlight" readonly>
+                    <input type="hidden" name="retur_invoice" id="retur_invoice" value="<?= h($current_return_amount) ?>">
                 </div>
 
                 <div class="ff">
-                    <label>Total Bayar ke Invoice</label>
+                    <label>Sisa Shipping dari Sisi Pembayaran</label>
+                    <input type="text" id="sisa_invoice_display" value="Rp <?= h(formatMoney($sisa_before_current)) ?>" class="readonly-highlight" readonly>
+                    <input type="hidden" name="sisa_invoice" id="sisa_invoice" value="<?= h($sisa_before_current) ?>">
+                    <input type="hidden" name="shipping_amount" id="shipping_amount" value="<?= h($shipping_amount) ?>">
+                </div>
+
+                <div class="ff">
+                    <label>Total Bayar ke Shipping</label>
                     <input type="text" id="total_bayar_invoice_display" class="payment-summary-input" readonly>
                 </div>
 
@@ -476,6 +598,7 @@ $sisa_before_current = $invoice_amount - $paid_except_current;
                         <option value="">-- Pilih --</option>
                         <option value="Cash" <?= $data['keterangan'] === 'Cash' ? 'selected' : '' ?>>Cash</option>
                         <option value="Transfer" <?= $data['keterangan'] === 'Transfer' ? 'selected' : '' ?>>Transfer</option>
+                        <option value="Retur" <?= $data['keterangan'] === 'Retur' ? 'selected' : '' ?>>Retur / Cross-check</option>
                     </select>
                 </div>
 
@@ -543,24 +666,32 @@ function checkNominal() {
         return;
     }
 
-    if (totalBayarInvoice <= 0 || sisa <= 0) {
+    const returnId = $('#return_id').val() || '';
+
+    if (totalBayarInvoice <= 0) {
+        if (returnId) {
+            warning
+                .addClass('warning-info')
+                .html('Pembayaran Rp 0,00 diperbolehkan karena No. Retur dipilih.')
+                .show();
+        }
         return;
     }
 
     if (totalBayarInvoice > sisa) {
         warning
             .addClass('warning-danger')
-            .html('Total bayar melebihi sisa invoice. Maksimal: Rp ' + formatRupiah(sisa))
+            .html('Total bayar melebihi sisa shipping. Maksimal: Rp ' + formatRupiah(sisa))
             .show();
     } else if (totalBayarInvoice < sisa) {
         warning
             .addClass('warning-info')
-            .html('Pembayaran kurang dari sisa invoice. Sisa setelah bayar: Rp ' + formatRupiah(sisa - totalBayarInvoice))
+            .html('Pembayaran kurang dari sisa shipping. Sisa setelah bayar: Rp ' + formatRupiah(sisa - totalBayarInvoice))
             .show();
     } else {
         warning
             .addClass('warning-ok')
-            .html('Total bayar sama dengan sisa invoice.')
+            .html('Total bayar sama dengan sisa shipping.')
             .show();
     }
 }
@@ -575,6 +706,20 @@ $(document).ready(function () {
     }
 
     checkNominal();
+
+    $('#return_id').on('change', function () {
+        const opt = $(this).find(':selected');
+        const amount = parseFloat(opt.attr('data-return-amount')) || 0;
+
+        $('#retur_invoice').val(amount);
+        $('#retur_invoice_display').val('Rp ' + formatRupiah(amount));
+
+        if ($(this).val() && parseNumber($('#nominal_bayar').val()) <= 0) {
+            $('#keterangan').val('Retur');
+        }
+
+        checkNominal();
+    });
 
     $('#nominal_bayar').on('input keyup blur', function () {
         checkNominal();
@@ -613,7 +758,7 @@ $(document).ready(function () {
         }
 
         if (totalBayarInvoice > sisa) {
-            alert('Total bayar tidak boleh lebih dari sisa invoice.');
+            alert('Total bayar tidak boleh lebih dari sisa shipping.');
             e.preventDefault();
             return false;
         }

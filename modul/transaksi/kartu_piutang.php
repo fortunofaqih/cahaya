@@ -1,4 +1,8 @@
 <?php
+// PENTING LOGIKA TITIP:
+// - detail_titip.amount_in = uang titip masuk / saldo titip, TIDAK langsung mengurangi piutang.
+// - detail_bayar.titip_amount = uang titip yang SUDAH dipakai untuk pembayaran, INI yang mengurangi piutang.
+// - cash_amount + titip_amount = bayar_amount.
 // modul/transaksi/kartu_piutang.php
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -44,6 +48,30 @@ function formatDateDisplay($date) {
 
 function formatMoney($value) {
     return number_format((float)$value, 2, ',', '.');
+}
+
+/*
+ * Format tampilan No. Bayar jika pembayaran terhubung ke Retur.
+ * Contoh:
+ * B-000000148 + 15/CP/VII/2026 => B-000000148/R-15
+ * Nilai bayar_no asli di database tidak diubah.
+ */
+function formatBayarWithRetur($bayarNo, $returnId) {
+    $bayarNo = trim((string)$bayarNo);
+    $returnId = trim((string)$returnId);
+
+    if ($bayarNo === '' || $returnId === '') {
+        return $bayarNo;
+    }
+
+    $parts = explode('/', $returnId);
+    $returnPrefix = trim((string)($parts[0] ?? ''));
+
+    if ($returnPrefix === '') {
+        return $bayarNo;
+    }
+
+    return $bayarNo . '/R-' . $returnPrefix;
 }
 
 function appIcon($name) {
@@ -92,6 +120,8 @@ $saldo_awal = 0;
 $total_penjualan = 0;
 $total_retur = 0;
 $total_pembayaran = 0;
+$total_titip = 0; // total titip terpakai untuk hitung piutang
+$total_titip_masuk = 0; // informasi mutasi titip masuk periode
 $saldo_akhir = 0;
 
 if ($customer_id !== '') {
@@ -122,7 +152,53 @@ if ($customer_id !== '') {
     END
 ";
 
-  $sqlSaldo = "
+  
+/*
+ * SALDO AWAL MIGRASI CUSTOMER.
+ * opening_balance adalah saldo bawaan pada AWAL opening_date.
+ * Contoh: saldo akhir 31-Aug-2026 diinput sebagai opening_date 01-Sep-2026.
+ * Seluruh transaksi pada opening_date dan setelahnya tetap dihitung,
+ * sehingga filter transaksi menggunakan tanggal >= opening_date.
+ */
+$opening_date = '';
+$opening_balance = 0.0;
+
+$stmtOpening = mysqli_prepare(
+    $conn,
+    "SELECT opening_date, opening_balance
+     FROM customer_opening_balance
+     WHERE customer_id = ?
+       AND LOWER(COALESCE(status, 'Active')) = 'active'
+     LIMIT 1"
+);
+
+if ($stmtOpening) {
+    mysqli_stmt_bind_param($stmtOpening, 's', $customer_id);
+    mysqli_stmt_execute($stmtOpening);
+    $resOpening = mysqli_stmt_get_result($stmtOpening);
+    $rowOpening = mysqli_fetch_assoc($resOpening);
+
+    if ($rowOpening) {
+        $opening_date = (string)($rowOpening['opening_date'] ?? '');
+        $opening_balance = (float)($rowOpening['opening_balance'] ?? 0);
+    }
+
+    mysqli_stmt_close($stmtOpening);
+}
+
+$openingInvoiceWhere = $opening_date !== ''
+    ? " AND hi.invoice_date >= '" . mysqli_real_escape_string($conn, $opening_date) . "' "
+    : '';
+
+$openingPaymentWhere = $opening_date !== ''
+    ? " AND hb.bayar_date >= '" . mysqli_real_escape_string($conn, $opening_date) . "' "
+    : '';
+
+$openingReturnWhere = $opening_date !== ''
+    ? " AND hri.return_date >= '" . mysqli_real_escape_string($conn, $opening_date) . "' "
+    : '';
+
+$sqlSaldo = "
     SELECT
         (
             COALESCE((
@@ -136,14 +212,34 @@ if ($customer_id !== '') {
                 FROM head_invoice hi
                 WHERE hi.customer_id = ?
                   AND hi.invoice_date < ?
+                  $openingInvoiceWhere
             ), 0)
             -
             COALESCE((
-                SELECT SUM(db.bayar_amount)
+                SELECT SUM(
+                    CASE
+                        WHEN COALESCE(db.cash_amount, 0) > 0
+                            THEN COALESCE(db.cash_amount, 0)
+                        ELSE GREATEST(
+                            COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
+                            0
+                        )
+                    END
+                )
                 FROM detail_bayar db
                 INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
                 WHERE hb.customer_id = ?
                   AND hb.bayar_date < ?
+                  $openingPaymentWhere
+            ), 0)
+            -
+            COALESCE((
+                SELECT SUM(COALESCE(db.titip_amount, 0))
+                FROM detail_bayar db
+                INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
+                WHERE hb.customer_id = ?
+                  AND hb.bayar_date < ?
+                  $openingPaymentWhere
             ), 0)
             -
             COALESCE((
@@ -151,6 +247,7 @@ if ($customer_id !== '') {
                 FROM head_retur_invoice hri
                 WHERE hri.customer_id = ?
                   AND hri.return_date < ?
+                  $openingReturnWhere
                   AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
             ), 0)
         ) AS saldo_awal
@@ -158,7 +255,9 @@ if ($customer_id !== '') {
 $stmtSaldo = mysqli_prepare($conn, $sqlSaldo);
 mysqli_stmt_bind_param(
     $stmtSaldo,
-    'ssssss',
+    'ssssssss',
+    $customer_id,
+    $start_date,
     $customer_id,
     $start_date,
     $customer_id,
@@ -170,6 +269,10 @@ mysqli_stmt_execute($stmtSaldo);
 $resSaldo = mysqli_stmt_get_result($stmtSaldo);
 $rowSaldo = mysqli_fetch_assoc($resSaldo);
 $saldo_awal = (float)($rowSaldo['saldo_awal'] ?? 0);
+
+if ($opening_date !== '' && $opening_date <= $start_date) {
+    $saldo_awal += $opening_balance;
+}
 mysqli_stmt_close($stmtSaldo);
 
     $sqlRows = "
@@ -181,6 +284,8 @@ mysqli_stmt_close($stmtSaldo);
             penjualan,
             retur,
             pembayaran,
+            titip,
+            titip_effect_piutang,
             sort_order,
             invoice_no_sort
         FROM
@@ -197,6 +302,8 @@ mysqli_stmt_close($stmtSaldo);
                 END AS penjualan,
                 0 AS retur,
                 0 AS pembayaran,
+                0 AS titip,
+                0 AS titip_effect_piutang,
                 1 AS sort_order,
                 hi.invoice_no AS invoice_no_sort
             FROM head_invoice hi
@@ -213,6 +320,7 @@ mysqli_stmt_close($stmtSaldo);
             ) di ON di.invoice_no = hi.invoice_no
             WHERE hi.customer_id = ?
               AND hi.invoice_date BETWEEN ? AND ?
+              $openingInvoiceWhere
 
             UNION ALL
 
@@ -224,11 +332,14 @@ mysqli_stmt_close($stmtSaldo);
                 0 AS penjualan,
                 COALESCE(hri.return_amount, 0) AS retur,
                 0 AS pembayaran,
+                0 AS titip,
+                0 AS titip_effect_piutang,
                 2 AS sort_order,
                 COALESCE(hri.invoice_no, '') AS invoice_no_sort
             FROM head_retur_invoice hri
             WHERE hri.customer_id = ?
               AND hri.return_date BETWEEN ? AND ?
+              $openingReturnWhere
               AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
 
             UNION ALL
@@ -236,11 +347,20 @@ mysqli_stmt_close($stmtSaldo);
             SELECT
                 hb.bayar_date AS trans_date,
                 COALESCE(NULLIF(db.shipping_no, ''), di.shipping_no, '') AS shipping_no,
-                '' AS return_id,
+                COALESCE(db.return_id, '') AS return_id,
                 hb.bayar_no AS bayar_no,
                 0 AS penjualan,
                 0 AS retur,
-                db.bayar_amount AS pembayaran,
+                CASE
+                    WHEN COALESCE(db.cash_amount, 0) > 0
+                        THEN COALESCE(db.cash_amount, 0)
+                    ELSE GREATEST(
+                        COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
+                        0
+                    )
+                END AS pembayaran,
+                -COALESCE(db.titip_amount, 0) AS titip,
+                COALESCE(db.titip_amount, 0) AS titip_effect_piutang,
                 3 AS sort_order,
                 db.invoice_no AS invoice_no_sort
             FROM head_bayar hb
@@ -258,6 +378,33 @@ mysqli_stmt_close($stmtSaldo);
             ) di ON di.invoice_no = db.invoice_no
             WHERE hb.customer_id = ?
               AND hb.bayar_date BETWEEN ? AND ?
+              $openingPaymentWhere
+
+            UNION ALL
+
+            /*
+             * TITIP UANG MASUK
+             * Ditampilkan sebagai mutasi positif pada kolom TITIP.
+             * Tidak mempengaruhi SISA PIUTANG.
+             */
+            SELECT
+                dt.titip_date AS trans_date,
+                '' AS shipping_no,
+                '' AS return_id,
+                '' AS bayar_no,
+                0 AS penjualan,
+                0 AS retur,
+                0 AS pembayaran,
+                COALESCE(dt.amount_in, 0) AS titip,
+                0 AS titip_effect_piutang,
+                4 AS sort_order,
+                COALESCE(dt.titip_no, '') AS invoice_no_sort
+
+            FROM detail_titip dt
+
+            WHERE dt.customer_id = ?
+              AND dt.titip_date BETWEEN ? AND ?
+              AND COALESCE(dt.amount_in, 0) > 0
         ) x
         ORDER BY
             trans_date ASC,
@@ -270,7 +417,10 @@ mysqli_stmt_close($stmtSaldo);
     $stmtRows = mysqli_prepare($conn, $sqlRows);
     mysqli_stmt_bind_param(
         $stmtRows,
-        'sssssssss',
+        'ssssssssssss',
+        $customer_id,
+        $start_date,
+        $end_date,
         $customer_id,
         $start_date,
         $end_date,
@@ -288,27 +438,38 @@ mysqli_stmt_close($stmtSaldo);
     $total_penjualan = 0;
     $total_retur = 0;
     $total_pembayaran = 0;
+    $total_titip = 0;
     $runningSaldo = $saldo_awal;
 
     while ($row = mysqli_fetch_assoc($resRows)) {
         $penjualan = (float)($row['penjualan'] ?? 0);
         $retur = (float)($row['retur'] ?? 0);
         $pembayaran = (float)($row['pembayaran'] ?? 0);
+        $titip = (float)($row['titip'] ?? 0);
+        $titipEffectPiutang = (float)($row['titip_effect_piutang'] ?? 0);
 
-        $runningSaldo += $penjualan - $retur - $pembayaran;
+        $runningSaldo +=
+            $penjualan
+            - $retur
+            - $pembayaran
+            - $titipEffectPiutang;
 
         $row['sisa'] = $runningSaldo;
 
         $total_penjualan += $penjualan;
         $total_retur += $retur;
         $total_pembayaran += $pembayaran;
+        if ($titip > 0) {
+            $total_titip_masuk += $titip;
+        }
+        $total_titip += $titipEffectPiutang;
 
         $rows[] = $row;
     }
 
     mysqli_stmt_close($stmtRows);
 
-    $saldo_akhir = $saldo_awal + $total_penjualan - $total_retur - $total_pembayaran;
+    $saldo_akhir = $saldo_awal + $total_penjualan - $total_retur - $total_pembayaran - $total_titip;
 }
 ?>
 
@@ -417,7 +578,7 @@ mysqli_stmt_close($stmtSaldo);
 }
 .summary-grid {
     display: grid;
-    grid-template-columns: repeat(5, minmax(145px, 1fr));
+    grid-template-columns: repeat(6, minmax(135px, 1fr));
     gap: 8px;
     margin-bottom: 10px;
 }
@@ -487,8 +648,13 @@ mysqli_stmt_close($stmtSaldo);
 .text-retur { color:#b02a37; font-weight:bold; }
 .kartu-table tbody tr.return-row td { background:#fff5f5; }
 .kartu-table tbody tr.return-row:hover td { background:#ffe8e8; }
+.kartu-table tbody tr.payment-return-link td { background:#fffbea; }
+.kartu-table tbody tr.payment-return-link:hover td { background:#fff3bf; }
 .summary-card.retur-card { border-color:#f1aeb5; background:#fff5f5; }
 .summary-card.retur-card .value { color:#b02a37; }
+.summary-card.titip-card { border-color:#9ec5fe; background:#f3f8ff; }
+.summary-card.titip-card .value { color:#0a58ca; }
+.text-titip { color:#0a58ca; font-weight:bold; }
 .customer-info {
     background: #fff;
     border: 1px solid #dee2e6;
@@ -635,6 +801,10 @@ mysqli_stmt_close($stmtSaldo);
                 <div class="label">Total Pembayaran</div>
                 <div class="value">Rp <?= h(formatMoney($total_pembayaran)) ?></div>
             </div>
+            <div class="summary-card titip-card">
+                <div class="label">Mutasi Titip</div>
+                <div class="value">Masuk Rp <?= h(formatMoney($total_titip_masuk)) ?> | Terpakai Rp <?= h(formatMoney($total_titip)) ?></div>
+            </div>
             <div class="summary-card">
                 <div class="label">Saldo Akhir</div>
                 <div class="value">Rp <?= h(formatMoney($saldo_akhir)) ?></div>
@@ -653,27 +823,50 @@ mysqli_stmt_close($stmtSaldo);
                     <th>PENJUALAN</th>
                     <th>RETUR</th>
                     <th>PEMBAYARAN</th>
+                    <th>TITIP</th>
                     <th>SISA</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($rows)): ?>
                         <tr>
-                            <td colspan="9" class="text-center" style="color:#777;padding:15px;">
+                            <td colspan="10" class="text-center" style="color:#777;padding:15px;">
                                 Tidak ada data piutang pada periode ini.
                             </td>
                         </tr>
                     <?php else: ?>
                         <?php foreach ($rows as $i => $row): ?>
-                            <?php $isReturn = (float)($row['retur'] ?? 0) > 0; ?>
-                            <tr class="<?= $isReturn ? 'return-row' : '' ?>">
+                            <?php
+                            $isReturn = (float)($row['retur'] ?? 0) > 0;
+                            $isTitip = abs((float)($row['titip'] ?? 0)) > 0.0001;
+
+                            if ($isReturn) {
+                                $shippingDisplay = 'Retur';
+                            } elseif ($isTitip) {
+                                $shippingDisplay = 'Titip';
+                            } else {
+                                $shippingDisplay = (string)($row['shipping_no'] ?? '');
+                            }
+                            ?>
+                            <?php
+                            $isPaymentReturnLink =
+                                !$isReturn
+                                && trim((string)($row['bayar_no'] ?? '')) !== ''
+                                && trim((string)($row['return_id'] ?? '')) !== '';
+
+                            $bayarDisplay = formatBayarWithRetur(
+                                $row['bayar_no'] ?? '',
+                                $row['return_id'] ?? ''
+                            );
+                            ?>
+                            <tr class="<?= $isReturn ? 'return-row' : ($isPaymentReturnLink ? 'payment-return-link' : '') ?>">
                                 <td class="money-cell">
                                     <?= $i === 0 ? 'Rp ' . h(formatMoney($saldo_awal)) : '' ?>
                                 </td>
                                 <td class="text-center"><?= h(formatDateDisplay($row['trans_date'])) ?></td>
-                                <td class="text-bold text-blue"><?= h($row['shipping_no']) ?></td>
+                                <td class="text-bold text-blue"><?= h($shippingDisplay) ?></td>
                                 <td class="text-center text-retur"><?= h($row['return_id']) ?></td>
-                                <td class="text-center"><?= h($row['bayar_no']) ?></td>
+                                <td class="text-center"><?= h($bayarDisplay) ?></td>
                                 <td class="money-cell">
                                     <?= ((float)$row['penjualan'] > 0) ? 'Rp ' . h(formatMoney($row['penjualan'])) : '' ?>
                                 </td>
@@ -682,6 +875,14 @@ mysqli_stmt_close($stmtSaldo);
                                 </td>
                                 <td class="money-cell">
                                     <?= ((float)$row['pembayaran'] > 0) ? 'Rp ' . h(formatMoney($row['pembayaran'])) : '' ?>
+                                </td>
+                                <td class="money-cell text-titip">
+                                    <?php
+                                    $titipMutasi = (float)($row['titip'] ?? 0);
+                                    echo abs($titipMutasi) > 0.0001
+                                        ? (($titipMutasi < 0 ? '- ' : '') . 'Rp ' . h(formatMoney(abs($titipMutasi))))
+                                        : '';
+                                    ?>
                                 </td>
                                 <td class="money-cell text-bold">Rp <?= h(formatMoney($row['sisa'])) ?></td>
                             </tr>
@@ -694,6 +895,10 @@ mysqli_stmt_close($stmtSaldo);
                         <td class="money-cell">Rp <?= h(formatMoney($total_penjualan)) ?></td>
                         <td class="money-cell text-retur">- Rp <?= h(formatMoney($total_retur)) ?></td>
                         <td class="money-cell">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
+                        <td class="money-cell text-titip">
+                            <?php $totalMutasiTitip = $total_titip_masuk - $total_titip; ?>
+                            <?= $totalMutasiTitip < 0 ? '- ' : '' ?>Rp <?= h(formatMoney(abs($totalMutasiTitip))) ?>
+                        </td>
                         <td class="money-cell">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
                     </tr>
                 </tfoot>

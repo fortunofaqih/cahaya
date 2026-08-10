@@ -395,7 +395,13 @@ $groupLabels = [
                             </a>
                         </li>
                         <?php endif; ?>
-                        
+                        <?php if (canAccessMenu('saldo_awal', $allowedMenus)): ?>
+                        <li class="nav-item">
+                            <a class="nav-link" href="index.php?page=saldo_awal">
+                                <i class="fa fa-coins me-2"></i> Saldo Awal
+                            </a>
+                        </li>
+                        <?php endif; ?>
                     <?php endif; ?>
 
                     <!-- ================== LAPORAN ================== -->

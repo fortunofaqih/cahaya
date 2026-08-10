@@ -1,5 +1,18 @@
 <?php
 // modul/transaksi/cetak_aging_piutang_global.php
+//
+// LOGIKA FINAL GO-LIVE AWAL BULAN:
+// 1. opening_balance berlaku pada AWAL opening_date.
+//    Contoh: saldo akhir 31-Aug-2026 diinput sebagai opening_date 01-Sep-2026.
+// 2. Invoice / pembayaran pada opening_date tetap dihitung (>= opening_date).
+// 3. Titip masuk (head_titip/detail_titip amount_in) TIDAK mengurangi piutang.
+// 4. Kolom Titip = saldo titip customer yang BELUM terpakai per akhir periode.
+// 5. Titip yang sudah dipakai (detail_bayar.titip_amount) tetap mengurangi piutang secara INTERNAL.
+// 6. Kolom Pembayaran = bagian Cash / Transfer saja.
+// 7. Retur Invoice aktif mengurangi piutang.
+// 8. Kolom "Lebih" = outstanding >90 hari + saldo historis tanpa umur - Retur Invoice.
+// 9. detail_bayar.return_id hanya sebagai link audit/cross-check, tidak mengubah perhitungan.
+// 10. Saldo Akhir = Saldo Awal + Penjualan - Pembayaran - Titip Terpakai - Retur.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -11,6 +24,9 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+mysqli_set_charset($conn, 'utf8mb4');
 
 function h($value) {
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
@@ -48,16 +64,18 @@ function getMonthName($month) {
 function initRow($label) {
     return [
         'label' => $label,
-        'saldo_awal' => 0,
-        'penjualan' => 0,
-        'pembayaran' => 0,
-        'titip' => 0,
-        'saldo_akhir' => 0,
-        'b_1_30' => 0,
-        'b_31_60' => 0,
-        'b_61_90' => 0,
-        'b_lebih' => 0,
-        'belum_jatuh_tempo' => 0,
+        'saldo_awal' => 0.0,
+        'penjualan' => 0.0,
+        'pembayaran' => 0.0,
+        'titip' => 0.0,       // DISPLAY: saldo titip belum terpakai
+        'titip_used' => 0.0,  // INTERNAL: titip yang dipakai membayar
+        'retur' => 0.0,       // INTERNAL / mutasi retur
+        'saldo_akhir' => 0.0,
+        'b_1_30' => 0.0,
+        'b_31_60' => 0.0,
+        'b_61_90' => 0.0,
+        'b_lebih' => 0.0,
+        'belum_jatuh_tempo' => 0.0,
     ];
 }
 
@@ -70,7 +88,7 @@ function getGroupLabel($row, $filterBy) {
         return trim($customerId . ' - ' . $customerName);
     }
 
-    return $city !== '' ? $city : 'TANPA KOTA';
+    return $city !== '' ? strtoupper($city) : 'TANPA KOTA';
 }
 
 function getLabelTitle($filterBy) {
@@ -79,9 +97,23 @@ function getLabelTitle($filterBy) {
     return 'Daerah';
 }
 
+function cashExpr($alias = 'db') {
+    return "
+        CASE
+            WHEN COALESCE({$alias}.cash_amount, 0) > 0
+                THEN COALESCE({$alias}.cash_amount, 0)
+            ELSE GREATEST(
+                COALESCE({$alias}.bayar_amount, 0)
+                - COALESCE({$alias}.titip_amount, 0),
+                0
+            )
+        END
+    ";
+}
+
 $bulan = (int)($_GET['bulan'] ?? date('n'));
 $tahun = (int)($_GET['tahun'] ?? date('Y'));
-$filterBy = $_GET['filter_by'] ?? 'semua';
+$filterBy = trim((string)($_GET['filter_by'] ?? 'semua'));
 $filterValue = trim((string)($_GET['filter_value'] ?? ''));
 
 if ($bulan < 1 || $bulan > 12) {
@@ -107,93 +139,538 @@ $title = 'AGING PIUTANG - GLOBAL - CP';
 $subtitle = 'Periode ' . getMonthName($bulan) . ' ' . $tahun . ' | ' . $titleFilter;
 $printedAt = date('d-M-Y');
 
-$whereInvoice = " WHERE hi.invoice_date <= ? ";
-$paramsInvoice = [$startDate, $startDate, $endDate, $endDate, $endDate];
-$typesInvoice = "sssss";
+$rows = [];
+
+/*
+ * ============================================================
+ * 1. SALDO AWAL MIGRASI
+ * ============================================================
+ *
+ * opening_balance adalah saldo awal pada opening_date.
+ * Transaksi pada opening_date tetap transaksi baru.
+ *
+ * Pembayaran / titip setelah opening_date terhadap invoice lama
+ * tetap harus mengurangi saldo historis.
+ */
+$whereOpening = "
+    WHERE LOWER(COALESCE(cob.status, 'Active')) = 'active'
+      AND cob.opening_date <= ?
+";
+
+$openingParams = [
+    // legacy cash before / period / cutoff
+    $startDate,
+    $startDate, $endDate,
+    $endDate,
+
+    // legacy titip before / period / cutoff
+    $startDate,
+    $startDate, $endDate,
+    $endDate,
+
+    // legacy retur before / period / cutoff
+    $startDate,
+    $startDate, $endDate,
+    $endDate,
+
+    // daftar opening balance sampai akhir periode
+    $endDate
+];
+
+$openingTypes = 'sssssssssssss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
-    $whereInvoice .= " AND c.area_code = ? ";
-    $paramsInvoice[] = $filterValue;
-    $typesInvoice .= "s";
+    $whereOpening .= " AND COALESCE(c.area_code, '') = ? ";
+    $openingParams[] = $filterValue;
+    $openingTypes .= 's';
+
 } elseif ($filterBy === 'kota' && $filterValue !== '') {
-    $whereInvoice .= " AND COALESCE(NULLIF(c.city, ''), NULLIF(hi.customer_city, '')) = ? ";
-    $paramsInvoice[] = $filterValue;
-    $typesInvoice .= "s";
+    $whereOpening .= "
+        AND COALESCE(
+                NULLIF(c.city, ''),
+                NULLIF(cob.customer_city, '')
+            ) = ?
+    ";
+    $openingParams[] = $filterValue;
+    $openingTypes .= 's';
+
 } elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
-    $whereInvoice .= " AND hi.customer_id = ? ";
-    $paramsInvoice[] = $filterValue;
-    $typesInvoice .= "s";
+    $whereOpening .= " AND cob.customer_id = ? ";
+    $openingParams[] = $filterValue;
+    $openingTypes .= 's';
 }
 
+$cashDb = cashExpr('db');
+
+$sqlOpening = "
+    SELECT
+        cob.customer_id,
+
+        COALESCE(
+            NULLIF(c.customer, ''),
+            NULLIF(cob.customer_name, ''),
+            '-'
+        ) AS customer_name,
+
+        COALESCE(
+            NULLIF(c.city, ''),
+            NULLIF(cob.customer_city, ''),
+            'TANPA KOTA'
+        ) AS city,
+
+        COALESCE(c.area_code, '') AS area_code,
+
+        cob.opening_date,
+        COALESCE(cob.opening_balance, 0) AS opening_balance,
+
+        /* Cash terhadap saldo historis sebelum awal periode laporan. */
+        COALESCE((
+            SELECT SUM($cashDb)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = db.invoice_no
+            WHERE hb.customer_id = cob.customer_id
+              AND hb.bayar_date >= cob.opening_date
+              AND hb.bayar_date < ?
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_cash_before,
+
+        /* Cash terhadap saldo historis pada periode laporan. */
+        COALESCE((
+            SELECT SUM($cashDb)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = db.invoice_no
+            WHERE hb.customer_id = cob.customer_id
+              AND hb.bayar_date >= cob.opening_date
+              AND hb.bayar_date BETWEEN ? AND ?
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_cash_period,
+
+        /* Cash terhadap saldo historis sampai akhir periode. */
+        COALESCE((
+            SELECT SUM($cashDb)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = db.invoice_no
+            WHERE hb.customer_id = cob.customer_id
+              AND hb.bayar_date >= cob.opening_date
+              AND hb.bayar_date <= ?
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_cash_cutoff,
+
+        /* Titip TERPAKAI terhadap saldo historis sebelum awal periode. */
+        COALESCE((
+            SELECT SUM(COALESCE(db.titip_amount, 0))
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = db.invoice_no
+            WHERE hb.customer_id = cob.customer_id
+              AND hb.bayar_date >= cob.opening_date
+              AND hb.bayar_date < ?
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_titip_before,
+
+        /* Titip TERPAKAI terhadap saldo historis pada periode laporan. */
+        COALESCE((
+            SELECT SUM(COALESCE(db.titip_amount, 0))
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = db.invoice_no
+            WHERE hb.customer_id = cob.customer_id
+              AND hb.bayar_date >= cob.opening_date
+              AND hb.bayar_date BETWEEN ? AND ?
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_titip_period,
+
+        /* Titip TERPAKAI terhadap saldo historis sampai akhir periode. */
+        COALESCE((
+            SELECT SUM(COALESCE(db.titip_amount, 0))
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = db.invoice_no
+            WHERE hb.customer_id = cob.customer_id
+              AND hb.bayar_date >= cob.opening_date
+              AND hb.bayar_date <= ?
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_titip_cutoff,
+
+        /* Retur aktif terhadap saldo historis sebelum periode. */
+        COALESCE((
+            SELECT SUM(COALESCE(hri.return_amount, 0))
+            FROM head_retur_invoice hri
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = hri.invoice_no
+            WHERE hri.customer_id = cob.customer_id
+              AND hri.return_date >= cob.opening_date
+              AND hri.return_date < ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_retur_before,
+
+        /* Retur aktif terhadap saldo historis pada periode laporan. */
+        COALESCE((
+            SELECT SUM(COALESCE(hri.return_amount, 0))
+            FROM head_retur_invoice hri
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = hri.invoice_no
+            WHERE hri.customer_id = cob.customer_id
+              AND hri.return_date >= cob.opening_date
+              AND hri.return_date BETWEEN ? AND ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_retur_period,
+
+        /* Retur aktif terhadap saldo historis sampai akhir periode. */
+        COALESCE((
+            SELECT SUM(COALESCE(hri.return_amount, 0))
+            FROM head_retur_invoice hri
+            LEFT JOIN head_invoice hi_old
+                ON hi_old.invoice_no = hri.invoice_no
+            WHERE hri.customer_id = cob.customer_id
+              AND hri.return_date >= cob.opening_date
+              AND hri.return_date <= ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+              AND (
+                    hi_old.invoice_no IS NULL
+                    OR hi_old.invoice_date < cob.opening_date
+                  )
+        ), 0) AS legacy_retur_cutoff
+
+    FROM customer_opening_balance cob
+
+    LEFT JOIN m_customer c
+        ON c.customer_id = cob.customer_id
+
+    $whereOpening
+";
+
+$stmtOpening = mysqli_prepare($conn, $sqlOpening);
+
+if (!$stmtOpening) {
+    die(
+        'SQL SALDO AWAL ERROR: ' .
+        h(mysqli_error($conn)) .
+        '<br><pre>' .
+        h($sqlOpening) .
+        '</pre>'
+    );
+}
+
+mysqli_stmt_bind_param(
+    $stmtOpening,
+    $openingTypes,
+    ...$openingParams
+);
+
+mysqli_stmt_execute($stmtOpening);
+$resOpening = mysqli_stmt_get_result($stmtOpening);
+
+while ($op = mysqli_fetch_assoc($resOpening)) {
+    $groupLabel = getGroupLabel($op, $filterBy);
+
+    if (!isset($rows[$groupLabel])) {
+        $rows[$groupLabel] = initRow($groupLabel);
+    }
+
+    $openingAmount = (float)($op['opening_balance'] ?? 0);
+
+    $legacyCashBefore = (float)($op['legacy_cash_before'] ?? 0);
+    $legacyCashPeriod = (float)($op['legacy_cash_period'] ?? 0);
+    $legacyCashCutoff = (float)($op['legacy_cash_cutoff'] ?? 0);
+
+    $legacyTitipBefore = (float)($op['legacy_titip_before'] ?? 0);
+    $legacyTitipPeriod = (float)($op['legacy_titip_period'] ?? 0);
+    $legacyTitipCutoff = (float)($op['legacy_titip_cutoff'] ?? 0);
+
+    $legacyReturBefore = (float)($op['legacy_retur_before'] ?? 0);
+    $legacyReturPeriod = (float)($op['legacy_retur_period'] ?? 0);
+    $legacyReturCutoff = (float)($op['legacy_retur_cutoff'] ?? 0);
+
+    /*
+     * Saldo Awal periode:
+     * opening balance dikurangi pembayaran/titip yang sudah terjadi
+     * sejak go-live tetapi sebelum bulan laporan.
+     */
+    $openingAtPeriod =
+        $openingAmount
+        - $legacyCashBefore
+        - $legacyTitipBefore
+        - $legacyReturBefore;
+
+    /*
+     * Saldo historis tersisa hingga akhir bulan.
+     */
+    $openingAtEnd =
+        $openingAmount
+        - $legacyCashCutoff
+        - $legacyTitipCutoff
+        - $legacyReturCutoff;
+
+    $rows[$groupLabel]['saldo_awal'] += $openingAtPeriod;
+    $rows[$groupLabel]['pembayaran'] += $legacyCashPeriod;
+    $rows[$groupLabel]['titip_used'] += $legacyTitipPeriod;
+    $rows[$groupLabel]['retur'] += $legacyReturPeriod;
+    $rows[$groupLabel]['saldo_akhir'] += $openingAtEnd;
+
+    /*
+     * Saldo historis migrasi tidak memiliki umur invoice,
+     * sehingga sisa akhirnya ditempatkan pada kolom Lebih.
+     *
+     * openingAtEnd sudah termasuk pengurang Retur.
+     */
+    $rows[$groupLabel]['b_lebih'] += $openingAtEnd;
+}
+
+mysqli_stmt_close($stmtOpening);
+
+/*
+ * ============================================================
+ * 2. INVOICE BARU SETELAH GO-LIVE
+ * ============================================================
+ *
+ * Invoice sebelum opening_date tidak dibaca ulang karena sudah
+ * terkandung dalam opening_balance.
+ */
+$whereInvoice = "
+    WHERE hi.invoice_date <= ?
+      AND (
+            cob.opening_date IS NULL
+            OR hi.invoice_date >= cob.opening_date
+          )
+";
+
+$invoiceParams = [
+    // cash sebelum periode / periode / cutoff
+    $startDate,
+    $startDate, $endDate,
+    $endDate,
+
+    // titip sebelum periode / periode / cutoff
+    $startDate,
+    $startDate, $endDate,
+    $endDate,
+
+    // retur sebelum periode / periode / cutoff
+    $startDate,
+    $startDate, $endDate,
+    $endDate,
+
+    // invoice cutoff
+    $endDate
+];
+
+$invoiceTypes = 'sssssssssssss';
+
+if ($filterBy === 'grup' && $filterValue !== '') {
+    $whereInvoice .= " AND COALESCE(c.area_code, '') = ? ";
+    $invoiceParams[] = $filterValue;
+    $invoiceTypes .= 's';
+
+} elseif ($filterBy === 'kota' && $filterValue !== '') {
+    $whereInvoice .= "
+        AND COALESCE(
+                NULLIF(c.city, ''),
+                NULLIF(hi.customer_city, '')
+            ) = ?
+    ";
+    $invoiceParams[] = $filterValue;
+    $invoiceTypes .= 's';
+
+} elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
+    $whereInvoice .= " AND hi.customer_id = ? ";
+    $invoiceParams[] = $filterValue;
+    $invoiceTypes .= 's';
+}
+
+/*
+ * Nilai invoice mengikuti sumber yang sama dengan Kartu Piutang / Aging Detail.
+ */
 $invoiceAmountExpr = "
-    GREATEST(
-        CASE
-            WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
-            WHEN COALESCE(hi.grand_total, 0) > 0 THEN 
-                (
-                    COALESCE(hi.grand_total, 0)
-                    - COALESCE(hi.down_payment, 0)
-                    - COALESCE(hi.titip_applied, 0)
-                )
-            ELSE 
-                (
-                    COALESCE(hi.subtotal, 0)
-                    - COALESCE(hi.down_payment, 0)
-                    - COALESCE(hi.titip_applied, 0)
-                )
-        END,
-        0
-    )
+    CASE
+        WHEN COALESCE(hi.piutang, 0) > 0
+            THEN COALESCE(hi.piutang, 0)
+        WHEN COALESCE(hi.payment_balance, 0) > 0
+            THEN COALESCE(hi.payment_balance, 0)
+        ELSE COALESCE(hi.grand_total, 0)
+    END
 ";
 
 $sqlInvoice = "
     SELECT
         hi.invoice_no,
         hi.invoice_date,
-        DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days, 0) DAY) AS due_date,
+
+        DATE_ADD(
+            hi.invoice_date,
+            INTERVAL COALESCE(hi.days, 0) DAY
+        ) AS due_date,
+
         hi.customer_id,
         hi.customer_name,
         hi.customer_city,
-        c.area_code,
-        COALESCE(NULLIF(c.city, ''), NULLIF(hi.customer_city, ''), '') AS city,
+
+        COALESCE(c.area_code, '') AS area_code,
+
+        COALESCE(
+            NULLIF(c.city, ''),
+            NULLIF(hi.customer_city, ''),
+            'TANPA KOTA'
+        ) AS city,
+
         $invoiceAmountExpr AS invoice_amount,
 
         COALESCE((
-            SELECT SUM(db1.bayar_amount)
-            FROM detail_bayar db1
-            INNER JOIN head_bayar hb1 ON hb1.bayar_no = db1.bayar_no
-            WHERE db1.invoice_no = hi.invoice_no
-              AND hb1.bayar_date < ?
-        ), 0) AS paid_before,
+            SELECT SUM($cashDb)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date < ?
+        ), 0) AS cash_before,
 
         COALESCE((
-            SELECT SUM(db2.bayar_amount)
-            FROM detail_bayar db2
-            INNER JOIN head_bayar hb2 ON hb2.bayar_no = db2.bayar_no
-            WHERE db2.invoice_no = hi.invoice_no
-              AND hb2.bayar_date BETWEEN ? AND ?
-        ), 0) AS paid_period,
+            SELECT SUM($cashDb)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date BETWEEN ? AND ?
+        ), 0) AS cash_period,
 
         COALESCE((
-            SELECT SUM(db3.bayar_amount)
-            FROM detail_bayar db3
-            INNER JOIN head_bayar hb3 ON hb3.bayar_no = db3.bayar_no
-            WHERE db3.invoice_no = hi.invoice_no
-              AND hb3.bayar_date <= ?
-        ), 0) AS paid_until_end
+            SELECT SUM($cashDb)
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date <= ?
+        ), 0) AS cash_cutoff,
+
+        COALESCE((
+            SELECT SUM(COALESCE(db.titip_amount, 0))
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date < ?
+        ), 0) AS titip_before,
+
+        COALESCE((
+            SELECT SUM(COALESCE(db.titip_amount, 0))
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date BETWEEN ? AND ?
+        ), 0) AS titip_period,
+
+        COALESCE((
+            SELECT SUM(COALESCE(db.titip_amount, 0))
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            WHERE db.invoice_no = hi.invoice_no
+              AND hb.bayar_date <= ?
+        ), 0) AS titip_cutoff,
+
+        COALESCE((
+            SELECT SUM(COALESCE(hri.return_amount, 0))
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.return_date < ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        ), 0) AS retur_before,
+
+        COALESCE((
+            SELECT SUM(COALESCE(hri.return_amount, 0))
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.return_date BETWEEN ? AND ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        ), 0) AS retur_period,
+
+        COALESCE((
+            SELECT SUM(COALESCE(hri.return_amount, 0))
+            FROM head_retur_invoice hri
+            WHERE hri.invoice_no = hi.invoice_no
+              AND hri.return_date <= ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        ), 0) AS retur_cutoff
 
     FROM head_invoice hi
-    LEFT JOIN m_customer c ON c.customer_id = hi.customer_id
+
+    LEFT JOIN m_customer c
+        ON c.customer_id = hi.customer_id
+
+    LEFT JOIN customer_opening_balance cob
+        ON cob.customer_id = hi.customer_id
+       AND LOWER(COALESCE(cob.status, 'Active')) = 'active'
+
     $whereInvoice
-    ORDER BY hi.customer_id ASC, hi.invoice_date ASC, hi.invoice_no ASC
+
+    ORDER BY
+        hi.customer_id ASC,
+        hi.invoice_date ASC,
+        hi.invoice_no ASC
 ";
 
 $stmtInvoice = mysqli_prepare($conn, $sqlInvoice);
-mysqli_stmt_bind_param($stmtInvoice, $typesInvoice, ...$paramsInvoice);
+
+if (!$stmtInvoice) {
+    die(
+        'SQL AGING GLOBAL ERROR: ' .
+        h(mysqli_error($conn)) .
+        '<br><pre>' .
+        h($sqlInvoice) .
+        '</pre>'
+    );
+}
+
+mysqli_stmt_bind_param(
+    $stmtInvoice,
+    $invoiceTypes,
+    ...$invoiceParams
+);
+
 mysqli_stmt_execute($stmtInvoice);
 $resInvoice = mysqli_stmt_get_result($stmtInvoice);
-
-$rows = [];
 
 while ($inv = mysqli_fetch_assoc($resInvoice)) {
     $groupLabel = getGroupLabel($inv, $filterBy);
@@ -202,112 +679,237 @@ while ($inv = mysqli_fetch_assoc($resInvoice)) {
         $rows[$groupLabel] = initRow($groupLabel);
     }
 
-    $invoiceDate = $inv['invoice_date'];
-    $dueDate = $inv['due_date'];
+    $invoiceDate = (string)($inv['invoice_date'] ?? '');
+    $dueDate = (string)($inv['due_date'] ?? '');
 
-    $invoiceAmount = (float)$inv['invoice_amount'];
-    $paidBefore = (float)$inv['paid_before'];
-    $paidPeriod = (float)$inv['paid_period'];
-    $paidUntilEnd = (float)$inv['paid_until_end'];
+    $invoiceAmount = (float)($inv['invoice_amount'] ?? 0);
 
-    $outstandingBefore = max($invoiceAmount - $paidBefore, 0);
-    $outstandingEnd = max($invoiceAmount - $paidUntilEnd, 0);
+    $cashBefore = (float)($inv['cash_before'] ?? 0);
+    $cashPeriod = (float)($inv['cash_period'] ?? 0);
+    $cashCutoff = (float)($inv['cash_cutoff'] ?? 0);
 
-    if ($invoiceDate < $startDate) {
-        $rows[$groupLabel]['saldo_awal'] += $outstandingBefore;
+    $titipBefore = (float)($inv['titip_before'] ?? 0);
+    $titipPeriod = (float)($inv['titip_period'] ?? 0);
+    $titipCutoff = (float)($inv['titip_cutoff'] ?? 0);
+
+    $returBefore = (float)($inv['retur_before'] ?? 0);
+    $returPeriod = (float)($inv['retur_period'] ?? 0);
+    $returCutoff = (float)($inv['retur_cutoff'] ?? 0);
+
+    /*
+     * Invoice sebelum bulan laporan tetapi sesudah go-live
+     * menjadi bagian dari Saldo Awal bulan laporan.
+     */
+    if ($invoiceDate !== '' && $invoiceDate < $startDate) {
+        $rows[$groupLabel]['saldo_awal'] +=
+            $invoiceAmount
+            - $cashBefore
+            - $titipBefore
+            - $returBefore;
     }
 
-    if ($invoiceDate >= $startDate && $invoiceDate <= $endDate) {
+    /*
+     * Invoice pada bulan laporan menjadi Penjualan.
+     */
+    if (
+        $invoiceDate >= $startDate &&
+        $invoiceDate <= $endDate
+    ) {
         $rows[$groupLabel]['penjualan'] += $invoiceAmount;
     }
 
-    $rows[$groupLabel]['pembayaran'] += $paidPeriod;
+    /*
+     * Mutasi bulan laporan:
+     * Pembayaran = cash/transfer.
+     * Titip = titip yang benar-benar dipakai.
+     */
+    $rows[$groupLabel]['pembayaran'] += $cashPeriod;
+    $rows[$groupLabel]['titip_used'] += $titipPeriod;
+    $rows[$groupLabel]['retur'] += $returPeriod;
+
+    /*
+     * Saldo invoice sampai akhir bulan.
+     */
+    $outstandingBeforeReturn =
+        $invoiceAmount
+        - $cashCutoff
+        - $titipCutoff;
+
+    $outstandingEnd =
+        $outstandingBeforeReturn
+        - $returCutoff;
+
     $rows[$groupLabel]['saldo_akhir'] += $outstandingEnd;
 
-    if ($outstandingEnd > 0) {
-        $ageDays = (int)floor((strtotime($asOfDate) - strtotime($dueDate)) / 86400);
+    /*
+     * Aging invoice baru mengikuti umur jatuh tempo.
+     */
+    if ($outstandingBeforeReturn > 0.0001) {
+        $ageDays = 0;
+
+        if ($dueDate !== '' && $dueDate !== '0000-00-00') {
+            $ageDays = (int)floor(
+                (
+                    strtotime($asOfDate)
+                    - strtotime($dueDate)
+                ) / 86400
+            );
+        }
 
         if ($ageDays <= 0) {
-            $rows[$groupLabel]['belum_jatuh_tempo'] += $outstandingEnd;
+            $rows[$groupLabel]['belum_jatuh_tempo'] += $outstandingBeforeReturn;
+
         } elseif ($ageDays <= 30) {
-            $rows[$groupLabel]['b_1_30'] += $outstandingEnd;
+            $rows[$groupLabel]['b_1_30'] += $outstandingBeforeReturn;
+
         } elseif ($ageDays <= 60) {
-            $rows[$groupLabel]['b_31_60'] += $outstandingEnd;
+            $rows[$groupLabel]['b_31_60'] += $outstandingBeforeReturn;
+
         } elseif ($ageDays <= 90) {
-            $rows[$groupLabel]['b_61_90'] += $outstandingEnd;
+            $rows[$groupLabel]['b_61_90'] += $outstandingBeforeReturn;
+
         } else {
-            $rows[$groupLabel]['b_lebih'] += $outstandingEnd;
+            /*
+             * Outstanding >90 hari masuk ke kolom Lebih.
+             */
+            $rows[$groupLabel]['b_lebih'] += $outstandingBeforeReturn;
         }
     }
+
+    /*
+     * Retur selalu ditempatkan pada kolom Lebih sebagai nilai minus.
+     *
+     * Lebih = outstanding >90 hari + saldo historis tanpa umur - Retur.
+     */
+    $rows[$groupLabel]['b_lebih'] -= $returCutoff;
 }
+
 mysqli_stmt_close($stmtInvoice);
 
-$whereTitip = " WHERE ht.titip_date BETWEEN ? AND ? ";
-$paramsTitip = [$startDate, $endDate];
-$typesTitip = "ss";
+/*
+ * ============================================================
+ * 3. SALDO TITIP BELUM TERPAKAI PER AKHIR PERIODE
+ * ============================================================
+ *
+ * Kolom Titip hanya display saldo deposit yang masih tersedia.
+ * Nilai ini TIDAK mengurangi piutang lagi, karena penggunaan titip
+ * sudah dihitung melalui titip_used.
+ */
+$whereSaldoTitip = " WHERE dt.titip_date <= ? ";
+$paramsSaldoTitip = [$endDate];
+$typesSaldoTitip = 's';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
-    $whereTitip .= " AND c.area_code = ? ";
-    $paramsTitip[] = $filterValue;
-    $typesTitip .= "s";
+    $whereSaldoTitip .= " AND COALESCE(c.area_code, '') = ? ";
+    $paramsSaldoTitip[] = $filterValue;
+    $typesSaldoTitip .= 's';
+
 } elseif ($filterBy === 'kota' && $filterValue !== '') {
-    $whereTitip .= " AND COALESCE(NULLIF(c.city, ''), NULLIF(ht.customer_city, '')) = ? ";
-    $paramsTitip[] = $filterValue;
-    $typesTitip .= "s";
+    $whereSaldoTitip .= "
+        AND COALESCE(
+                NULLIF(c.city, ''),
+                NULLIF(ht.customer_city, '')
+            ) = ?
+    ";
+    $paramsSaldoTitip[] = $filterValue;
+    $typesSaldoTitip .= 's';
+
 } elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
-    $whereTitip .= " AND ht.customer_id = ? ";
-    $paramsTitip[] = $filterValue;
-    $typesTitip .= "s";
+    $whereSaldoTitip .= " AND dt.customer_id = ? ";
+    $paramsSaldoTitip[] = $filterValue;
+    $typesSaldoTitip .= 's';
 }
 
-$sqlTitip = "
+$sqlSaldoTitip = "
     SELECT
-        ht.customer_id,
-        ht.customer_name,
-        ht.customer_city,
-        c.area_code,
-        COALESCE(NULLIF(c.city, ''), NULLIF(ht.customer_city, ''), '') AS city,
-        COALESCE(SUM(ht.total_titip), 0) AS total_titip
-    FROM head_titip ht
-    LEFT JOIN m_customer c ON c.customer_id = ht.customer_id
-    $whereTitip
+        dt.customer_id,
+        COALESCE(
+            NULLIF(c.customer, ''),
+            NULLIF(ht.customer_name, ''),
+            '-'
+        ) AS customer_name,
+        COALESCE(
+            NULLIF(c.city, ''),
+            NULLIF(ht.customer_city, ''),
+            'TANPA KOTA'
+        ) AS city,
+        COALESCE(c.area_code, '') AS area_code,
+        COALESCE(
+            SUM(
+                COALESCE(dt.amount_in, 0)
+                - COALESCE(dt.amount_out, 0)
+            ),
+            0
+        ) AS saldo_titip
+    FROM detail_titip dt
+    LEFT JOIN head_titip ht
+        ON ht.titip_no = dt.titip_no
+    LEFT JOIN m_customer c
+        ON c.customer_id = dt.customer_id
+    $whereSaldoTitip
     GROUP BY
-        ht.customer_id,
+        dt.customer_id,
+        c.customer,
         ht.customer_name,
+        c.city,
         ht.customer_city,
-        c.area_code,
-        c.city
+        c.area_code
 ";
 
-$stmtTitip = mysqli_prepare($conn, $sqlTitip);
+$stmtSaldoTitip = mysqli_prepare($conn, $sqlSaldoTitip);
 
-if (!$stmtTitip) {
-    die("SQL TITIP ERROR: " . mysqli_error($conn) . "<br><pre>" . htmlspecialchars($sqlTitip) . "</pre>");
-}
+if ($stmtSaldoTitip) {
+    mysqli_stmt_bind_param(
+        $stmtSaldoTitip,
+        $typesSaldoTitip,
+        ...$paramsSaldoTitip
+    );
+    mysqli_stmt_execute($stmtSaldoTitip);
+    $resSaldoTitip = mysqli_stmt_get_result($stmtSaldoTitip);
 
-mysqli_stmt_bind_param($stmtTitip, $typesTitip, ...$paramsTitip);
-mysqli_stmt_execute($stmtTitip);
-$resTitip = mysqli_stmt_get_result($stmtTitip);
+    while ($st = mysqli_fetch_assoc($resSaldoTitip)) {
+        $groupLabel = getGroupLabel($st, $filterBy);
 
-while ($titip = mysqli_fetch_assoc($resTitip)) {
-    $groupLabel = getGroupLabel($titip, $filterBy);
+        if (!isset($rows[$groupLabel])) {
+            $rows[$groupLabel] = initRow($groupLabel);
+        }
 
-    if (!isset($rows[$groupLabel])) {
-        $rows[$groupLabel] = initRow($groupLabel);
+        $rows[$groupLabel]['titip'] +=
+            (float)($st['saldo_titip'] ?? 0);
     }
 
-    $rows[$groupLabel]['titip'] += (float)$titip['total_titip'];
+    mysqli_stmt_close($stmtSaldoTitip);
 }
-mysqli_stmt_close($stmtTitip);
 
-ksort($rows);
+/*
+ * Singkirkan baris benar-benar kosong.
+ */
+foreach ($rows as $key => $row) {
+    $activity =
+        abs((float)$row['saldo_awal'])
+        + abs((float)$row['penjualan'])
+        + abs((float)$row['pembayaran'])
+        + abs((float)$row['titip'])
+        + abs((float)$row['titip_used'])
+        + abs((float)$row['retur'])
+        + abs((float)$row['saldo_akhir']);
+
+    if ($activity < 0.0001) {
+        unset($rows[$key]);
+    }
+}
+
+ksort(
+    $rows,
+    SORT_NATURAL | SORT_FLAG_CASE
+);
 
 $grand = initRow('GRAND TOTAL');
 
 foreach ($rows as $row) {
     foreach ($grand as $key => $value) {
         if ($key !== 'label') {
-            $grand[$key] += (float)$row[$key];
+            $grand[$key] += (float)($row[$key] ?? 0);
         }
     }
 }
@@ -470,6 +1072,11 @@ foreach ($rows as $row) {
         .label-cell {
             white-space: normal;
             font-weight: 500;
+        }
+
+        .return-negative {
+            color: #a00000;
+            font-weight: bold;
         }
 
         /* Print Styles */
@@ -673,7 +1280,7 @@ foreach ($rows as $row) {
                     <th style="width:78px;">1 - 30 Hari</th>
                     <th style="width:78px;">31 - 60 Hari</th>
                     <th style="width:78px;">61 - 90 Hari</th>
-                    <th style="width:78px;">Lebih</th>
+                    <th style="width:78px;">Lebih / Retur</th>
                     <th style="width:88px;">Belum Jatuh Tempo</th>
                 </tr>
             </thead>
@@ -698,7 +1305,7 @@ foreach ($rows as $row) {
                             <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['b_61_90'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['b_lebih'])) ?></td>
+                            <td class="money-cell <?= $row['b_lebih'] < 0 ? 'return-negative' : '' ?>"><?= h(formatMoney($row['b_lebih'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['belum_jatuh_tempo'])) ?></td>
                         </tr>
                     <?php endforeach; ?>
@@ -710,12 +1317,12 @@ foreach ($rows as $row) {
                     <td class="money-cell"><?= h(formatMoney($grand['saldo_awal'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['penjualan'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['titip'])) ?></td>
+                    <td class="money-cell"><?= h(formatMoney($grand['titip'])) ?></td>  
                     <td class="money-cell"><?= h(formatMoney($grand['saldo_akhir'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['b_61_90'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['b_lebih'])) ?></td>
+                    <td class="money-cell <?= $grand['b_lebih'] < 0 ? 'return-negative' : '' ?>"><?= h(formatMoney($grand['b_lebih'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['belum_jatuh_tempo'])) ?></td>
                 </tr>
             </tfoot>

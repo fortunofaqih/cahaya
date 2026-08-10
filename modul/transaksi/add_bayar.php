@@ -80,6 +80,9 @@ $sqlShipping = "
         src.order_no,
         src.shipping_amount,
 
+        /* Retur aktif khusus pasangan invoice_no + shipping_no. */
+        COALESCE(ret_shipping.return_amount, 0) AS retur_amount,
+
         /* Pembayaran yang benar-benar tersimpan untuk Shipping No ini. */
         COALESCE(pay_shipping.paid_amount, 0) AS paid_amount,
 
@@ -93,20 +96,15 @@ $sqlShipping = "
          *    shipping dianggap lunas.
          */
         CASE
-            WHEN COALESCE(inv_pay.total_paid_invoice, 0) >= src.invoice_amount - 0.01
-                THEN 0
-
-            WHEN COALESCE(last_shipping.sisa_after, 999999999999.99) <= 0.01
-                THEN 0
-
             WHEN src.shipping_count = 1
                 THEN GREATEST(
-                    src.shipping_amount - COALESCE(inv_pay.total_paid_invoice, 0),
+                    src.shipping_amount
+                    - COALESCE(inv_pay.total_paid_invoice, 0),
                     0
                 )
-
             ELSE GREATEST(
-                src.shipping_amount - COALESCE(pay_shipping.paid_amount, 0),
+                src.shipping_amount
+                - COALESCE(pay_shipping.paid_amount, 0),
                 0
             )
         END AS sisa_shipping,
@@ -171,7 +169,20 @@ $sqlShipping = "
             TRIM(di.shipping_no)
     ) src
 
-    /* Pembayaran per pasangan invoice_no + shipping_no. */
+    /* Retur aktif per pasangan invoice_no + shipping_no. */
+    LEFT JOIN
+    (
+        SELECT
+            hri.invoice_no,
+            TRIM(hri.shipping_no) AS shipping_no,
+            SUM(COALESCE(hri.return_amount, 0)) AS return_amount
+        FROM head_retur_invoice hri
+        WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        GROUP BY hri.invoice_no, TRIM(hri.shipping_no)
+    ) ret_shipping
+        ON ret_shipping.invoice_no = src.invoice_no
+       AND ret_shipping.shipping_no = src.shipping_no
+/* Pembayaran per pasangan invoice_no + shipping_no. */
     LEFT JOIN
     (
         SELECT
@@ -228,22 +239,23 @@ $sqlShipping = "
     WHERE
         src.shipping_amount > 0
         AND (
-            CASE
-                WHEN COALESCE(inv_pay.total_paid_invoice, 0) >= src.invoice_amount - 0.01
-                    THEN 0
-                WHEN COALESCE(last_shipping.sisa_after, 999999999999.99) <= 0.01
-                    THEN 0
-                WHEN src.shipping_count = 1
-                    THEN GREATEST(
-                        src.shipping_amount - COALESCE(inv_pay.total_paid_invoice, 0),
+            (
+                CASE
+                    WHEN src.shipping_count = 1
+                        THEN GREATEST(
+                            src.shipping_amount
+                            - COALESCE(inv_pay.total_paid_invoice, 0),
+                            0
+                        )
+                    ELSE GREATEST(
+                        src.shipping_amount
+                        - COALESCE(pay_shipping.paid_amount, 0),
                         0
                     )
-                ELSE GREATEST(
-                    src.shipping_amount - COALESCE(pay_shipping.paid_amount, 0),
-                    0
-                )
-            END
-        ) > 0.01
+                END
+            ) > 0.01
+            OR COALESCE(ret_shipping.return_amount, 0) > 0.01
+        )
 
     ORDER BY
         src.invoice_date DESC,
@@ -258,6 +270,46 @@ if (!$resShipping) {
 
 while ($row = mysqli_fetch_assoc($resShipping)) {
     $shippings[] = $row;
+}
+
+/*
+ * Daftar Retur aktif per pasangan invoice + shipping.
+ * User memilih No. Retur secara eksplisit untuk kebutuhan cross-check.
+ */
+$returnsByShipping = [];
+
+$sqlReturnList = "
+    SELECT
+        return_id,
+        return_date,
+        invoice_no,
+        TRIM(shipping_no) AS shipping_no,
+        return_amount,
+        reason_return
+    FROM head_retur_invoice
+    WHERE LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+    ORDER BY return_date DESC, return_id DESC
+";
+
+$resReturnList = mysqli_query($conn, $sqlReturnList);
+
+if (!$resReturnList) {
+    die('Query daftar retur gagal: ' . mysqli_error($conn));
+}
+
+while ($ret = mysqli_fetch_assoc($resReturnList)) {
+    $key = trim((string)$ret['invoice_no']) . '|' . trim((string)$ret['shipping_no']);
+
+    if (!isset($returnsByShipping[$key])) {
+        $returnsByShipping[$key] = [];
+    }
+
+    $returnsByShipping[$key][] = [
+        'return_id' => (string)$ret['return_id'],
+        'return_date' => (string)$ret['return_date'],
+        'return_amount' => (float)$ret['return_amount'],
+        'reason_return' => (string)($ret['reason_return'] ?? ''),
+    ];
 }
 ?>
 
@@ -533,14 +585,31 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
                                 data-customer-address="<?= h($ship['customer_address']) ?>"
                                 data-customer-city="<?= h($ship['customer_city']) ?>"
                                 data-shipping-amount="<?= h($ship['shipping_amount']) ?>"
+                                data-retur-amount="<?= h($ship['retur_amount']) ?>"
                                 data-paid-amount="<?= h($ship['paid_amount']) ?>"
                                 data-sisa-shipping="<?= h($ship['sisa_shipping']) ?>"
                                 data-saldo-titip="<?= h($ship['saldo_titip']) ?>">
-                                <?= h($ship['shipping_no'] . ' | ' . $ship['invoice_no'] . ' | ' . formatDateDisplay($ship['invoice_date']) . ' | ' . $ship['customer_name'] . ' | Sisa Rp ' . formatMoney($ship['sisa_shipping'])) ?>
+                                <?= h(
+                                    $ship['shipping_no']
+                                    . ' | ' . $ship['invoice_no']
+                                    . ' | ' . formatDateDisplay($ship['invoice_date'])
+                                    . ' | ' . $ship['customer_name']
+                                    . ((float)$ship['retur_amount'] > 0
+                                        ? ' | Retur Rp ' . formatMoney($ship['retur_amount'])
+                                        : '')
+                                    . ' | Sisa Rp ' . formatMoney($ship['sisa_shipping'])
+                                ) ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
                     <input type="hidden" name="invoice_no" id="invoice_no" value="">
+                </div>
+
+                <div class="ff">
+                    <label>No. Retur</label>
+                    <select name="return_id" id="return_id">
+                        <option value="">-- Tidak Ada / Pilih No. Retur --</option>
+                    </select>
                 </div>
 
                 <div class="ff">
@@ -614,7 +683,13 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
                 </div>
 
                 <div class="ff">
-                    <label>Sisa </label>
+                    <label>Nilai Retur Terpilih</label>
+                    <input type="text" id="retur_invoice_display" class="readonly-highlight" readonly>
+                    <input type="hidden" name="retur_invoice" id="retur_invoice" value="0">
+                </div>
+
+                <div class="ff">
+                    <label>Sisa Shipping dari Sisi Pembayaran</label>
                     <input type="text" id="sisa_shipping_display" class="readonly-highlight" readonly>
                     <input type="hidden" name="sisa_shipping" id="sisa_shipping" value="0">
                     <input type="hidden" name="shipping_amount" id="shipping_amount" value="0">
@@ -643,6 +718,7 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
                         <option value="">-- Pilih --</option>
                         <option value="Cash">Cash</option>
                         <option value="Transfer">Transfer</option>
+                        <option value="Retur">Retur / Cross-check</option>
                     </select>
                 </div>
 
@@ -674,6 +750,11 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
 </div>
 
 <script>
+const returnMap = <?= json_encode(
+    $returnsByShipping,
+    JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+) ?>;
+
 function parseNumber(value) {
     value = String(value || '').replace(/[^0-9,-]/g, '');
     value = value.replace(/\./g, '').replace(',', '.');
@@ -702,15 +783,23 @@ function checkNominal() {
 
     warning.removeClass('warning-danger warning-info warning-ok').hide();
 
-    if (totalBayarInvoice <= 0 || sisa <= 0) {
-        return;
-    }
+    const returnId = $('#return_id').val() || '';
 
     if (nominalTitip > saldoTitip) {
         warning
             .addClass('warning-danger')
             .html('Nominal titip yang dipakai melebihi saldo titip uang. Saldo titip: Rp ' + formatRupiah(saldoTitip))
             .show();
+        return;
+    }
+
+    if (totalBayarInvoice <= 0) {
+        if (returnId) {
+            warning
+                .addClass('warning-info')
+                .html('Pembayaran Rp 0,00 | No. Retur dipilih untuk kebutuhan cross-check.')
+                .show();
+        }
         return;
     }
 
@@ -756,6 +845,7 @@ $(document).ready(function () {
         const customerCity = opt.data('customer-city') || '';
       const invoiceNo = opt.data('invoice-no') || '';
       const shippingAmount = parseFloat(opt.data('shipping-amount')) || 0;
+      const returTotal = parseFloat(opt.data('retur-amount')) || 0;
       const sisaShipping = parseFloat(opt.data('sisa-shipping')) || 0;
       const saldoTitip = parseFloat(opt.data('saldo-titip')) || 0;
 
@@ -765,6 +855,36 @@ $(document).ready(function () {
         $('#customer_city').val(customerCity);
         $('#invoice_no').val(invoiceNo);
         $('#shipping_amount').val(shippingAmount);
+
+        const returnKey = invoiceNo + '|' + ($(this).val() || '');
+        const returns = returnMap[returnKey] || [];
+        const returSelect = $('#return_id');
+
+        returSelect.empty();
+        returSelect.append(
+            $('<option>', {
+                value: '',
+                text: '-- Tidak Ada / Pilih No. Retur --'
+            })
+        );
+
+        returns.forEach(function (ret) {
+            returSelect.append(
+                $('<option>', {
+                    value: ret.return_id,
+                    text:
+                        ret.return_id +
+                        ' | ' +
+                        ret.return_date +
+                        ' | Rp ' +
+                        formatRupiah(ret.return_amount)
+                }).attr('data-return-amount', ret.return_amount)
+            );
+        });
+
+        $('#retur_invoice').val(0);
+        $('#retur_invoice_display').val('Rp ' + formatRupiah(0));
+
         $('#sisa_shipping').val(sisaShipping);
         $('#sisa_shipping_display').val('Rp ' + formatRupiah(sisaShipping));
         $('#saldo_titip').val(saldoTitip);
@@ -778,7 +898,31 @@ $(document).ready(function () {
         if (sisaShipping > 0) {
             $('#nominal_bayar').val(formatRupiah(sisaShipping));
             checkNominal();
+        } else if (returTotal > 0) {
+            $('#nominal_bayar').val('0,00');
+            $('#warningNominal')
+                .removeClass('warning-danger warning-ok')
+                .addClass('warning-info')
+                .html(
+                    'Shipping ini sudah lunas dari sisi pembayaran tetapi mempunyai Retur. ' +
+                    'Pilih No. Retur jika ingin menyimpan transaksi Rp 0,00 untuk cross-check.'
+                )
+                .show();
         }
+    });
+
+    $('#return_id').on('change', function () {
+        const opt = $(this).find(':selected');
+        const amount = parseFloat(opt.attr('data-return-amount')) || 0;
+
+        $('#retur_invoice').val(amount);
+        $('#retur_invoice_display').val('Rp ' + formatRupiah(amount));
+
+        if ($(this).val() && parseNumber($('#nominal_bayar').val()) <= 0) {
+            $('#keterangan').val('Retur');
+        }
+
+        checkNominal();
     });
 
     $('#nominal_bayar').on('input keyup blur', function () {
@@ -811,8 +955,10 @@ $('#formBayar').on('submit', function (e) {
         return false;
     }
 
-    if (totalBayarInvoice <= 0) {
-        alert('Total bayar harus lebih dari 0.');
+    const returnId = $('#return_id').val() || '';
+
+    if (totalBayarInvoice <= 0 && !returnId) {
+        alert('Total bayar Rp 0,00 hanya diperbolehkan jika No. Retur dipilih.');
         e.preventDefault();
         return false;
     }
