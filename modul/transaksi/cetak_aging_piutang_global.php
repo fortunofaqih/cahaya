@@ -7,12 +7,13 @@
 // 2. Invoice / pembayaran pada opening_date tetap dihitung (>= opening_date).
 // 3. Titip masuk (head_titip/detail_titip amount_in) TIDAK mengurangi piutang.
 // 4. Kolom Titip = saldo titip customer yang BELUM terpakai per akhir periode.
-// 5. Titip yang sudah dipakai (detail_bayar.titip_amount) tetap mengurangi piutang secara INTERNAL.
+// 5. Titip yang sudah dipakai (detail_bayar.titip_amount) DAN saldo titip yang
+//    belum terpakai (detail_titip amount_in - amount_out) sama-sama mengurangi piutang.
 // 6. Kolom Pembayaran = bagian Cash / Transfer saja.
 // 7. Retur Invoice aktif mengurangi piutang.
 // 8. Kolom "Lebih" = outstanding >90 hari + saldo historis tanpa umur - Retur Invoice.
 // 9. detail_bayar.return_id hanya sebagai link audit/cross-check, tidak mengubah perhitungan.
-// 10. Saldo Akhir = Saldo Awal + Penjualan - Pembayaran - Titip Terpakai - Retur.
+// 10. Saldo Akhir = Saldo Awal + Penjualan - Pembayaran - Titip Terpakai - Titip Belum Terpakai - Retur.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -880,6 +881,24 @@ if ($stmtSaldoTitip) {
 
     mysqli_stmt_close($stmtSaldoTitip);
 }
+/*
+ * ============================================================
+ * 4. SALDO TITIP BELUM TERPAKAI MENGURANGI PIUTANG
+ * ============================================================
+ *
+ * Konsisten dengan cetak_aging_piutang_detail.php:
+ * saldo titip yang belum dipakai TETAP mengurangi Saldo Akhir,
+ * karena itu tetap uang yang sudah diterima dari customer.
+ *
+ * Karena tidak terikat ke invoice / umur tertentu, ditempatkan
+ * sebagai pengurang pada kolom "Lebih" juga (sama seperti Retur
+ * Invoice), agar total bucket umur tetap sama dengan Saldo Akhir.
+ */
+foreach ($rows as $key => &$row) {
+    $row['saldo_akhir'] -= $row['titip'];
+    $row['b_lebih'] -= $row['titip'];
+}
+unset($row);
 
 /*
  * Singkirkan baris benar-benar kosong.

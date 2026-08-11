@@ -1067,7 +1067,9 @@ foreach ($customers as $key => &$customer) {
         + $a['penjualan']
         - $a['bayar']
         - $a['titip_used']
+		- $a['titip']
         - $a['retur'];
+		 $a['b_lebih'] -= $a['titip'];
 
     $activityTotal =
         abs($a['saldo_awal'])

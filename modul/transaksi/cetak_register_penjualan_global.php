@@ -41,6 +41,23 @@ $startDate=parseDateR($_GET['start_date']??'',date('Y-m-01'));
 $endDate=parseDateR($_GET['end_date']??'',$today);
 if(strtotime($startDate)>strtotime($endDate)) [$startDate,$endDate]=[$endDate,$startDate];
 
+// Sorting mengikuti halaman Register Penjualan Global.
+$sort = strtolower(trim((string)($_GET['sort'] ?? 'shipping_no')));
+$dir  = strtolower(trim((string)($_GET['dir'] ?? 'asc')));
+
+$allowedSort = ['shipping_no', 'invoice_no'];
+$allowedDir  = ['asc', 'desc'];
+
+if (!in_array($sort, $allowedSort, true)) {
+    $sort = 'shipping_no';
+}
+if (!in_array($dir, $allowedDir, true)) {
+    $dir = 'asc';
+}
+
+$orderColumn = $sort === 'invoice_no' ? 'di.invoice_no' : 'di.shipping_no';
+$orderDirection = strtoupper($dir);
+
 $sql = "
 SELECT
     di.invoice_no,
@@ -158,7 +175,11 @@ WHERE hi.invoice_date BETWEEN ? AND ?
 GROUP BY
     di.invoice_no,di.shipping_no,hi.invoice_date,hi.customer_name,category_group
 ORDER BY
-    hi.invoice_date ASC,di.shipping_no ASC,di.invoice_no ASC,category_group ASC
+    {$orderColumn} {$orderDirection},
+    hi.invoice_date ASC,
+    di.shipping_no ASC,
+    di.invoice_no ASC,
+    category_group ASC
 ";
 
 $stmt=mysqli_prepare($conn,$sql);
@@ -240,7 +261,7 @@ tfoot td{font-weight:bold;background:#f1f1f1}
 </head>
 <body>
 <div class="toolbar no-print">
-<a href="../../index.php?page=register_penjualan_global" class="btn btn-back">Kembali</a>
+<a href="../../index.php?page=register_penjualan_global&start_date=<?=urlencode(fmtDateR($startDate))?>&end_date=<?=urlencode(fmtDateR($endDate))?>&sort=<?=urlencode($sort)?>&dir=<?=urlencode($dir)?>" class="btn btn-back">Kembali</a>
 <button type="button" class="btn btn-print" onclick="window.print()">Cetak</button>
 </div>
 <div class="screen-scroll"><div class="print-wrap">

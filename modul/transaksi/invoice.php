@@ -77,6 +77,37 @@ $status = trim((string)($_GET['status'] ?? 'All'));
 $invoice_no_search = trim((string)($_GET['invoice_no'] ?? ''));
 $shipping_no_search = trim((string)($_GET['shipping_no'] ?? ''));
 
+// Sorting hanya untuk Invoice No. dan Shipping No.
+$sort = strtolower(trim((string)($_GET['sort'] ?? 'invoice_no')));
+$dir  = strtolower(trim((string)($_GET['dir'] ?? 'desc')));
+
+$allowedSort = ['invoice_no', 'shipping_no'];
+if (!in_array($sort, $allowedSort, true)) {
+    $sort = 'invoice_no';
+}
+if (!in_array($dir, ['asc', 'desc'], true)) {
+    $dir = 'desc';
+}
+
+$sortDirSql = strtoupper($dir);
+
+// URL helper agar filter/search tetap terbawa ketika sorting diklik.
+function sortUrl($column, $currentSort, $currentDir) {
+    $nextDir = ($currentSort === $column && $currentDir === 'asc') ? 'desc' : 'asc';
+    $query = $_GET;
+    $query['page'] = 'invoice';
+    $query['sort'] = $column;
+    $query['dir'] = $nextDir;
+    return 'index.php?' . http_build_query($query);
+}
+
+function sortIndicator($column, $currentSort, $currentDir) {
+    if ($currentSort !== $column) {
+        return '↕';
+    }
+    return $currentDir === 'asc' ? '▲' : '▼';
+}
+
 $where = ["hi.invoice_date BETWEEN ? AND ?"];
 $types = 'ss';
 $params = [$start_date, $end_date];
@@ -140,7 +171,10 @@ $sql = "
         GROUP BY invoice_no
     ) dc ON dc.invoice_no = hi.invoice_no
     $where_sql
-    ORDER BY hi.invoice_date DESC, hi.invoice_no DESC
+    ORDER BY
+        " . ($sort === 'shipping_no'
+            ? "COALESCE(dc.shipping_nos, '') $sortDirSql, hi.invoice_no $sortDirSql"
+            : "hi.invoice_no $sortDirSql") . "
 ";
 
 $stmt = mysqli_prepare($conn, $sql);
@@ -363,6 +397,23 @@ if ($detailStmt) {
 .invoice-detail-table th,
 .invoice-detail-table td { border: 1px solid #ccd7e3; padding: 6px; background: #fff; white-space: nowrap; }
 .invoice-detail-table th { background: #dfeaf5; color: #2b4c7e; position: static; }
+
+.sortable-th a {
+    color: #2b4c7e;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-weight: 700;
+}
+.sortable-th a:hover {
+    color: #0d6efd;
+    text-decoration: none;
+}
+.sort-indicator {
+    font-size: 9px;
+    line-height: 1;
+}
 @media (max-width: 900px) {
     .filter-grid {
         grid-template-columns: 1fr 1fr;
@@ -446,9 +497,19 @@ if ($detailStmt) {
             <thead>
                 <tr>
                     <th class="sticky-aksi">Aksi</th>
-                    <th>Invoice No.</th>
+                    <th class="sortable-th">
+                        <a href="<?= h(sortUrl('invoice_no', $sort, $dir)) ?>" title="Urutkan Invoice No.">
+                            Invoice No.
+                            <span class="sort-indicator"><?= h(sortIndicator('invoice_no', $sort, $dir)) ?></span>
+                        </a>
+                    </th>
                     <th>Invoice Date</th>
-                    <th>Shipping No.</th>
+                    <th class="sortable-th">
+                        <a href="<?= h(sortUrl('shipping_no', $sort, $dir)) ?>" title="Urutkan Shipping No.">
+                            Shipping No.
+                            <span class="sort-indicator"><?= h(sortIndicator('shipping_no', $sort, $dir)) ?></span>
+                        </a>
+                    </th>
                     <th>Customer Name</th>
                     <th>Customer Address</th>
                     <th>Customer City</th>

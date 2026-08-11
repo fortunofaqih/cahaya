@@ -41,6 +41,39 @@ $startDate=parseDateR($_GET['start_date']??'',date('Y-m-01'));
 $endDate=parseDateR($_GET['end_date']??'',$today);
 if(strtotime($startDate)>strtotime($endDate)) [$startDate,$endDate]=[$endDate,$startDate];
 
+// Sorting hanya untuk Shipping No. dan Invoice No.
+$sort = strtolower(trim((string)($_GET['sort'] ?? 'shipping_no')));
+$dir  = strtolower(trim((string)($_GET['dir'] ?? 'asc')));
+
+$allowedSort = ['shipping_no', 'invoice_no'];
+$allowedDir  = ['asc', 'desc'];
+
+if (!in_array($sort, $allowedSort, true)) {
+    $sort = 'shipping_no';
+}
+if (!in_array($dir, $allowedDir, true)) {
+    $dir = 'asc';
+}
+
+$orderColumn = $sort === 'invoice_no' ? 'di.invoice_no' : 'di.shipping_no';
+$orderDirection = strtoupper($dir);
+
+function sortUrlR($column, $currentSort, $currentDir, $startDate, $endDate) {
+    $nextDir = ($currentSort === $column && $currentDir === 'asc') ? 'desc' : 'asc';
+    return 'index.php?' . http_build_query([
+        'page' => 'register_penjualan_global',
+        'start_date' => fmtDateR($startDate),
+        'end_date' => fmtDateR($endDate),
+        'sort' => $column,
+        'dir' => $nextDir,
+    ]);
+}
+
+function sortIconR($column, $currentSort, $currentDir) {
+    if ($currentSort !== $column) return '↕';
+    return $currentDir === 'asc' ? '▲' : '▼';
+}
+
 $sql = "
 SELECT
     di.invoice_no,
@@ -158,7 +191,11 @@ WHERE hi.invoice_date BETWEEN ? AND ?
 GROUP BY
     di.invoice_no,di.shipping_no,hi.invoice_date,hi.customer_name,category_group
 ORDER BY
-    hi.invoice_date ASC,di.shipping_no ASC,di.invoice_no ASC,category_group ASC
+    {$orderColumn} {$orderDirection},
+    hi.invoice_date ASC,
+    di.shipping_no ASC,
+    di.invoice_no ASC,
+    category_group ASC
 ";
 
 $stmt=mysqli_prepare($conn,$sql);
@@ -224,19 +261,24 @@ $cats=['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
 .report-table tfoot td{position:sticky;bottom:0;z-index:2;padding:5px 3px;border:1px solid #9faebd;background:#f2f2f2;font-weight:bold}
 .money-cell,.qty-cell{text-align:right;font-variant-numeric:tabular-nums}
 .text-center{text-align:center}.customer-cell{max-width:230px;overflow:hidden;text-overflow:ellipsis}
+.sort-link{display:inline-flex;align-items:center;gap:4px;color:#253c5c;text-decoration:none;font-weight:700}
+.sort-link:hover{color:#0d6efd;text-decoration:none}
+.sort-icon{font-size:9px;line-height:1}
 @media(max-width:800px){.filter-grid{grid-template-columns:1fr}.rpg-head{align-items:flex-start;flex-direction:column}}
 </style>
 <div class="rpg-wrap">
     <div class="rpg-head">
         <h5>Register Penjualan Global</h5>
         <a class="btn-vs btn-success"
-           href="modul/transaksi/cetak_register_penjualan_global.php?start_date=<?=urlencode(fmtDateR($startDate))?>&end_date=<?=urlencode(fmtDateR($endDate))?>"
+           href="modul/transaksi/cetak_register_penjualan_global.php?start_date=<?=urlencode(fmtDateR($startDate))?>&end_date=<?=urlencode(fmtDateR($endDate))?>&sort=<?=urlencode($sort)?>&dir=<?=urlencode($dir)?>"
            target="_blank">Cetak Register</a>
     </div>
 
     <div class="filter-card">
         <form method="GET" action="index.php">
             <input type="hidden" name="page" value="register_penjualan_global">
+            <input type="hidden" name="sort" value="<?=h($sort)?>">
+            <input type="hidden" name="dir" value="<?=h($dir)?>">
             <div class="filter-grid">
                 <div class="ff">
                     <label>Start Date</label>
@@ -258,8 +300,16 @@ $cats=['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
         <table class="report-table">
             <thead>
                 <tr>
-                    <th rowspan="2">SHIPPING NO.</th>
-                    <th rowspan="2">INVOICE NO.</th>
+                    <th rowspan="2">
+                        <a class="sort-link" href="<?=h(sortUrlR('shipping_no',$sort,$dir,$startDate,$endDate))?>" title="Urutkan Shipping No.">
+                            SHIPPING NO. <span class="sort-icon"><?=h(sortIconR('shipping_no',$sort,$dir))?></span>
+                        </a>
+                    </th>
+                    <th rowspan="2">
+                        <a class="sort-link" href="<?=h(sortUrlR('invoice_no',$sort,$dir,$startDate,$endDate))?>" title="Urutkan Invoice No.">
+                            INVOICE NO. <span class="sort-icon"><?=h(sortIconR('invoice_no',$sort,$dir))?></span>
+                        </a>
+                    </th>
                     <th rowspan="2">NAMA CUST.</th>
                     <th rowspan="2">TOTAL</th>
                     <th rowspan="2">PENJUALAN</th>
