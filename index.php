@@ -277,14 +277,29 @@ switch ($page) {
     case 'save_saldo_awal':
         include 'modul/transaksi/save_saldo_awal.php';
         break;
-     case 'edit_saldo_awal':
+    case 'edit_saldo_awal':
         include 'modul/transaksi/edit_saldo_awal.php';
         break;
-     case 'update_saldo_awal':
+    case 'update_saldo_awal':
         include 'modul/transaksi/update_saldo_awal.php';
         break;
-     case 'delete_saldo_awal':
+    case 'delete_saldo_awal':
         include 'modul/transaksi/delete_saldo_awal.php';
+        break;
+    case 'add_return_mcp':
+        include 'modul/transaksi/add_return_mcp.php';
+        break;
+    case 'save_return_mcp':
+        include 'modul/transaksi/save_return_mcp.php';
+        break;
+    case 'edit_return_mcp':
+        include 'modul/transaksi/edit_return_mcp.php';
+        break;
+    case 'update_return_mcp':
+        include 'modul/transaksi/update_return_mcp.php';
+        break;
+    case 'delete_return_mcp':
+        include 'modul/transaksi/delete_return_mcp.php';
         break;
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':

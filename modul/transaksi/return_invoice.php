@@ -130,7 +130,17 @@ $sql = "
         h.create_user,
         h.date_created,
         h.user_modified,
-        h.date_modified
+        h.date_modified,
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM detail_retur_invoice d_mcp
+                WHERE d_mcp.return_id = h.return_id
+                  AND COALESCE(d_mcp.shipping_detail_id, 0) = 0
+            )
+            THEN 1
+            ELSE 0
+        END AS is_mcp
     FROM head_retur_invoice h
     $where_sql
     ORDER BY h.return_date DESC, h.return_id DESC
@@ -152,6 +162,7 @@ $detailSql = "
         d.shipping_no,
         d.invoice_no,
         d.order_no,
+        d.shipping_detail_id,
         d.inventory_id,
         d.inventory_name,
         d.original_quantity,
@@ -229,6 +240,23 @@ if ($detailStmt) {
     color: #fff;
     padding: 10px 15px;
     border-radius: 5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.return-header-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.return-header-actions .return-btn-vs {
+    white-space: nowrap;
 }
 .return-filter-card {
     background: #fff;
@@ -359,6 +387,27 @@ if ($detailStmt) {
 .return-text-bold { font-weight: bold; }
 .return-text-blue { color: #0d6efd; }
 .return-btn-expand { background: #6f42c1; color: #fff; }
+.return-btn-expand-mcp { background: #fd7e14; color: #fff; }
+.return-btn-edit-mcp { background: #ffca2c; color: #000; }
+.return-btn-delete-mcp { background: #b02a37; color: #fff; }
+
+.return-type-badge {
+    display: inline-block;
+    margin-left: 5px;
+    padding: 2px 6px;
+    border-radius: 9px;
+    font-size: 9px;
+    font-weight: 700;
+    vertical-align: middle;
+}
+.return-type-cp {
+    background: #d1e7dd;
+    color: #0f5132;
+}
+.return-type-mcp {
+    background: #fff3cd;
+    color: #664d03;
+}
 .return-btn-expand .return-app-icon { transition: transform .2s ease; }
 .return-btn-expand.expanded .return-app-icon { transform: rotate(180deg); }
 .return-detail-row { display: none; }
@@ -383,6 +432,27 @@ if ($detailStmt) {
     .return-filter-grid {
         grid-template-columns: 1fr 1fr;
     }
+
+    .return-crystal-header {
+        align-items: flex-start;
+    }
+
+    .return-header-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+}
+
+@media (max-width: 520px) {
+    .return-header-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    .return-header-actions .return-btn-vs {
+        width: 100%;
+    }
 }
 @media print {
     .return-d-print-none {
@@ -404,15 +474,23 @@ if ($detailStmt) {
         <?= $_SESSION['alert']; unset($_SESSION['alert']); ?>
     <?php endif; ?>
 
-    <div class="return-crystal-header return-d-print-none" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+    <div class="return-crystal-header return-d-print-none" style="margin-bottom:10px;">
         <h5 style="margin:0;display:flex;align-items:center;gap:7px;">
             <span class="return-app-icon return-title-icon"><?= returnIcon('return') ?></span>
             Sales Return / Retur Invoice
         </h5>
-        <a href="index.php?page=add_return" class="return-btn-vs return-btn-success">
-            <span class="return-app-icon"><?= returnIcon('plus') ?></span>
-            Create New Return
-        </a>
+
+        <div class="return-header-actions">
+            <a href="index.php?page=add_return" class="return-btn-vs return-btn-success">
+                <span class="return-app-icon"><?= returnIcon('plus') ?></span>
+                Create Return CP
+            </a>
+
+            <a href="index.php?page=add_return_mcp" class="return-btn-vs return-btn-warning">
+                <span class="return-app-icon"><?= returnIcon('plus') ?></span>
+                Create Return CP-MCP
+            </a>
+        </div>
     </div>
 
     <div class="return-filter-card return-d-print-none">
@@ -516,40 +594,59 @@ if ($detailStmt) {
                                 ? 'return-badge-approved'
                                 : 'return-badge-pending';
                             $canModify = strtolower($approvalText) === 'pending';
+
+                            // CP-MCP disimpan dengan shipping_detail_id = 0.
+                            $isMcp = (int)($row['is_mcp'] ?? 0) === 1;
+
                             $detailRows = $returnDetails[$returnId] ?? [];
                             $detailTargetId = 'return-detail-' . md5($returnId);
+
+                            $editPage = $isMcp ? 'edit_return_mcp' : 'edit_return';
+                            $deleteAction = $isMcp
+                                ? 'modul/transaksi/delete_return_mcp.php'
+                                : 'modul/transaksi/delete_return.php';
+
+                            $typeLabel = $isMcp ? 'CP-MCP' : 'CP';
+                            $typeClass = $isMcp ? 'return-type-mcp' : 'return-type-cp';
                         ?>
                         <tr>
                             <td class="return-sticky-action return-text-center">
                                 <button type="button"
-                                        class="return-btn-vs return-btn-expand return-btn-action js-expand-return"
+                                        class="return-btn-vs <?= $isMcp ? 'return-btn-expand-mcp' : 'return-btn-expand' ?> return-btn-action js-expand-return"
                                         data-target="<?= returnH($detailTargetId) ?>"
-                                        title="Lihat detail retur">
+                                        title="Lihat detail <?= returnH($typeLabel) ?>">
                                     <span class="return-app-icon"><?= returnIcon('expand') ?></span>
                                 </button>
 
                                 <a class="return-btn-vs return-btn-primary return-btn-action"
                                    href="modul/transaksi/print_return.php?return_id=<?= urlencode($returnId) ?>"
                                    target="_blank"
-                                   title="Print Sales Return">
+                                   title="Print Sales Return <?= returnH($typeLabel) ?>">
                                     <span class="return-app-icon"><?= returnIcon('print') ?></span>
                                 </a>
 
-                                <a class="return-btn-vs return-btn-warning return-btn-action <?= !$canModify ? 'return-btn-disabled' : '' ?>"
-                                   href="index.php?page=edit_return&return_id=<?= urlencode($returnId) ?>"
-                                   title="Edit">
+                                <a class="return-btn-vs <?= $isMcp ? 'return-btn-edit-mcp' : 'return-btn-warning' ?> return-btn-action <?= !$canModify ? 'return-btn-disabled' : '' ?>"
+                                   href="index.php?page=<?= returnH($editPage) ?>&return_id=<?= urlencode($returnId) ?>"
+                                   title="Edit <?= returnH($typeLabel) ?>">
                                     <span class="return-app-icon"><?= returnIcon('edit') ?></span>
                                 </a>
 
                                 <button type="button"
-                                        class="return-btn-vs return-btn-danger return-btn-action js-delete-return <?= !$canModify ? 'return-btn-disabled' : '' ?>"
+                                        class="return-btn-vs <?= $isMcp ? 'return-btn-delete-mcp' : 'return-btn-danger' ?> return-btn-action js-delete-return <?= !$canModify ? 'return-btn-disabled' : '' ?>"
                                         data-return-id="<?= returnH($returnId) ?>"
+                                        data-delete-action="<?= returnH($deleteAction) ?>"
+                                        data-return-type="<?= returnH($typeLabel) ?>"
                                         <?= !$canModify ? 'disabled' : '' ?>
-                                        title="Delete">
+                                        title="Delete <?= returnH($typeLabel) ?>">
                                     <span class="return-app-icon"><?= returnIcon('delete') ?></span>
                                 </button>
                             </td>
-                            <td class="return-text-bold return-text-blue"><?= returnH($returnId) ?></td>
+                            <td class="return-text-bold return-text-blue">
+                                <?= returnH($returnId) ?>
+                                <span class="return-type-badge <?= returnH($typeClass) ?>">
+                                    <?= returnH($typeLabel) ?>
+                                </span>
+                            </td>
                             <td><?= returnH(formatReturnDate($row['return_date'])) ?></td>
                             <td><?= returnH($row['invoice_no']) ?></td>
                             <td><?= returnH(formatReturnDate($row['invoice_date'])) ?></td>
@@ -580,7 +677,9 @@ if ($detailStmt) {
                         <tr id="<?= returnH($detailTargetId) ?>" class="return-detail-row">
                             <td colspan="27" class="return-detail-cell">
                                 <div class="return-detail-box">
-                                    <div class="return-detail-title">Detail Sales Return: <?= returnH($returnId) ?></div>
+                                    <div class="return-detail-title">
+                                        Detail Sales Return <?= returnH($typeLabel) ?>: <?= returnH($returnId) ?>
+                                    </div>
                                     <table class="return-detail-table">
                                         <thead>
                                             <tr>
@@ -590,10 +689,14 @@ if ($detailStmt) {
                                                 <th>Order No.</th>
                                                 <th>Inventory ID</th>
                                                 <th>Inventory Name</th>
-                                                <th>Original Qty</th>
-                                                <th>Original UoM</th>
-                                                <th>Original Qty Pack</th>
-                                                <th>Original UoM Pack</th>
+
+                                                <?php if (!$isMcp): ?>
+                                                    <th>Original Qty</th>
+                                                    <th>Original UoM</th>
+                                                    <th>Original Qty Pack</th>
+                                                    <th>Original UoM Pack</th>
+                                                <?php endif; ?>
+
                                                 <th>Qty Return</th>
                                                 <th>UoM</th>
                                                 <th>Qty Pack Return</th>
@@ -601,7 +704,11 @@ if ($detailStmt) {
                                                 <th>Qty Detail Return</th>
                                                 <th>UoM Detail</th>
                                                 <th>Price Unit</th>
-                                                <th>Original Subtotal</th>
+
+                                                <?php if (!$isMcp): ?>
+                                                    <th>Original Subtotal</th>
+                                                <?php endif; ?>
+
                                                 <th>Return Subtotal</th>
                                                 <th>Remarks</th>
                                             </tr>
@@ -609,7 +716,9 @@ if ($detailStmt) {
                                         <tbody>
                                         <?php if (empty($detailRows)): ?>
                                             <tr>
-                                                <td colspan="20" class="return-text-center">Detail inventory tidak ditemukan.</td>
+                                                <td colspan="<?= $isMcp ? 15 : 20 ?>" class="return-text-center">
+                                                    Detail inventory tidak ditemukan.
+                                                </td>
                                             </tr>
                                         <?php else: ?>
                                             <?php foreach ($detailRows as $detailIndex => $detailRow): ?>
@@ -620,10 +729,12 @@ if ($detailStmt) {
                                                     <td><?= returnH($detailRow['order_no']) ?></td>
                                                     <td><?= returnH($detailRow['inventory_id']) ?></td>
                                                     <td><?= returnH($detailRow['inventory_name']) ?></td>
-                                                    <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['original_quantity'])) ?></td>
-                                                    <td><?= returnH($detailRow['original_uom']) ?></td>
-                                                    <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['original_quantity_pack'])) ?></td>
-                                                    <td><?= returnH($detailRow['original_uom_pack']) ?></td>
+                                                    <?php if (!$isMcp): ?>
+                                                        <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['original_quantity'])) ?></td>
+                                                        <td><?= returnH($detailRow['original_uom']) ?></td>
+                                                        <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['original_quantity_pack'])) ?></td>
+                                                        <td><?= returnH($detailRow['original_uom_pack']) ?></td>
+                                                    <?php endif; ?>
                                                     <td class="return-text-right return-text-bold"><?= returnH(formatReturnMoney($detailRow['return_quantity'])) ?></td>
                                                     <td><?= returnH($detailRow['uom']) ?></td>
                                                     <td class="return-text-right return-text-bold"><?= returnH(formatReturnMoney($detailRow['return_quantity_pack'])) ?></td>
@@ -631,7 +742,11 @@ if ($detailStmt) {
                                                     <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['return_quantity_detail'])) ?></td>
                                                     <td><?= returnH($detailRow['uom_detail']) ?></td>
                                                     <td class="return-text-right">Rp <?= returnH(formatReturnMoney($detailRow['price_unit'])) ?></td>
-                                                    <td class="return-text-right">Rp <?= returnH(formatReturnMoney($detailRow['original_subtotal'])) ?></td>
+
+                                                    <?php if (!$isMcp): ?>
+                                                        <td class="return-text-right">Rp <?= returnH(formatReturnMoney($detailRow['original_subtotal'])) ?></td>
+                                                    <?php endif; ?>
+
                                                     <td class="return-text-right return-text-bold">Rp <?= returnH(formatReturnMoney($detailRow['return_subtotal'])) ?></td>
                                                     <td><?= returnH($detailRow['remarks_detail']) ?></td>
                                                 </tr>
@@ -649,7 +764,7 @@ if ($detailStmt) {
     </div>
 </div>
 
-<form id="returnDeleteForm" method="POST" action="modul/transaksi/delete_return.php" style="display:none;">
+<form id="returnDeleteForm" method="POST" action="" style="display:none;">
     <input type="hidden" name="return_id" id="returnDeleteId">
 </form>
 
@@ -658,10 +773,21 @@ document.addEventListener('click', function(event) {
     var deleteButton = event.target.closest('.js-delete-return');
     if (deleteButton) {
         var returnId = deleteButton.getAttribute('data-return-id') || '';
-        if (returnId && confirm('Hapus Sales Return ' + returnId + '?')) {
+        var deleteAction = deleteButton.getAttribute('data-delete-action') || '';
+        var returnType = deleteButton.getAttribute('data-return-type') || 'CP';
+
+        if (
+            returnId &&
+            deleteAction &&
+            confirm('Hapus Sales Return ' + returnType + ' ' + returnId + '?')
+        ) {
+            var deleteForm = document.getElementById('returnDeleteForm');
+
             document.getElementById('returnDeleteId').value = returnId;
-            document.getElementById('returnDeleteForm').submit();
+            deleteForm.action = deleteAction;
+            deleteForm.submit();
         }
+
         return;
     }
 
