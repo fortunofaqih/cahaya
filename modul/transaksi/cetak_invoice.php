@@ -21,7 +21,10 @@ function e($value) {
 }
 
 function fmtMoney($value) {
-    return number_format((float)$value, 2, ',', '.');
+    // Pembulatan normal ke rupiah penuh.
+    // Contoh: 66.095.782,50 -> 66.095.783
+    $rounded = round((float)$value, 0, PHP_ROUND_HALF_UP);
+    return number_format($rounded, 0, ',', '.');
 }
 
 // Auto-shrink font untuk kolom angka (Harga Satuan / Jumlah) supaya tetap
