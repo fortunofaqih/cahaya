@@ -131,13 +131,9 @@ $sql = "
         h.date_created,
         h.user_modified,
         h.date_modified,
-        CASE
-            WHEN EXISTS (
-                SELECT 1
-                FROM detail_retur_invoice d_mcp
-                WHERE d_mcp.return_id = h.return_id
-                  AND COALESCE(d_mcp.shipping_detail_id, 0) = 0
-            )
+       CASE
+            WHEN h.return_id LIKE '%/CP-MCP/%'
+            OR h.invoice_no LIKE 'CP-MCP/INV/%'
             THEN 1
             ELSE 0
         END AS is_mcp

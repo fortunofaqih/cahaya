@@ -22,7 +22,7 @@ function formatDateIndonesian($date) {
 
     $bulan = [
         1 => 'Jan', 2 => 'Feb', 3 => 'Mar', 4 => 'Apr',
-        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Agu',
+        5 => 'Mei', 6 => 'Jun', 7 => 'Jul', 8 => 'Ags',
         9 => 'Sep', 10 => 'Okt', 11 => 'Nov', 12 => 'Des'
     ];
 
@@ -33,6 +33,10 @@ function formatDateIndonesian($date) {
     }
 
     return date('d', $timestamp) . '-' . $bulan[(int)date('m', $timestamp)] . '-' . date('Y', $timestamp);
+}
+
+function h($value) {
+    return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
 }
 
 function convertFilterDateToMysql($date) {
@@ -72,7 +76,7 @@ function convertFilterDateToMysql($date) {
 
     if (count($parts) === 3) {
         $day = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
-        $monthText = $parts[1];
+        $monthText = substr(trim($parts[1]), 0, 3);
         $year = $parts[2];
 
         if (isset($months[$monthText])) {
@@ -149,25 +153,28 @@ function getQuantityPackForTotal($quantityPack, $uomPack, $price) {
 // ==========================================
 // AMBIL PARAMETER DARI URL
 // ==========================================
+$today_mysql = date('Y-m-d');
+$today_display = formatDateIndonesian($today_mysql);
+
 $start_date_raw = isset($_GET['start_date']) && trim($_GET['start_date']) !== ''
     ? trim($_GET['start_date'])
-    : formatDateIndonesian(date('Y-m-01'));
+    : $today_display;
 
 $end_date_raw = isset($_GET['end_date']) && trim($_GET['end_date']) !== ''
     ? trim($_GET['end_date'])
-    : formatDateIndonesian(date('Y-m-t'));
+    : $today_display;
 
 $start_date_sql = convertFilterDateToMysql($start_date_raw);
 $end_date_sql = convertFilterDateToMysql($end_date_raw);
 
 if ($start_date_sql === '') {
-    $start_date_sql = date('Y-m-01');
-    $start_date_raw = formatDateIndonesian($start_date_sql);
+    $start_date_sql = $today_mysql;
+    $start_date_raw = $today_display;
 }
 
 if ($end_date_sql === '') {
-    $end_date_sql = date('Y-m-t');
-    $end_date_raw = formatDateIndonesian($end_date_sql);
+    $end_date_sql = $today_mysql;
+    $end_date_raw = $today_display;
 }
 
 if ($start_date_sql > $end_date_sql) {
@@ -200,6 +207,7 @@ $approval_status_safe = mysqli_real_escape_string($conn, $approval_status);
 // ==========================================
 $where = "WHERE 1=1";
 $where .= " AND DATE(h.order_date) BETWEEN '$start_date_safe' AND '$end_date_safe'";
+$where .= " AND COALESCE(h.order_no, '') NOT LIKE '%CP-MCP%'";
 
 if ($customer_name_safe !== '') {
     $where .= " AND h.customer_name LIKE '%$customer_name_safe%'";
@@ -229,6 +237,7 @@ $query = mysqli_query($conn, "
         h.order_no,
         h.order_date,
         h.customer_name,
+        h.customer_address,
         h.customer_city,
         h.po,
         h.payment_term,
@@ -274,11 +283,16 @@ $grand_total_bal = 0;
 $grand_total_subtotal = 0;
 
 while ($row = mysqli_fetch_assoc($query)) {
+      // Jangan proses Order No CP-MCP
+    if (stripos((string)($row['order_no'] ?? ''), 'CP-MCP') !== false) {
+        continue;
+    }
     $customer_key = $row['customer_name'] ?: 'UNKNOWN CUSTOMER';
 
     if (!isset($grouped_data[$customer_key])) {
         $grouped_data[$customer_key] = [
             'customer_name' => $row['customer_name'],
+            'customer_address' => $row['customer_address'],
             'customer_city' => $row['customer_city'],
             'orders' => []
         ];
@@ -611,30 +625,30 @@ while ($row = mysqli_fetch_assoc($query)) {
 
     <div class="company-header">
         <h4>REKAP SALES ORDER (CP)</h4>
-        <p>Periode: <?= htmlspecialchars($start_date_raw) ?> s/d <?= htmlspecialchars($end_date_raw) ?></p>
+        <p>Periode: <?= h($start_date_raw) ?> s/d <?= h($end_date_raw) ?></p>
     </div>
 
     <table class="filter-info">
         <tr>
             <td style="width: 15%;"><strong>Customer</strong></td>
-            <td style="width: 35%;">: <?= $customer_name !== '' ? htmlspecialchars($customer_name) : 'ALL' ?></td>
+            <td style="width: 35%;">: <?= $customer_name !== '' ? h($customer_name) : 'ALL' ?></td>
 
             <td style="width: 15%;"><strong>Sales</strong></td>
-            <td style="width: 35%;">: <?= $sales_name !== '' ? htmlspecialchars($sales_name) : 'ALL' ?></td>
+            <td style="width: 35%;">: <?= $sales_name !== '' ? h($sales_name) : 'ALL' ?></td>
         </tr>
         <tr>
             <td><strong>Marketing</strong></td>
-            <td>: <?= $marketing_name !== '' ? htmlspecialchars($marketing_name) : 'ALL' ?></td>
+            <td>: <?= $marketing_name !== '' ? h($marketing_name) : 'ALL' ?></td>
 
             <td><strong>Category</strong></td>
-            <td>: <?= $category !== '' ? htmlspecialchars($category) : 'ALL' ?></td>
+            <td>: <?= $category !== '' ? h($category) : 'ALL' ?></td>
         </tr>
         <tr>
             <td><strong>Approval Status</strong></td>
-            <td>: <?= $approval_status !== '' ? htmlspecialchars($approval_status) : 'ALL' ?></td>
+            <td>: <?= $approval_status !== '' ? h($approval_status) : 'ALL' ?></td>
 
             <td><strong>Printed By</strong></td>
-            <td>: <?= htmlspecialchars($_SESSION['username'] ?? '-') ?> / <?= date('d-M-Y') ?></td>
+            <td>: <?= h($_SESSION['username'] ?? '-') ?> / <?= h(formatDateIndonesian(date('Y-m-d'))) ?></td>
         </tr>
     </table>
 
@@ -651,9 +665,15 @@ while ($row = mysqli_fetch_assoc($query)) {
             <div class="customer-section">
                 <div class="customer-header">
                     CUSTOMER:
-                    <?= htmlspecialchars($customer['customer_name'] ?: '-') ?>
+                    <?= h($customer['customer_name'] ?: '-') ?>
                     <?php if (!empty($customer['customer_city'])): ?>
-                        - <?= htmlspecialchars($customer['customer_city']) ?>
+                        - <?= h($customer['customer_city']) ?>
+                    <?php endif; ?>
+
+                    <?php if (!empty($customer['customer_address'])): ?>
+                        <div style="font-weight: normal; font-size: 7px; margin-top: 2px;">
+                            <?= h($customer['customer_address']) ?>
+                        </div>
                     <?php endif; ?>
                 </div>
 
@@ -664,7 +684,7 @@ while ($row = mysqli_fetch_assoc($query)) {
                         <tr>
                             <td style="width: 25%;">
                                 <span class="label">Order No</span>
-                                : <?= htmlspecialchars($order['order_no'] ?: '-') ?>
+                                : <?= h($order['order_no'] ?: '-') ?>
                             </td>
                             <td style="width: 20%;">
                                 <span class="label">Order Date</span>
@@ -672,29 +692,29 @@ while ($row = mysqli_fetch_assoc($query)) {
                             </td>
                             <td style="width: 20%;">
                                 <span class="label">PO</span>
-                                : <?= htmlspecialchars($order['po'] ?: '-') ?>
+                                : <?= h($order['po'] ?: '-') ?>
                             </td>
                             <td style="width: 20%;">
                                 <span class="label">TOP</span>
-                                : <?= htmlspecialchars($order['payment_term'] ?: '-') ?>
+                                : <?= h($order['payment_term'] ?: '-') ?>
                             </td>
                             <td style="width: 15%;">
                                 <span class="label">Status</span>
-                                : <?= htmlspecialchars($order['approval_status'] ?: '-') ?>
+                                : <?= h($order['approval_status'] ?: '-') ?>
                             </td>
                         </tr>
                         <tr>
                             <td>
                                 <span class="label">Marketing</span>
-                                : <?= htmlspecialchars($order['marketing_name'] ?: '-') ?>
+                                : <?= h($order['marketing_name'] ?: '-') ?>
                             </td>
                             <td>
                                 <span class="label">Sales</span>
-                                : <?= htmlspecialchars($order['sales_name'] ?: '-') ?>
+                                : <?= h($order['sales_name'] ?: '-') ?>
                             </td>
                             <td colspan="3">
                                 <span class="label">Remarks</span>
-                                : <?= htmlspecialchars($order['remarks'] ?: '-') ?>
+                                : <?= h($order['remarks'] ?: '-') ?>
                             </td>
                         </tr>
                     </table>
@@ -769,12 +789,12 @@ while ($row = mysqli_fetch_assoc($query)) {
                                 ?>
 
                                 <tr>
-                                    <td><?= htmlspecialchars($item['inventory_id'] ?: '-') ?></td>
+                                    <td><?= h($item['inventory_id'] ?: '-') ?></td>
 
-                                    <td><?= htmlspecialchars($item['inventory_name'] ?: '-') ?></td>
+                                    <td><?= h($item['inventory_name'] ?: '-') ?></td>
 
                                     <td class="text-center">
-                                        <?= htmlspecialchars($remarks_display ?: '-') ?>
+                                        <?= h($remarks_display ?: '-') ?>
                                     </td>
 
                                     <td class="text-right">
@@ -783,7 +803,7 @@ while ($row = mysqli_fetch_assoc($query)) {
                                     </td>
 
                                     <td class="text-center">
-                                        <?= htmlspecialchars($item['uom'] ?: '-') ?>
+                                        <?= h($item['uom'] ?: '-') ?>
                                     </td>
 
                                     <td class="text-right">
@@ -791,7 +811,7 @@ while ($row = mysqli_fetch_assoc($query)) {
                                     </td>
 
                                     <td class="text-center">
-                                        <?= htmlspecialchars($uom_pack_display ?: '-') ?>
+                                        <?= h($uom_pack_display ?: '-') ?>
                                     </td>
 
                                     <td class="text-right">

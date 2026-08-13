@@ -1,5 +1,12 @@
 <?php
 // modul/transaksi/edit_bayar.php
+// Edit Pembayaran Multi Invoice / Multi Shipping.
+//
+// Satu bayar_no dapat memiliki banyak detail_bayar.
+// Customer pembayaran tidak diganti saat edit.
+// User dapat menambah/mengurangi Invoice/Shipping yang dicentang.
+// Checkbox = bayar penuh sebesar sisa shipping sebelum pembayaran ini.
+// Retur dipilih standalone berdasarkan Customer untuk kebutuhan cross-check.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -11,6 +18,9 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+mysqli_set_charset($conn, 'utf8mb4');
 
 function h($value) {
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
@@ -33,201 +43,283 @@ function appIcon($name) {
         'back' => '<svg viewBox="0 0 24 24"><path d="M20 11v2H7.83l5.59 5.59L12 20 4 12l8-8 1.42 1.41L7.83 11H20Z"/></svg>',
         'calendar' => '<svg viewBox="0 0 24 24"><path d="M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm11 8H6v10h12V10ZM6 6v2h12V6H6Z"/></svg>',
     ];
-
     return $icons[$name] ?? '';
 }
 
-$bayar_no = trim((string)($_GET['bayar_no'] ?? ''));
+$bayarNo = trim((string)($_GET['bayar_no'] ?? ''));
 
-if ($bayar_no === '') {
-    echo "<script>alert('No. Bayar tidak ditemukan.'); window.location.href='index.php?page=pembayaran';</script>";
+if ($bayarNo === '') {
+    echo "<script>alert('No. Bayar tidak ditemukan.');window.location.href='index.php?page=pembayaran';</script>";
     exit;
 }
 
-$sql = "
-    SELECT
-        hb.bayar_no,
-        hb.bayar_date,
-        hb.customer_id,
-        hb.customer_name,
-        hb.customer_address,
-        hb.customer_city,
-        hb.total_bayar,
-        hb.keterangan,
-        hb.bank_name,
-        hb.remarks,
-        db.invoice_no,
-        db.shipping_no,
-        db.return_id,
-        db.invoice_date,
-        db.invoice_amount,
-        db.cash_amount,
-        db.titip_amount,
-        db.bayar_amount
-    FROM head_bayar hb
-    INNER JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
-    WHERE hb.bayar_no = ?
-    LIMIT 1
-";
-$stmt = mysqli_prepare($conn, $sql);
-if (!$stmt) {
-    die('Error preparing query: ' . mysqli_error($conn));
-}
-mysqli_stmt_bind_param($stmt, 's', $bayar_no);
+/*
+|--------------------------------------------------------------------------
+| HEAD BAYAR
+|--------------------------------------------------------------------------
+*/
+$stmt = mysqli_prepare(
+    $conn,
+    "SELECT *
+     FROM head_bayar
+     WHERE bayar_no = ?
+     LIMIT 1"
+);
+mysqli_stmt_bind_param($stmt, 's', $bayarNo);
 mysqli_stmt_execute($stmt);
-$res = mysqli_stmt_get_result($stmt);
-$data = mysqli_fetch_assoc($res);
+$head = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
 mysqli_stmt_close($stmt);
 
-if (!$data) {
-    echo "<script>alert('Data pembayaran tidak ditemukan.'); window.location.href='index.php?page=pembayaran';</script>";
+if (!$head) {
+    echo "<script>alert('Data pembayaran tidak ditemukan.');window.location.href='index.php?page=pembayaran';</script>";
     exit;
 }
 
-$invoice_no = $data['invoice_no'];
+$customerId = trim((string)$head['customer_id']);
 
-// ============================================================
-// QUERY HITUNG SISA SHIPPING + RETUR
-// ============================================================
-$shipping_no = trim((string)($data['shipping_no'] ?? ''));
+/*
+|--------------------------------------------------------------------------
+| DETAIL BAYAR EXISTING
+|--------------------------------------------------------------------------
+*/
+$currentDetails = [];
+$currentDetailMap = [];
+$currentCash = 0.0;
+$currentTitip = 0.0;
 
-if ($shipping_no === '') {
-    die('Shipping No. pada pembayaran ini tidak ditemukan.');
-}
-
-$sqlSisa = "
-    SELECT
-        hi.invoice_no,
-
-        COALESCE((
-            SELECT SUM(
-                CASE
-                    WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
-                    ELSE COALESCE(di.subtotal, 0)
-                END
-            )
-            FROM det_invoice di
-            WHERE di.invoice_no = hi.invoice_no
-              AND di.shipping_no = ?
-        ), 0) AS shipping_amount,
-
-        COALESCE((
-            SELECT SUM(hri.return_amount)
-            FROM head_retur_invoice hri
-            WHERE hri.invoice_no = hi.invoice_no
-              AND hri.shipping_no = ?
-              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
-        ), 0) AS retur_amount,
-
-        COALESCE((
-            SELECT SUM(db.bayar_amount)
-            FROM detail_bayar db
-            WHERE db.invoice_no = hi.invoice_no
-              AND db.shipping_no = ?
-              AND db.bayar_no <> ?
-        ), 0) AS paid_except_current
-
-    FROM head_invoice hi
-    WHERE hi.invoice_no = ?
-    LIMIT 1
-";
-
-$stmtSisa = mysqli_prepare($conn, $sqlSisa);
-
-if (!$stmtSisa) {
-    die('Error preparing query sisa shipping: ' . mysqli_error($conn));
-}
-
-mysqli_stmt_bind_param(
-    $stmtSisa,
-    'sssss',
-    $shipping_no,
-    $shipping_no,
-    $shipping_no,
-    $bayar_no,
-    $invoice_no
-);
-
-mysqli_stmt_execute($stmtSisa);
-$resSisa = mysqli_stmt_get_result($stmtSisa);
-$sisaData = mysqli_fetch_assoc($resSisa);
-mysqli_stmt_close($stmtSisa);
-
-$shipping_amount = (float)($sisaData['shipping_amount'] ?? 0);
-$retur_amount = (float)($sisaData['retur_amount'] ?? 0);
-$paid_except_current = (float)($sisaData['paid_except_current'] ?? 0);
-
-$sisa_before_current = max(
-    $shipping_amount - $paid_except_current,
-    0
-);
-
-// ============================================================
-// DAFTAR RETUR AKTIF UNTUK SHIPPING INI
-// ============================================================
-$returnOptions = [];
-
-$sqlReturnOptions = "
-    SELECT
+$stmt = mysqli_prepare(
+    $conn,
+    "SELECT
+        id,
+        invoice_no,
+        shipping_no,
         return_id,
-        return_date,
-        return_amount,
-        reason_return
-    FROM head_retur_invoice
-    WHERE invoice_no = ?
-      AND shipping_no = ?
-      AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
-    ORDER BY return_date DESC, return_id DESC
-";
-
-$stmtReturnOptions = mysqli_prepare($conn, $sqlReturnOptions);
-mysqli_stmt_bind_param(
-    $stmtReturnOptions,
-    'ss',
-    $invoice_no,
-    $shipping_no
+        invoice_date,
+        invoice_amount,
+        cash_amount,
+        titip_amount,
+        bayar_amount,
+        sisa_after,
+        remarks
+     FROM detail_bayar
+     WHERE bayar_no = ?
+     ORDER BY id ASC"
 );
-mysqli_stmt_execute($stmtReturnOptions);
-$resReturnOptions = mysqli_stmt_get_result($stmtReturnOptions);
+mysqli_stmt_bind_param($stmt, 's', $bayarNo);
+mysqli_stmt_execute($stmt);
+$res = mysqli_stmt_get_result($stmt);
 
-while ($ret = mysqli_fetch_assoc($resReturnOptions)) {
-    $returnOptions[] = $ret;
+while ($row = mysqli_fetch_assoc($res)) {
+    $currentDetails[] = $row;
+    $key = trim((string)$row['invoice_no']) . '|' . trim((string)$row['shipping_no']);
+    $currentDetailMap[$key] = $row;
+    $currentCash += (float)($row['cash_amount'] ?? 0);
+    $currentTitip += (float)($row['titip_amount'] ?? 0);
+}
+mysqli_stmt_close($stmt);
+
+if (!$currentDetails) {
+    die('Detail pembayaran tidak ditemukan.');
 }
 
-mysqli_stmt_close($stmtReturnOptions);
+/*
+|--------------------------------------------------------------------------
+| RETUR STANDALONE EXISTING
+|--------------------------------------------------------------------------
+| Save terbaru menyimpan return_id hanya pada detail pertama.
+| Untuk kompatibilitas data lama, ambil return_id non-empty pertama dari
+| seluruh detail pembayaran.
+|--------------------------------------------------------------------------
+*/
+$currentReturnId = '';
 
-$current_return_id = trim((string)($data['return_id'] ?? ''));
-$current_return_amount = 0.0;
+foreach ($currentDetails as $detail) {
+    $candidateReturnId = trim((string)($detail['return_id'] ?? ''));
 
-foreach ($returnOptions as $ret) {
-    if ((string)$ret['return_id'] === $current_return_id) {
-        $current_return_amount = (float)$ret['return_amount'];
+    if ($candidateReturnId !== '') {
+        $currentReturnId = $candidateReturnId;
         break;
     }
 }
 
-// ============================================================
-// QUERY CEK SALDO TITIP
-// ============================================================
-$sqlSaldoTitip = "
-    SELECT COALESCE(SUM(balance_amount), 0) AS saldo_titip
-    FROM head_titip
-    WHERE customer_id = ?
-      AND balance_amount > 0
+/*
+|--------------------------------------------------------------------------
+| DAFTAR INVOICE/SHIPPING CUSTOMER
+|--------------------------------------------------------------------------
+| Sisa untuk edit dihitung dengan mengabaikan pembayaran bayar_no ini.
+| Jadi tagihan yang saat ini sudah lunas karena pembayaran ini tetap dapat
+| ditampilkan dan tetap tercentang saat halaman edit dibuka.
+|--------------------------------------------------------------------------
+*/
+$sqlShipping = "
+    SELECT
+        src.invoice_no,
+        src.invoice_date,
+        src.customer_id,
+        src.customer_name,
+        src.customer_address,
+        src.customer_city,
+        src.shipping_no,
+        src.shipping_date,
+        src.order_no,
+        src.shipping_amount,
+
+        COALESCE(pay_other.paid_amount, 0) AS paid_except_current,
+
+        GREATEST(
+            src.shipping_amount - COALESCE(pay_other.paid_amount, 0),
+            0
+        ) AS sisa_before_current,
+
+        COALESCE(ret_shipping.return_amount, 0) AS retur_amount
+
+    FROM
+    (
+        SELECT
+            hi.invoice_no,
+            hi.invoice_date,
+            hi.customer_id,
+            hi.customer_name,
+            hi.customer_address,
+            hi.customer_city,
+            TRIM(di.shipping_no) AS shipping_no,
+            MAX(di.shipping_date) AS shipping_date,
+            MAX(di.order_no) AS order_no,
+            SUM(
+                CASE
+                    WHEN COALESCE(di.total, 0) > 0
+                        THEN COALESCE(di.total, 0)
+                    ELSE COALESCE(di.subtotal, 0)
+                END
+            ) AS shipping_amount
+        FROM head_invoice hi
+        INNER JOIN det_invoice di
+            ON di.invoice_no = hi.invoice_no
+        WHERE hi.customer_id = ?
+          AND COALESCE(TRIM(di.shipping_no), '') <> ''
+        GROUP BY
+            hi.invoice_no,
+            hi.invoice_date,
+            hi.customer_id,
+            hi.customer_name,
+            hi.customer_address,
+            hi.customer_city,
+            TRIM(di.shipping_no)
+    ) src
+
+    LEFT JOIN
+    (
+        SELECT
+            invoice_no,
+            TRIM(shipping_no) AS shipping_no,
+            SUM(COALESCE(bayar_amount, 0)) AS paid_amount
+        FROM detail_bayar
+        WHERE bayar_no <> ?
+          AND COALESCE(TRIM(shipping_no), '') <> ''
+        GROUP BY invoice_no, TRIM(shipping_no)
+    ) pay_other
+        ON pay_other.invoice_no = src.invoice_no
+       AND pay_other.shipping_no = src.shipping_no
+
+    LEFT JOIN
+    (
+        SELECT
+            invoice_no,
+            TRIM(shipping_no) AS shipping_no,
+            SUM(COALESCE(return_amount, 0)) AS return_amount
+        FROM head_retur_invoice
+        WHERE LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+        GROUP BY invoice_no, TRIM(shipping_no)
+    ) ret_shipping
+        ON ret_shipping.invoice_no = src.invoice_no
+       AND ret_shipping.shipping_no = src.shipping_no
+
+    WHERE
+        src.shipping_amount > 0
+        AND (
+            GREATEST(
+                src.shipping_amount - COALESCE(pay_other.paid_amount, 0),
+                0
+            ) > 0.01
+            OR COALESCE(ret_shipping.return_amount, 0) > 0.01
+        )
+
+    ORDER BY src.invoice_date DESC, src.shipping_date DESC, src.shipping_no DESC
 ";
-$stmtSaldoTitip = mysqli_prepare($conn, $sqlSaldoTitip);
-if (!$stmtSaldoTitip) {
-    die('Error preparing query: ' . mysqli_error($conn));
+
+$stmt = mysqli_prepare($conn, $sqlShipping);
+mysqli_stmt_bind_param($stmt, 'ss', $customerId, $bayarNo);
+mysqli_stmt_execute($stmt);
+$res = mysqli_stmt_get_result($stmt);
+
+$rows = [];
+while ($row = mysqli_fetch_assoc($res)) {
+    $rows[] = $row;
 }
-mysqli_stmt_bind_param($stmtSaldoTitip, 's', $data['customer_id']);
-mysqli_stmt_execute($stmtSaldoTitip);
-$resSaldoTitip = mysqli_stmt_get_result($stmtSaldoTitip);
-$rowSaldoTitip = mysqli_fetch_assoc($resSaldoTitip);
-mysqli_stmt_close($stmtSaldoTitip);
+mysqli_stmt_close($stmt);
 
-$current_titip_amount = (float)($data['titip_amount'] ?? 0);
-$saldo_titip_available = (float)($rowSaldoTitip['saldo_titip'] ?? 0) + $current_titip_amount;
+/*
+|--------------------------------------------------------------------------
+| RETUR AKTIF CUSTOMER
+|--------------------------------------------------------------------------
+| Retur tidak lagi terikat Invoice / Shipping yang dicentang.
+|--------------------------------------------------------------------------
+*/
+$returnOptions = [];
+$currentReturnAmount = 0.0;
 
+$stmt = mysqli_prepare(
+    $conn,
+    "SELECT
+        return_id,
+        return_date,
+        invoice_no,
+        TRIM(shipping_no) AS shipping_no,
+        return_amount,
+        reason_return
+     FROM head_retur_invoice
+     WHERE customer_id = ?
+       AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+     ORDER BY return_date DESC, return_id DESC"
+);
+
+mysqli_stmt_bind_param($stmt, 's', $customerId);
+mysqli_stmt_execute($stmt);
+$res = mysqli_stmt_get_result($stmt);
+
+while ($ret = mysqli_fetch_assoc($res)) {
+    $returnOptions[] = $ret;
+
+    if ((string)$ret['return_id'] === $currentReturnId) {
+        $currentReturnAmount = (float)($ret['return_amount'] ?? 0);
+    }
+}
+
+mysqli_stmt_close($stmt);
+
+/*
+|--------------------------------------------------------------------------
+| SALDO TITIP YANG TERSEDIA UNTUK EDIT
+|--------------------------------------------------------------------------
+| Current titip usage sudah mengurangi head_titip.
+| Saat edit, hak pemakaian lama perlu ditambahkan kembali sebagai available.
+|--------------------------------------------------------------------------
+*/
+$stmt = mysqli_prepare(
+    $conn,
+    "SELECT COALESCE(SUM(balance_amount), 0) AS saldo
+     FROM head_titip
+     WHERE customer_id = ?
+       AND balance_amount > 0"
+);
+mysqli_stmt_bind_param($stmt, 's', $customerId);
+mysqli_stmt_execute($stmt);
+$saldoRow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+mysqli_stmt_close($stmt);
+
+$saldoTitipAvailable =
+    (float)($saldoRow['saldo'] ?? 0) +
+    $currentTitip;
 ?>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -235,398 +327,315 @@ $saldo_titip_available = (float)($rowSaldoTitip['saldo_titip'] ?? 0) + $current_
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 
 <style>
-.pay-form-wrap * {
-    box-sizing: border-box;
-    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
-}
-.pay-form-wrap {
-    background: #f0f2f5;
-    padding: 12px;
-    color: #212529;
-    font-size: 11px;
-}
-.app-icon {
-    width: 14px;
-    height: 14px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    vertical-align: -2px;
-}
-.app-icon svg {
-    width: 14px;
-    height: 14px;
-    fill: currentColor;
-}
-.title-icon svg {
-    width: 18px;
-    height: 18px;
-}
-.crystal-header {
-    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-    color: #fff;
-    padding: 10px 15px;
-    border-radius: 5px;
-}
-.form-card {
-    background: #fff;
-    border: 1px solid #dee2e6;
-    border-radius: 5px;
-    padding: 12px;
-    margin-top: 10px;
-}
-.form-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-}
-.ff label {
-    display: block;
-    font-size: 10px;
-    font-weight: 700;
-    color: #0d6efd;
-    margin-bottom: 3px;
-    text-transform: uppercase;
-}
-.ff input,
-.ff select,
-.ff textarea {
-    width: 100%;
-    border: 1px solid #ced4da;
-    border-radius: 3px;
-    padding: 6px 8px;
-    font-size: 11px;
-    background: #fff;
-}
-.ff input[readonly] {
-    background: #f8f9fa;
-}
-.btn-vs {
-    padding: 6px 12px;
-    font-size: 11px;
-    font-weight: bold;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    line-height: 1;
-    min-height: 30px;
-}
-.btn-success { background: #198754; color: #fff; }
-.btn-secondary { background: #6c757d; color: #fff; }
-.warning-box {
-    display: none;
-    margin-top: 6px;
-    padding: 7px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: bold;
-}
-.warning-danger {
-    display: block;
-    background: #f8d7da;
-    color: #842029;
-    border: 1px solid #f5c2c7;
-}
-.warning-info {
-    display: block;
-    background: #fff3cd;
-    color: #664d03;
-    border: 1px solid #ffecb5;
-}
-.warning-ok {
-    display: block;
-    background: #d1e7dd;
-    color: #0f5132;
-    border: 1px solid #badbcc;
-}
-@media (max-width: 900px) {
-    .form-grid {
-        grid-template-columns: 1fr;
-    }
-}
-.form-section {
-    border: 1px solid #d8e2ef;
-    border-radius: 6px;
-    background: #ffffff;
-    margin-bottom: 12px;
-    overflow: hidden;
-}
-
-.form-section-title {
-    background: linear-gradient(135deg, #eef5ff 0%, #f8fbff 100%);
-    color: #1e3c72;
-    font-size: 11px;
-    font-weight: 800;
-    padding: 8px 10px;
-    border-bottom: 1px solid #d8e2ef;
-    text-transform: uppercase;
-    letter-spacing: .2px;
-}
-
-.form-section-body {
-    padding: 10px;
-}
-
-.form-grid-3 {
-    display: grid;
-    grid-template-columns: 2fr 1fr 1fr;
-    gap: 10px;
-}
-
-.form-grid-2 {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-}
-
-.form-grid-4 {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-}
-
-.field-full {
-    grid-column: 1 / -1;
-}
-
-.readonly-highlight {
-    background: #f8f9fa !important;
-    font-weight: 700;
-    color: #1e3c72;
-}
-
-.payment-summary-input {
-    background: #eaf7ef !important;
-    font-weight: 800;
-    color: #0f5132;
-}
-
-.checkbox-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 30px;
-    padding: 6px 8px;
-    border: 1px solid #ced4da;
-    border-radius: 3px;
-    background: #fff;
-}
-
-.checkbox-line input {
-    width: auto !important;
-    margin: 0;
-}
-
-@media (max-width: 1100px) {
-    .form-grid-4 {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-@media (max-width: 900px) {
-    .form-grid-3,
-    .form-grid-2,
-    .form-grid-4 {
-        grid-template-columns: 1fr;
-    }
-}
+.pay-form-wrap *{box-sizing:border-box;font-family:'Segoe UI',Tahoma,Arial,sans-serif}
+.pay-form-wrap{background:#f0f2f5;padding:12px;color:#212529;font-size:11px}
+.app-icon{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;vertical-align:-2px}
+.app-icon svg{width:14px;height:14px;fill:currentColor}.title-icon svg{width:18px;height:18px}
+.crystal-header{background:linear-gradient(135deg,#1e3c72 0%,#2a5298 100%);color:#fff;padding:10px 15px;border-radius:5px}
+.form-card{background:#fff;border:1px solid #dee2e6;border-radius:5px;padding:12px;margin-top:10px}
+.form-section{border:1px solid #d8e2ef;border-radius:6px;background:#fff;margin-bottom:12px;overflow:hidden}
+.form-section-title{background:linear-gradient(135deg,#eef5ff 0%,#f8fbff 100%);color:#1e3c72;font-size:11px;font-weight:800;padding:8px 10px;border-bottom:1px solid #d8e2ef;text-transform:uppercase}
+.form-section-body{padding:10px}
+.form-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.form-grid-3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}
+.form-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.field-full{grid-column:1/-1}
+.ff label{display:block;font-size:10px;font-weight:700;color:#0d6efd;margin-bottom:3px;text-transform:uppercase}
+.ff input,.ff select,.ff textarea{width:100%;border:1px solid #ced4da;border-radius:3px;padding:6px 8px;font-size:11px;background:#fff}
+.ff input[readonly],.ff textarea[readonly]{background:#f8f9fa}
+.readonly-highlight{background:#f8f9fa!important;font-weight:700;color:#1e3c72}
+.payment-summary-input{background:#eaf7ef!important;font-weight:800;color:#0f5132}
+.btn-vs{padding:6px 12px;font-size:11px;font-weight:bold;border:none;border-radius:3px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;line-height:1;min-height:30px}
+.btn-success{background:#198754;color:#fff}.btn-secondary{background:#6c757d;color:#fff}
+.checkbox-line{display:flex;align-items:center;gap:8px;min-height:30px;padding:6px 8px;border:1px solid #ced4da;border-radius:3px;background:#fff}
+.checkbox-line input{width:auto!important;margin:0}
+.invoice-table-wrap{overflow:auto;max-height:430px;border:1px solid #c9d5e2}
+.invoice-pay-table{width:100%;min-width:1250px;border-collapse:collapse;font-size:10px}
+.invoice-pay-table th{position:sticky;top:0;background:#e9ecef;color:#2b4c7e;border:1px solid #c0cddb;padding:6px 5px;white-space:nowrap;text-align:center;z-index:2}
+.invoice-pay-table td{border:1px solid #d3d3d3;padding:5px;white-space:nowrap}
+.invoice-pay-table tr.selected-row td{background:#eaf7ef}
+.money{text-align:right}.text-center{text-align:center}.row-checkbox{width:16px;height:16px}
+.return-select{min-width:210px}
+.warning-box{display:none;margin-top:6px;padding:7px;border-radius:3px;font-size:11px;font-weight:bold}
+.warning-danger{display:block;background:#f8d7da;color:#842029;border:1px solid #f5c2c7}
+.warning-info{display:block;background:#fff3cd;color:#664d03;border:1px solid #ffecb5}
+.warning-ok{display:block;background:#d1e7dd;color:#0f5132;border:1px solid #badbcc}
+@media(max-width:1100px){.form-grid-4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:900px){.form-grid-2,.form-grid-3,.form-grid-4{grid-template-columns:1fr}}
 </style>
 
 <div class="pay-form-wrap">
-    <?php if (isset($_SESSION['alert'])): ?>
-        <?= $_SESSION['alert']; unset($_SESSION['alert']); ?>
-    <?php endif; ?>
+<?php if (isset($_SESSION['alert'])): ?>
+    <?= $_SESSION['alert']; unset($_SESSION['alert']); ?>
+<?php endif; ?>
 
-    <div class="crystal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <h5 style="margin:0;display:flex;align-items:center;gap:7px;">
-            <span class="app-icon title-icon"><?= appIcon('payment') ?></span>
-            Edit Pembayaran
-        </h5>
+<div class="crystal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+    <h5 style="margin:0;display:flex;align-items:center;gap:7px;">
+        <span class="app-icon title-icon"><?= appIcon('payment') ?></span>
+        Edit Pembayaran Multi Invoice
+    </h5>
+    <a class="btn-vs btn-secondary" href="index.php?page=pembayaran">
+        <span class="app-icon"><?= appIcon('back') ?></span>
+        Kembali
+    </a>
+</div>
 
-        <a class="btn-vs btn-secondary" href="index.php?page=pembayaran">
-            <span class="app-icon"><?= appIcon('back') ?></span>
-            Kembali
-        </a>
-    </div>
+<form method="POST" action="modul/transaksi/update_bayar.php" id="formBayar">
+<input type="hidden" name="bayar_no" value="<?= h($bayarNo) ?>">
 
-    <form method="POST" action="modul/transaksi/update_bayar.php" id="formBayar">
-      <div class="form-card">
+<div class="form-card">
 
-    <!-- GROUP 1: Invoice & Payment Header -->
-    <div class="form-section">
-        <div class="form-section-title">Data Invoice & Pembayaran</div>
-        <div class="form-section-body">
-            <div class="form-grid-3">
-                <div class="ff">
-                    <label>No. Shipping</label>
-                    <input type="text" name="shipping_no" id="shipping_no" value="<?= h($shipping_no) ?>" class="readonly-highlight" readonly>
-                </div>
-
-                <div class="ff">
-                    <label>No. Retur</label>
-                    <select name="return_id" id="return_id">
-                        <option value="">-- Tidak Ada / Pilih No. Retur --</option>
-                        <?php foreach ($returnOptions as $ret): ?>
-                            <option
-                                value="<?= h($ret['return_id']) ?>"
-                                data-return-amount="<?= h($ret['return_amount']) ?>"
-                                <?= $current_return_id === (string)$ret['return_id'] ? 'selected' : '' ?>
-                            >
-                                <?= h(
-                                    $ret['return_id'] .
-                                    ' | ' . formatDateDisplay($ret['return_date']) .
-                                    ' | Rp ' . formatMoney($ret['return_amount'])
-                                ) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-
-                <div class="ff">
-                    <label>No. Invoice</label>
-                    <input type="text" name="invoice_no" id="invoice_no" value="<?= h($data['invoice_no']) ?>" class="readonly-highlight" readonly>
-                </div>
-
-                <div class="ff">
-                    <label>No. Bayar</label>
-                    <input type="text" name="bayar_no" value="<?= h($data['bayar_no']) ?>" class="readonly-highlight" readonly>
-                </div>
-
-                <div class="ff">
-                    <label><span class="app-icon"><?= appIcon('calendar') ?></span> Tanggal Bayar</label>
-                    <input type="text" name="bayar_date" class="js-date-picker" value="<?= h(formatDateDisplay($data['bayar_date'])) ?>" autocomplete="off" required>
-                </div>
+<div class="form-section">
+    <div class="form-section-title">1. Data Pembayaran & Customer</div>
+    <div class="form-section-body">
+        <div class="form-grid-3">
+            <div class="ff">
+                <label>No. Bayar</label>
+                <input type="text" value="<?= h($bayarNo) ?>" class="readonly-highlight" readonly>
+            </div>
+            <div class="ff">
+                <label>Tanggal Bayar</label>
+                <input type="text" name="bayar_date" class="js-date-picker"
+                       value="<?= h(formatDateDisplay($head['bayar_date'])) ?>"
+                       required autocomplete="off">
+            </div>
+            <div class="ff">
+                <label>Customer ID</label>
+                <input type="text" name="customer_id"
+                       value="<?= h($head['customer_id']) ?>"
+                       class="readonly-highlight" readonly>
             </div>
         </div>
-    </div>
-
-    <!-- GROUP 2: Customer -->
-    <div class="form-section">
-        <div class="form-section-title">Data Customer</div>
-        <div class="form-section-body">
-            <div class="form-grid-2">
-                <div class="ff">
-                    <label>Customer ID</label>
-                    <input type="text" name="customer_id" value="<?= h($data['customer_id']) ?>" class="readonly-highlight" readonly required>
-                </div>
-
-                <div class="ff">
-                    <label>Nama Customer</label>
-                    <input type="text" name="customer_name" value="<?= h($data['customer_name']) ?>" class="readonly-highlight" readonly required>
-                </div>
-
-                <div class="ff field-full">
-                    <label>Customer Address</label>
-                    <textarea name="customer_address" rows="2" readonly><?= h($data['customer_address']) ?></textarea>
-                </div>
-
-                <div class="ff">
-                    <label>Customer City</label>
-                    <input type="text" name="customer_city" value="<?= h($data['customer_city']) ?>" readonly>
-                </div>
+        <div class="form-grid-2" style="margin-top:10px;">
+            <div class="ff">
+                <label>Nama Customer</label>
+                <input type="text" value="<?= h($head['customer_name']) ?>" readonly>
+            </div>
+            <div class="ff">
+                <label>Customer City</label>
+                <input type="text" value="<?= h($head['customer_city']) ?>" readonly>
+            </div>
+            <div class="ff field-full">
+                <label>Customer Address</label>
+                <textarea rows="2" readonly><?= h($head['customer_address']) ?></textarea>
             </div>
         </div>
-    </div>
-
-    <!-- GROUP 3: Payment Calculation -->
-    <div class="form-section">
-        <div class="form-section-title">Perhitungan Pembayaran</div>
-        <div class="form-section-body">
-            <div class="form-grid-4">
-                <div class="ff">
-                    <label>Jumlah Titip Uang</label>
-                    <input type="text" id="saldo_titip_display" value="Rp <?= h(formatMoney($saldo_titip_available)) ?>" class="readonly-highlight" readonly>
-                    <input type="hidden" name="saldo_titip" id="saldo_titip" value="<?= h($saldo_titip_available) ?>">
-                </div>
-
-                <div class="ff">
-                    <label>Pakai Titip Uang</label>
-                    <div class="checkbox-line">
-                        <input type="checkbox" name="pakai_titip" id="pakai_titip" value="1" <?= $current_titip_amount > 0 ? 'checked' : '' ?>>
-                        <span>Gunakan titip uang customer</span>
-                    </div>
-                </div>
-
-                <div class="ff">
-                    <label>Nominal Titip yang Dipakai</label>
-                    <input type="text" name="nominal_titip" id="nominal_titip" value="<?= h(formatMoney($current_titip_amount)) ?>" autocomplete="off" <?= $current_titip_amount > 0 ? '' : 'disabled' ?>>
-                </div>
-
-                <div class="ff">
-                    <label>Nominal Bayar Cash / Transfer</label>
-                    <input type="text" name="nominal_bayar" id="nominal_bayar" value="<?= h(formatMoney($data['cash_amount'])) ?>" autocomplete="off" required>
-                </div>
-
-                <div class="ff">
-                    <label>Retur Invoice</label>
-                    <input type="text" id="retur_invoice_display" value="Rp <?= h(formatMoney($current_return_amount)) ?>" class="readonly-highlight" readonly>
-                    <input type="hidden" name="retur_invoice" id="retur_invoice" value="<?= h($current_return_amount) ?>">
-                </div>
-
-                <div class="ff">
-                    <label>Sisa Shipping dari Sisi Pembayaran</label>
-                    <input type="text" id="sisa_invoice_display" value="Rp <?= h(formatMoney($sisa_before_current)) ?>" class="readonly-highlight" readonly>
-                    <input type="hidden" name="sisa_invoice" id="sisa_invoice" value="<?= h($sisa_before_current) ?>">
-                    <input type="hidden" name="shipping_amount" id="shipping_amount" value="<?= h($shipping_amount) ?>">
-                </div>
-
-                <div class="ff">
-                    <label>Total Bayar ke Shipping</label>
-                    <input type="text" id="total_bayar_invoice_display" class="payment-summary-input" readonly>
-                </div>
-
-                <div class="ff field-full">
-                    <div id="warningNominal" class="warning-box"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- GROUP 4: Payment Method & Remarks -->
-    <div class="form-section">
-        <div class="form-section-title">Metode Pembayaran & Keterangan</div>
-        <div class="form-section-body">
-            <div class="form-grid-2">
-                <div class="ff">
-                    <label>Keterangan</label>
-                    <select name="keterangan" id="keterangan" required>
-                        <option value="">-- Pilih --</option>
-                        <option value="Cash" <?= $data['keterangan'] === 'Cash' ? 'selected' : '' ?>>Cash</option>
-                        <option value="Transfer" <?= $data['keterangan'] === 'Transfer' ? 'selected' : '' ?>>Transfer</option>
-                        <option value="Retur" <?= $data['keterangan'] === 'Retur' ? 'selected' : '' ?>>Retur / Cross-check</option>
-                    </select>
-                </div>
-
-                <div class="ff">
-                    <label>Nama Bank</label>
-                    <input type="text" name="bank_name" id="bank_name" value="<?= h($data['bank_name']) ?>" placeholder="Contoh: BCA / Mandiri / BRI">
-                </div>
-
-                <div class="ff field-full">
-                    <label>Remarks</label>
-                    <textarea name="remarks" rows="3"><?= h($data['remarks']) ?></textarea>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div style="margin-top:12px;display:flex;gap:6px;justify-content:flex-end;">
-        <a href="index.php?page=pembayaran" class="btn-vs btn-secondary">
-            <span class="app-icon"><?= appIcon('back') ?></span>
-            Batal
-        </a>
-        <button type="submit" class="btn-vs btn-success">
-            <span class="app-icon"><?= appIcon('save') ?></span>
-            Update
-        </button>
     </div>
 </div>
-    </form>
+
+<div class="form-section">
+    <div class="form-section-title">
+        2. Invoice / Shipping Pembayaran
+        <span id="selected_count_label" style="float:right;font-weight:800;color:#0d6efd;">0 dipilih</span>
+    </div>
+    <div class="form-section-body">
+        <div class="invoice-table-wrap">
+            <table class="invoice-pay-table">
+                <thead>
+                    <tr>
+                        <th>Pilih</th>
+                        <th>Invoice No.</th>
+                        <th>Invoice Date</th>
+                        <th>Shipping No.</th>
+                        <th>Shipping Date</th>
+                        <th>Nilai Shipping</th>
+                        <th>Dibayar Selain Transaksi Ini</th>
+                        <th>Sisa Sebelum Transaksi Ini</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($rows as $i => $row): ?>
+                    <?php
+                        $key = trim((string)$row['invoice_no']) . '|' . trim((string)$row['shipping_no']);
+                        $current = $currentDetailMap[$key] ?? null;
+                        $checked = $current !== null;
+                    ?>
+                    <tr class="invoice-row <?= $checked ? 'selected-row' : '' ?>"
+                        data-sisa="<?= h($row['sisa_before_current']) ?>">
+                        <td class="text-center">
+                            <input type="checkbox"
+                                   class="row-checkbox js-select-invoice"
+                                   name="items[<?= $i ?>][selected]"
+                                   value="1"
+                                   <?= $checked ? 'checked' : '' ?>>
+
+                            <input type="hidden"
+                                   name="items[<?= $i ?>][invoice_no]"
+                                   value="<?= h($row['invoice_no']) ?>">
+                            <input type="hidden"
+                                   name="items[<?= $i ?>][shipping_no]"
+                                   value="<?= h($row['shipping_no']) ?>">
+                        </td>
+                        <td><?= h($row['invoice_no']) ?></td>
+                        <td><?= h(formatDateDisplay($row['invoice_date'])) ?></td>
+                        <td><?= h($row['shipping_no']) ?></td>
+                        <td><?= h(formatDateDisplay($row['shipping_date'])) ?></td>
+                        <td class="money">Rp <?= h(formatMoney($row['shipping_amount'])) ?></td>
+                        <td class="money">Rp <?= h(formatMoney($row['paid_except_current'])) ?></td>
+                        <td class="money"><strong>Rp <?= h(formatMoney($row['sisa_before_current'])) ?></strong></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="form-section">
+    <div class="form-section-title">3. Retur Customer (Opsional)</div>
+    <div class="form-section-body">
+        <div class="form-grid-2">
+            <div class="ff">
+                <label>No. Retur</label>
+                <select name="return_id" id="return_id">
+                    <option value="">-- Tidak Ada / Pilih No. Retur --</option>
+                    <?php foreach ($returnOptions as $ret): ?>
+                        <option
+                            value="<?= h($ret['return_id']) ?>"
+                            data-return-amount="<?= h($ret['return_amount']) ?>"
+                            data-invoice-no="<?= h($ret['invoice_no']) ?>"
+                            data-shipping-no="<?= h($ret['shipping_no']) ?>"
+                            data-reason-return="<?= h($ret['reason_return']) ?>"
+                            <?= $currentReturnId === (string)$ret['return_id'] ? 'selected' : '' ?>
+                        >
+                            <?= h(
+                                $ret['return_id'] .
+                                ' | ' .
+                                formatDateDisplay($ret['return_date']) .
+                                ' | Rp ' .
+                                formatMoney($ret['return_amount']) .
+                                ((string)($ret['reason_return'] ?? '') !== ''
+                                    ? ' | ' . $ret['reason_return']
+                                    : '')
+                            ) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+
+            <div class="ff">
+                <label>Nilai Retur Terpilih</label>
+                <input type="text"
+                       id="retur_amount_display"
+                       class="readonly-highlight"
+                       value="Rp <?= h(formatMoney($currentReturnAmount)) ?>"
+                       readonly>
+                <input type="hidden"
+                       name="retur_invoice"
+                       id="retur_invoice"
+                       value="<?= h($currentReturnAmount) ?>">
+            </div>
+
+            <div class="ff field-full">
+                <div id="returnInfo"
+                     class="warning-box warning-info"
+                     style="<?= $currentReturnId !== '' ? 'display:block;' : 'display:none;' ?>">
+                    <?php if ($currentReturnId !== ''): ?>
+                        Retur terpilih:
+                        <strong><?= h($currentReturnId) ?></strong>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="form-section">
+    <div class="form-section-title">4. Perhitungan Pembayaran</div>
+    <div class="form-section-body">
+        <div class="form-grid-4">
+            <div class="ff">
+                <label>Total Tagihan Terpilih</label>
+                <input type="text" id="selected_total_display" class="readonly-highlight" readonly>
+                <input type="hidden" id="selected_total" value="0">
+            </div>
+
+            <div class="ff">
+                <label>Total Setelah Retur</label>
+                <input type="text" id="net_payable_display" class="payment-summary-input" readonly>
+                <input type="hidden" id="net_payable" value="0">
+            </div>
+
+            <div class="ff">
+                <label>Jumlah Titip Uang Tersedia</label>
+                <input type="text" id="saldo_titip_display"
+                       value="Rp <?= h(formatMoney($saldoTitipAvailable)) ?>"
+                       class="readonly-highlight" readonly>
+                <input type="hidden" id="saldo_titip" value="<?= h($saldoTitipAvailable) ?>">
+            </div>
+
+            <div class="ff">
+                <label>Pakai Titip Uang</label>
+                <div class="checkbox-line">
+                    <input type="checkbox" name="pakai_titip" id="pakai_titip" value="1"
+                           <?= $currentTitip > 0 ? 'checked' : '' ?>>
+                    <span>Gunakan titip uang customer</span>
+                </div>
+            </div>
+
+            <div class="ff">
+                <label>Nominal Titip</label>
+                <input type="text" name="nominal_titip" id="nominal_titip"
+                       value="<?= h(formatMoney($currentTitip)) ?>"
+                       <?= $currentTitip > 0 ? '' : 'disabled' ?>>
+            </div>
+
+            <div class="ff">
+                <label>Nominal Cash / Transfer</label>
+                <input type="text" name="nominal_bayar" id="nominal_bayar"
+                       value="<?= h(formatMoney($currentCash)) ?>" required>
+            </div>
+
+            <div class="ff">
+                <label>Total Bayar</label>
+                <input type="text" id="total_bayar_display" class="payment-summary-input" readonly>
+            </div>
+
+            <div class="ff field-full">
+                <div id="warningNominal" class="warning-box"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="form-section">
+    <div class="form-section-title">5. Metode Pembayaran & Keterangan</div>
+    <div class="form-section-body">
+        <div class="form-grid-2">
+            <div class="ff">
+                <label>Keterangan</label>
+                <select name="keterangan" id="keterangan" required>
+                    <option value="">-- Pilih --</option>
+                    <option value="Cash" <?= $head['keterangan'] === 'Cash' ? 'selected' : '' ?>>Cash</option>
+                    <option value="Transfer" <?= $head['keterangan'] === 'Transfer' ? 'selected' : '' ?>>Transfer</option>
+                    <option value="Retur" <?= $head['keterangan'] === 'Retur' ? 'selected' : '' ?>>Retur / Cross-check</option>
+                </select>
+            </div>
+
+            <div class="ff">
+                <label>Nama Bank</label>
+                <input type="text" name="bank_name" id="bank_name"
+                       value="<?= h($head['bank_name']) ?>">
+            </div>
+
+            <div class="ff field-full">
+                <label>Remarks</label>
+                <textarea name="remarks" rows="3"><?= h($head['remarks']) ?></textarea>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div style="display:flex;gap:6px;justify-content:flex-end;">
+    <a href="index.php?page=pembayaran" class="btn-vs btn-secondary">Batal</a>
+    <button type="submit" class="btn-vs btn-success">
+        <span class="app-icon"><?= appIcon('save') ?></span>
+        Update Pembayaran
+    </button>
+</div>
+
+</div>
+</form>
 </div>
 
 <script>
@@ -637,61 +646,115 @@ function parseNumber(value) {
 }
 
 function formatRupiah(value) {
-    value = parseFloat(value) || 0;
-    return value.toLocaleString('id-ID', {
+    return (parseFloat(value) || 0).toLocaleString('id-ID', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     });
 }
 
+function selectedSummary() {
+    let total = 0;
+    let count = 0;
+
+    $('.invoice-row').each(function () {
+        if ($(this).find('.js-select-invoice').is(':checked')) {
+            total += parseFloat($(this).data('sisa')) || 0;
+            count++;
+        }
+    });
+
+    return {total, count};
+}
+
 function checkNominal() {
-    const sisa = parseFloat($('#sisa_invoice').val()) || 0;
+    const selected = selectedSummary();
+    const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+    const target = Math.max(
+        selected.total - returAmount,
+        0
+    );
+
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
+    const cash = parseNumber($('#nominal_bayar').val());
+    const titip = $('#pakai_titip').is(':checked')
+        ? parseNumber($('#nominal_titip').val())
+        : 0;
 
-    const nominalCash = parseNumber($('#nominal_bayar').val());
-    const nominalTitip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
+    const total = cash + titip;
 
-    const totalBayarInvoice = nominalCash + nominalTitip;
+    $('#selected_total').val(selected.total);
+    $('#selected_total_display').val(
+        'Rp ' + formatRupiah(selected.total)
+    );
+
+    $('#net_payable').val(target);
+    $('#net_payable_display').val(
+        'Rp ' + formatRupiah(target)
+    );
+
+    $('#selected_count_label').text(
+        selected.count + ' dipilih'
+    );
+
+    $('#total_bayar_display').val(
+        'Rp ' + formatRupiah(total)
+    );
+
     const warning = $('#warningNominal');
 
-    $('#total_bayar_invoice_display').val('Rp ' + formatRupiah(totalBayarInvoice));
+    warning
+        .removeClass(
+            'warning-danger warning-info warning-ok'
+        )
+        .hide();
 
-    warning.removeClass('warning-danger warning-info warning-ok').hide();
-
-    if (nominalTitip > saldoTitip) {
+    if (titip > saldoTitip + 0.01) {
         warning
             .addClass('warning-danger')
-            .html('Nominal titip yang dipakai melebihi saldo titip uang. Saldo titip: Rp ' + formatRupiah(saldoTitip))
+            .html('Nominal titip melebihi saldo titip tersedia.')
             .show();
         return;
     }
 
-    const returnId = $('#return_id').val() || '';
-
-    if (totalBayarInvoice <= 0) {
-        if (returnId) {
-            warning
-                .addClass('warning-info')
-                .html('Pembayaran Rp 0,00 diperbolehkan karena No. Retur dipilih.')
-                .show();
-        }
+    if (selected.count < 1) {
         return;
     }
 
-    if (totalBayarInvoice > sisa) {
-        warning
-            .addClass('warning-danger')
-            .html('Total bayar melebihi sisa shipping. Maksimal: Rp ' + formatRupiah(sisa))
-            .show();
-    } else if (totalBayarInvoice < sisa) {
+    if (returAmount > selected.total + 0.01) {
         warning
             .addClass('warning-info')
-            .html('Pembayaran kurang dari sisa shipping. Sisa setelah bayar: Rp ' + formatRupiah(sisa - totalBayarInvoice))
+            .html(
+                'Nilai Retur lebih besar dari total tagihan. ' +
+                'Total yang harus dibayar menjadi Rp 0,00. ' +
+                'Sisa Retur tidak otomatis menjadi titip uang.'
+            )
+            .show();
+    }
+
+    const diff = total - target;
+
+    if (Math.abs(diff) <= 0.01) {
+        warning
+            .addClass('warning-ok')
+            .html('Total bayar sudah sesuai setelah dikurangi Retur.')
+            .show();
+    } else if (diff < 0) {
+        warning
+            .addClass('warning-info')
+            .html(
+                'Total bayar kurang Rp ' +
+                formatRupiah(Math.abs(diff)) +
+                '.'
+            )
             .show();
     } else {
         warning
-            .addClass('warning-ok')
-            .html('Total bayar sama dengan sisa shipping.')
+            .addClass('warning-danger')
+            .html(
+                'Total bayar melebihi total setelah Retur Rp ' +
+                formatRupiah(diff) +
+                '.'
+            )
             .show();
     }
 }
@@ -705,31 +768,132 @@ $(document).ready(function () {
         });
     }
 
-    checkNominal();
+    $('.js-select-invoice').on('change', function () {
+        const row = $(this).closest('.invoice-row');
+
+        if ($(this).is(':checked')) {
+            row.addClass('selected-row');
+        } else {
+            row.removeClass('selected-row');
+        }
+
+        const selected = selectedSummary();
+        const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+        const target = Math.max(selected.total - returAmount, 0);
+        const saldo = parseFloat($('#saldo_titip').val()) || 0;
+
+        if ($('#pakai_titip').is(':checked')) {
+            const useTitip = Math.min(saldo, target);
+            $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
+            $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
+        } else {
+            $('#nominal_titip').prop('disabled', true).val('0,00');
+            $('#nominal_bayar').val(formatRupiah(target));
+        }
+
+        checkNominal();
+    });
 
     $('#return_id').on('change', function () {
         const opt = $(this).find(':selected');
+        const returnId = $(this).val() || '';
         const amount = parseFloat(opt.attr('data-return-amount')) || 0;
+        const invoiceNo = opt.attr('data-invoice-no') || '';
+        const shippingNo = opt.attr('data-shipping-no') || '';
+        const reason = opt.attr('data-reason-return') || '';
 
         $('#retur_invoice').val(amount);
-        $('#retur_invoice_display').val('Rp ' + formatRupiah(amount));
+        $('#retur_amount_display').val('Rp ' + formatRupiah(amount));
 
-        if ($(this).val() && parseNumber($('#nominal_bayar').val()) <= 0) {
-            $('#keterangan').val('Retur');
+        const info = $('#returnInfo');
+
+        if (!returnId) {
+            info.hide().html('');
+
+            const selected = selectedSummary();
+            const target = selected.total;
+            const saldo = parseFloat($('#saldo_titip').val()) || 0;
+
+            if ($('#pakai_titip').is(':checked')) {
+                const useTitip = Math.min(saldo, target);
+                $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
+                $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
+            } else {
+                $('#nominal_titip').prop('disabled', true).val('0,00');
+                $('#nominal_bayar').val(formatRupiah(target));
+            }
+
+            checkNominal();
+            return;
+        }
+
+        let html =
+            'Retur terpilih: <strong>' +
+            returnId +
+            '</strong> | Rp ' +
+            formatRupiah(amount);
+
+        if (reason) {
+            html += ' | ' + reason;
+        }
+
+        if (invoiceNo || shippingNo) {
+            html += '<br><span style="font-weight:400;">Referensi retur: ';
+
+            if (invoiceNo) html += 'Invoice ' + invoiceNo;
+            if (invoiceNo && shippingNo) html += ' | ';
+            if (shippingNo) html += 'Shipping ' + shippingNo;
+
+            html += '</span>';
+        }
+
+        info
+            .removeClass('warning-danger warning-ok')
+            .addClass('warning-info')
+            .html(html)
+            .show();
+
+        const selected = selectedSummary();
+        const target = Math.max(
+            selected.total - amount,
+            0
+        );
+        const saldo = parseFloat($('#saldo_titip').val()) || 0;
+
+        if ($('#pakai_titip').is(':checked')) {
+            const useTitip = Math.min(saldo, target);
+            $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
+            $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
+        } else {
+            $('#nominal_titip').prop('disabled', true).val('0,00');
+            $('#nominal_bayar').val(formatRupiah(target));
         }
 
         checkNominal();
     });
 
-    $('#nominal_bayar').on('input keyup blur', function () {
+    $('#pakai_titip').on('change', function () {
+        const selected = selectedSummary();
+        const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+        const target = Math.max(selected.total - returAmount, 0);
+        const saldo = parseFloat($('#saldo_titip').val()) || 0;
+
+        if ($(this).is(':checked')) {
+            const useTitip = Math.min(saldo, target);
+            $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
+            $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
+        } else {
+            $('#nominal_titip').prop('disabled', true).val('0,00');
+            $('#nominal_bayar').val(formatRupiah(target));
+        }
+
         checkNominal();
     });
 
-    $('#nominal_bayar').on('blur', function () {
-        const nominal = parseNumber($(this).val());
-        if (nominal > 0) {
-            $(this).val(formatRupiah(nominal));
-        }
+    $('#nominal_bayar,#nominal_titip').on('input keyup blur', checkNominal);
+
+    $('#nominal_bayar,#nominal_titip').on('blur', function () {
+        $(this).val(formatRupiah(parseNumber($(this).val())));
     });
 
     $('#keterangan').on('change', function () {
@@ -739,50 +903,49 @@ $(document).ready(function () {
     });
 
     $('#formBayar').on('submit', function (e) {
-        const sisa = parseFloat($('#sisa_invoice').val()) || 0;
-        const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
-        const nominalCash = parseNumber($('#nominal_bayar').val());
-        const nominalTitip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
-        const totalBayarInvoice = nominalCash + nominalTitip;
+        const selected = selectedSummary();
+        const saldo = parseFloat($('#saldo_titip').val()) || 0;
+        const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+        const target = Math.max(selected.total - returAmount, 0);
 
-        if (totalBayarInvoice <= 0) {
-            alert('Total bayar harus lebih dari 0.');
+        const cash = parseNumber($('#nominal_bayar').val());
+        const titip = $('#pakai_titip').is(':checked')
+            ? parseNumber($('#nominal_titip').val())
+            : 0;
+        const total = cash + titip;
+
+        if (selected.count < 1) {
+            alert('Minimal pilih 1 Invoice / Shipping.');
             e.preventDefault();
             return false;
         }
 
-        if (nominalTitip > saldoTitip) {
-            alert('Nominal titip yang dipakai tidak boleh lebih dari saldo titip uang.');
+        if (titip > saldo + 0.01) {
+            alert('Nominal titip melebihi saldo titip tersedia.');
             e.preventDefault();
             return false;
         }
 
-        if (totalBayarInvoice > sisa) {
-            alert('Total bayar tidak boleh lebih dari sisa shipping.');
+        if (Math.abs(total - target) > 0.01) {
+            alert(
+                'Total Bayar harus sama dengan total tagihan setelah dikurangi Retur. Target: Rp ' +
+                formatRupiah(target)
+            );
             e.preventDefault();
             return false;
         }
 
-        $('#nominal_bayar').val(nominalCash);
-        $('#nominal_titip').prop('disabled', false).val(nominalTitip);
+        $('#nominal_bayar').val(cash);
+        $('#nominal_titip').prop('disabled', false).val(titip);
+
+        /*
+         * Retur berdiri sendiri pada level pembayaran/customer.
+         */
+        $('#return_id').prop('disabled', false);
+
+        return true;
     });
 
-    $('#pakai_titip').on('change', function () {
-        if ($(this).is(':checked')) {
-            $('#nominal_titip').prop('disabled', false);
-        } else {
-            $('#nominal_titip').prop('disabled', true).val('0,00');
-        }
-        checkNominal();
-    });
-
-    $('#nominal_titip').on('input keyup blur', function () {
-        checkNominal();
-    });
-
-    $('#nominal_titip').on('blur', function () {
-        const nominal = parseNumber($(this).val());
-        $(this).val(formatRupiah(nominal));
-    });
+    checkNominal();
 });
 </script>

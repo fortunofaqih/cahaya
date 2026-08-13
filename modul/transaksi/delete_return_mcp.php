@@ -1,7 +1,19 @@
 <?php
 // modul/transaksi/delete_return_mcp.php
-// Delete Sales Return CP-MCP.
-// Hanya return dengan approval_status Pending yang dapat dihapus.
+// Delete Sales Return CP-MCP - sinkron dengan relasi internal terbaru.
+//
+// Urutan aman terhadap foreign key:
+// 1. detail_retur_invoice
+// 2. head_retur_invoice
+// 3. det_invoice
+// 4. head_invoice
+// 5. det_shipping
+// 6. hed_shipping
+// 7. detail_sales_order (jika ada)
+// 8. head_sales_order
+//
+// Master m_inventory sengaja tidak dihapus otomatis untuk menghindari
+// potensi FK lain dan menjaga audit trail inventory internal MCP.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -23,17 +35,9 @@ function mcpDeleteRedirect(
 ): void {
     $_SESSION['alert'] =
         '<div class="alert alert-' .
-        htmlspecialchars(
-            $type,
-            ENT_QUOTES,
-            'UTF-8'
-        ) .
+        htmlspecialchars($type, ENT_QUOTES, 'UTF-8') .
         '">' .
-        htmlspecialchars(
-            $message,
-            ENT_QUOTES,
-            'UTF-8'
-        ) .
+        htmlspecialchars($message, ENT_QUOTES, 'UTF-8') .
         '</div>';
 
     $url = 'index.php?page=return_invoice';
@@ -43,17 +47,56 @@ function mcpDeleteRedirect(
         exit;
     }
 
-    echo '<script>
-        window.location.href = ' .
+    echo '<script>window.location.href=' .
         json_encode(
             $url,
             JSON_UNESCAPED_SLASHES |
             JSON_UNESCAPED_UNICODE
         ) .
-        ';
-    </script>';
+        ';</script>';
 
     exit;
+}
+
+function mcpDeleteTableExists(
+    mysqli $conn,
+    string $table
+): bool {
+    $safe = mysqli_real_escape_string($conn, $table);
+
+    $res = mysqli_query(
+        $conn,
+        "SHOW TABLES LIKE '{$safe}'"
+    );
+
+    return $res && mysqli_num_rows($res) > 0;
+}
+
+function mcpDeleteBy(
+    mysqli $conn,
+    string $table,
+    string $column,
+    string $value
+): void {
+    if (!mcpDeleteTableExists($conn, $table)) {
+        return;
+    }
+
+    $stmt = mysqli_prepare(
+        $conn,
+        "DELETE FROM `{$table}` WHERE `{$column}` = ?"
+    );
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            "Gagal prepare delete {$table}: " .
+            mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $value);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -79,13 +122,16 @@ try {
 
     /*
     |--------------------------------------------------------------------------
-    | LOCK HEADER
+    | LOCK HEADER + AMBIL INTERNAL REFERENCES
     |--------------------------------------------------------------------------
     */
     $stmt = mysqli_prepare(
         $conn,
         "SELECT
             return_id,
+            invoice_no,
+            shipping_no,
+            order_no,
             approval_status
          FROM head_retur_invoice
          WHERE return_id = ?
@@ -128,29 +174,43 @@ try {
         );
     }
 
+    $internalInvoiceNo =
+        trim((string)($head['invoice_no'] ?? ''));
+
+    $internalShippingNo =
+        trim((string)($head['shipping_no'] ?? ''));
+
+    $internalOrderNo =
+        trim((string)($head['order_no'] ?? ''));
+
+    $isMcp =
+        stripos($returnId, '/CP-MCP/') !== false ||
+        strpos(
+            $internalInvoiceNo,
+            'CP-MCP/INV/'
+        ) === 0;
+
+    if (!$isMcp) {
+        throw new RuntimeException(
+            'Data ini bukan Sales Return CP-MCP.'
+        );
+    }
+
     /*
     |--------------------------------------------------------------------------
-    | DELETE DETAIL
+    | DELETE RETURN DETAIL
     |--------------------------------------------------------------------------
     */
-    $stmt = mysqli_prepare(
+    mcpDeleteBy(
         $conn,
-        "DELETE FROM detail_retur_invoice
-         WHERE return_id = ?"
-    );
-
-    mysqli_stmt_bind_param(
-        $stmt,
-        's',
+        'detail_retur_invoice',
+        'return_id',
         $returnId
     );
 
-    mysqli_stmt_execute($stmt);
-    mysqli_stmt_close($stmt);
-
     /*
     |--------------------------------------------------------------------------
-    | DELETE HEADER
+    | DELETE RETURN HEADER
     |--------------------------------------------------------------------------
     */
     $stmt = mysqli_prepare(
@@ -177,15 +237,88 @@ try {
 
     mysqli_stmt_close($stmt);
 
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE INTERNAL INVOICE
+    |--------------------------------------------------------------------------
+    */
+    if ($internalInvoiceNo !== '') {
+        mcpDeleteBy(
+            $conn,
+            'det_invoice',
+            'invoice_no',
+            $internalInvoiceNo
+        );
+
+        mcpDeleteBy(
+            $conn,
+            'head_invoice',
+            'invoice_no',
+            $internalInvoiceNo
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE INTERNAL SHIPPING
+    |--------------------------------------------------------------------------
+    */
+    if ($internalShippingNo !== '') {
+        mcpDeleteBy(
+            $conn,
+            'det_shipping',
+            'shipping_no',
+            $internalShippingNo
+        );
+
+        mcpDeleteBy(
+            $conn,
+            'hed_shipping',
+            'shipping_no',
+            $internalShippingNo
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE INTERNAL SALES ORDER
+    |--------------------------------------------------------------------------
+    */
+    if ($internalOrderNo !== '') {
+        if (
+            mcpDeleteTableExists(
+                $conn,
+                'detail_sales_order'
+            )
+        ) {
+            mcpDeleteBy(
+                $conn,
+                'detail_sales_order',
+                'order_no',
+                $internalOrderNo
+            );
+        }
+
+        mcpDeleteBy(
+            $conn,
+            'head_sales_order',
+            'order_no',
+            $internalOrderNo
+        );
+    }
+
     mysqli_commit($conn);
 
     mcpDeleteRedirect(
         'success',
-        "Sales Return CP-MCP {$returnId} berhasil dihapus."
+        "Sales Return CP-MCP {$returnId} beserta data internal terkait berhasil dihapus."
     );
 
 } catch (Throwable $e) {
-    mysqli_rollback($conn);
+    try {
+        mysqli_rollback($conn);
+    } catch (Throwable $ignore) {
+    }
 
     mcpDeleteRedirect(
         'danger',

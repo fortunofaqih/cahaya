@@ -1,8 +1,12 @@
 <?php
 // modul/transaksi/update_return_mcp.php
-// Update Sales Return CP-MCP.
-// Header diperbarui dan detail MCP diganti dengan detail terbaru
-// dalam satu database transaction.
+// Update Sales Return CP-MCP - sinkron dengan relasi internal terbaru.
+//
+// Internal SO/SJ/INV dipertahankan nomornya.
+// Sales Order MCP asli + Shipping No MCP asli disimpan di remarks_return.
+// Calculated Detail Return menjadi subtotal/grand_total internal invoice + return.
+// detail_retur_invoice dan det_shipping disinkronkan ulang.
+// shipping_detail_id selalu menunjuk det_shipping.id yang valid.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -21,7 +25,7 @@ mysqli_set_charset($conn, 'utf8mb4');
 function mcpUpdateDecimal($value): float
 {
     if (is_string($value)) {
-        $value = str_replace([',', ' '], ['', ''], $value);
+        $value = str_replace(' ', '', trim($value));
     }
 
     return is_numeric($value) ? (float)$value : 0.0;
@@ -31,11 +35,9 @@ function mcpUpdateParseDate($value): ?string
 {
     $value = trim((string)$value);
 
-    if ($value === '') {
-        return null;
-    }
+    if ($value === '') return null;
 
-    foreach (['Y-m-d', 'd-M-Y', 'd-m-Y'] as $format) {
+    foreach (['Y-m-d', 'd-M-Y', 'd-m-Y', 'd/m/Y'] as $format) {
         $date = DateTime::createFromFormat($format, $value);
 
         if ($date instanceof DateTime) {
@@ -70,17 +72,238 @@ function mcpUpdateRedirect(
         exit;
     }
 
-    echo '<script>
-        window.location.href = ' .
-        json_encode(
-            $url,
-            JSON_UNESCAPED_SLASHES |
-            JSON_UNESCAPED_UNICODE
-        ) .
-        ';
-    </script>';
+    echo '<script>window.location.href=' .
+        json_encode($url, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) .
+        ';</script>';
 
     exit;
+}
+
+function mcpUpdateTableColumns(mysqli $conn, string $table): array
+{
+    static $cache = [];
+
+    if (isset($cache[$table])) {
+        return $cache[$table];
+    }
+
+    $res = mysqli_query($conn, "SHOW COLUMNS FROM `{$table}`");
+    $columns = [];
+
+    while ($row = mysqli_fetch_assoc($res)) {
+        $columns[$row['Field']] = $row;
+    }
+
+    $cache[$table] = $columns;
+    return $columns;
+}
+
+function mcpUpdateColumnExists(
+    mysqli $conn,
+    string $table,
+    string $column
+): bool {
+    $columns = mcpUpdateTableColumns($conn, $table);
+    return isset($columns[$column]);
+}
+
+function mcpUpdateAvailable(
+    mysqli $conn,
+    string $table,
+    array $values,
+    string $whereColumn,
+    $whereValue
+): void {
+    $columns = mcpUpdateTableColumns($conn, $table);
+
+    if (!isset($columns[$whereColumn])) {
+        throw new RuntimeException(
+            "Kolom {$whereColumn} tidak ditemukan pada {$table}."
+        );
+    }
+
+    $set = [];
+    $params = [];
+    $types = '';
+
+    foreach ($values as $field => $value) {
+        if (!isset($columns[$field])) {
+            continue;
+        }
+
+        $set[] = "`{$field}` = ?";
+
+        if (is_int($value)) {
+            $types .= 'i';
+        } elseif (is_float($value)) {
+            $types .= 'd';
+        } else {
+            $types .= 's';
+        }
+
+        $params[] = $value;
+    }
+
+    if (!$set) return;
+
+    if (is_int($whereValue)) {
+        $types .= 'i';
+    } else {
+        $types .= 's';
+    }
+
+    $params[] = $whereValue;
+
+    $sql = "UPDATE `{$table}` SET " .
+        implode(', ', $set) .
+        " WHERE `{$whereColumn}` = ?";
+
+    $stmt = mysqli_prepare($conn, $sql);
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            "Gagal prepare update {$table}: " . mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param($stmt, $types, ...$params);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+}
+
+function mcpUpdateInsertAvailable(
+    mysqli $conn,
+    string $table,
+    array $values
+): int {
+    $columns = mcpUpdateTableColumns($conn, $table);
+
+    $fields = [];
+    $placeholders = [];
+    $params = [];
+    $types = '';
+
+    foreach ($values as $field => $value) {
+        if (!isset($columns[$field])) {
+            continue;
+        }
+
+        $fields[] = "`{$field}`";
+        $placeholders[] = '?';
+
+        if (is_int($value)) {
+            $types .= 'i';
+        } elseif (is_float($value)) {
+            $types .= 'd';
+        } else {
+            $types .= 's';
+        }
+
+        $params[] = $value;
+    }
+
+    if (!$fields) {
+        throw new RuntimeException(
+            "Tidak ada kolom yang cocok untuk insert ke {$table}."
+        );
+    }
+
+    $sql = "INSERT INTO `{$table}` (" .
+        implode(', ', $fields) .
+        ") VALUES (" .
+        implode(', ', $placeholders) .
+        ")";
+
+    $stmt = mysqli_prepare($conn, $sql);
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            "Gagal prepare insert {$table}: " . mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param($stmt, $types, ...$params);
+    mysqli_stmt_execute($stmt);
+
+    $insertId = (int)mysqli_insert_id($conn);
+    mysqli_stmt_close($stmt);
+
+    return $insertId;
+}
+
+function mcpUpdateExists(
+    mysqli $conn,
+    string $table,
+    string $column,
+    string $value
+): bool {
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT 1 FROM `{$table}` WHERE `{$column}` = ? LIMIT 1"
+    );
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            "Gagal cek {$table}: " . mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param($stmt, 's', $value);
+    mysqli_stmt_execute($stmt);
+
+    $exists = (bool)mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+
+    return $exists;
+}
+
+function mcpUpdateGenerateInventoryId(
+    mysqli $conn,
+    int $year,
+    array &$reserved
+): string {
+    $prefix = 'MCP-INV/' . $year . '-';
+    $pattern = $prefix . '%';
+    $maxNo = 0;
+
+    foreach (['detail_retur_invoice', 'm_inventory'] as $table) {
+        if (!mcpUpdateColumnExists($conn, $table, 'inventory_id')) {
+            continue;
+        }
+
+        $sql = "
+            SELECT COALESCE(
+                MAX(
+                    CAST(
+                        SUBSTRING(inventory_id, LENGTH(?) + 1)
+                        AS UNSIGNED
+                    )
+                ),
+                0
+            ) AS max_no
+            FROM `{$table}`
+            WHERE inventory_id LIKE ?
+        ";
+
+        $stmt = mysqli_prepare($conn, $sql);
+        mysqli_stmt_bind_param($stmt, 'ss', $prefix, $pattern);
+        mysqli_stmt_execute($stmt);
+
+        $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+        mysqli_stmt_close($stmt);
+
+        $maxNo = max($maxNo, (int)($row['max_no'] ?? 0));
+    }
+
+    do {
+        $maxNo++;
+        $candidate =
+            $prefix .
+            str_pad((string)$maxNo, 6, '0', STR_PAD_LEFT);
+    } while (isset($reserved[$candidate]));
+
+    $reserved[$candidate] = true;
+    return $candidate;
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -91,99 +314,34 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     );
 }
 
-$returnId = trim(
-    (string)($_POST['return_id'] ?? '')
-);
+$returnId = trim((string)($_POST['return_id'] ?? ''));
+$returnDate = mcpUpdateParseDate($_POST['return_date'] ?? '');
 
-$returnDate = mcpUpdateParseDate(
-    $_POST['return_date'] ?? ''
-);
+$externalOrderNo = trim((string)($_POST['order_no'] ?? ''));
+$externalShippingNo = trim((string)($_POST['shipping_no'] ?? ''));
 
-$orderNo = trim(
-    (string)($_POST['order_no'] ?? '')
-);
+$customerId = trim((string)($_POST['customer_ref'] ?? ''));
+$customerName = trim((string)($_POST['customer_name'] ?? ''));
 
-$orderDate = mcpUpdateParseDate(
-    $_POST['order_date'] ?? ''
-);
+$currency = trim((string)($_POST['currency'] ?? 'IDR'));
+$reasonReturn = trim((string)($_POST['reason_return'] ?? ''));
 
-$shippingNo = trim(
-    (string)($_POST['shipping_no'] ?? '')
-);
-
-$shippingDate = mcpUpdateParseDate(
-    $_POST['shipping_date'] ?? ''
-);
-
-$invoiceNo = trim(
-    (string)($_POST['invoice_no'] ?? '')
-);
-
-$invoiceDate = mcpUpdateParseDate(
-    $_POST['invoice_date'] ?? ''
-);
-
-$customerId = trim(
-    (string)($_POST['customer_ref'] ?? '')
-);
-
-$customerName = trim(
-    (string)($_POST['customer_name'] ?? '')
-);
-
-$currency = trim(
-    (string)($_POST['currency'] ?? 'IDR')
-);
-
-$reasonReturn = trim(
-    (string)($_POST['reason_return'] ?? '')
-);
-
-$remarksReturn = trim(
-    (string)($_POST['remarks_return'] ?? '')
-);
-
-$subtotal = mcpUpdateDecimal(
-    $_POST['subtotal'] ?? 0
-);
-
-$grandTotal = mcpUpdateDecimal(
-    $_POST['grand_total'] ?? 0
-);
-
-$downPayment = mcpUpdateDecimal(
-    $_POST['down_payment'] ?? 0
-);
-
-$titipApplied = mcpUpdateDecimal(
-    $_POST['titip_applied'] ?? 0
-);
-
-$paymentBalance = mcpUpdateDecimal(
-    $_POST['payment_balance'] ?? 0
-);
-
-$returnAmount = mcpUpdateDecimal(
-    $_POST['return_amount'] ?? 0
-);
-
+$downPayment = mcpUpdateDecimal($_POST['down_payment'] ?? 0);
+$titipApplied = mcpUpdateDecimal($_POST['titip_applied'] ?? 0);
+$paymentBalance = mcpUpdateDecimal($_POST['payment_balance'] ?? 0);
+$returnAmount = mcpUpdateDecimal($_POST['return_amount'] ?? 0);
 $remainingBalance = mcpUpdateDecimal(
     $_POST['remaining_invoice_balance'] ?? 0
 );
 
 $items = $_POST['items'] ?? [];
-
-$user = (string)(
-    $_SESSION['username'] ?? 'SYSTEM'
-);
+$user = (string)($_SESSION['username'] ?? 'SYSTEM');
 
 if (
     $returnId === '' ||
     !$returnDate ||
-    $orderNo === '' ||
-    $shippingNo === '' ||
-    $invoiceNo === '' ||
-    !$invoiceDate ||
+    $externalOrderNo === '' ||
+    $externalShippingNo === '' ||
     $customerId === ''
 ) {
     mcpUpdateRedirect(
@@ -203,7 +361,7 @@ if ($reasonReturn === '') {
     );
 }
 
-if (!is_array($items) || empty($items)) {
+if (!is_array($items) || !$items) {
     mcpUpdateRedirect(
         'danger',
         'Detail inventory retur belum diisi.',
@@ -221,13 +379,16 @@ try {
 
     /*
     |--------------------------------------------------------------------------
-    | LOCK HEADER
+    | LOCK RETURN + AMBIL INTERNAL REFERENCE
     |--------------------------------------------------------------------------
     */
     $stmt = mysqli_prepare(
         $conn,
         "SELECT
             return_id,
+            invoice_no,
+            shipping_no,
+            order_no,
             approval_status
          FROM head_retur_invoice
          WHERE return_id = ?
@@ -235,38 +396,51 @@ try {
          FOR UPDATE"
     );
 
-    mysqli_stmt_bind_param(
-        $stmt,
-        's',
-        $returnId
-    );
-
+    mysqli_stmt_bind_param($stmt, 's', $returnId);
     mysqli_stmt_execute($stmt);
 
-    $existing = mysqli_fetch_assoc(
-        mysqli_stmt_get_result($stmt)
-    );
-
+    $existing = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
 
     if (!$existing) {
+        throw new RuntimeException('Sales Return tidak ditemukan.');
+    }
+
+    if (
+        strtolower(trim((string)($existing['approval_status'] ?? 'Pending')))
+        !== 'pending'
+    ) {
         throw new RuntimeException(
-            'Sales Return tidak ditemukan.'
+            'Sales Return yang sudah Approved tidak dapat diubah.'
+        );
+    }
+
+    $internalInvoiceNo =
+        trim((string)($existing['invoice_no'] ?? ''));
+
+    $internalShippingNo =
+        trim((string)($existing['shipping_no'] ?? ''));
+
+    $internalOrderNo =
+        trim((string)($existing['order_no'] ?? ''));
+
+    $isMcp =
+        stripos($returnId, '/CP-MCP/') !== false ||
+        strpos($internalInvoiceNo, 'CP-MCP/INV/') === 0;
+
+    if (!$isMcp) {
+        throw new RuntimeException(
+            'Data ini bukan Sales Return CP-MCP.'
         );
     }
 
     if (
-        strtolower(
-            trim(
-                (string)(
-                    $existing['approval_status']
-                    ?? 'Pending'
-                )
-            )
-        ) !== 'pending'
+        $internalInvoiceNo === '' ||
+        $internalShippingNo === '' ||
+        $internalOrderNo === ''
     ) {
         throw new RuntimeException(
-            'Sales Return yang sudah Approved tidak dapat diubah.'
+            'Internal reference CP-MCP tidak lengkap.'
         );
     }
 
@@ -290,36 +464,21 @@ try {
          LIMIT 1"
     );
 
-    mysqli_stmt_bind_param(
-        $stmt,
-        's',
-        $customerId
-    );
-
+    mysqli_stmt_bind_param($stmt, 's', $customerId);
     mysqli_stmt_execute($stmt);
 
-    $customerRow = mysqli_fetch_assoc(
-        mysqli_stmt_get_result($stmt)
-    );
-
+    $customerRow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
 
     if ($customerRow) {
-        $customerName = trim(
-            (string)$customerRow['customer_name']
-        );
+        $customerName =
+            trim((string)($customerRow['customer_name'] ?? ''));
 
         $customerAddress =
-            (string)(
-                $customerRow['customer_address']
-                ?? ''
-            );
+            (string)($customerRow['customer_address'] ?? '');
 
         $customerCity =
-            (string)(
-                $customerRow['customer_city']
-                ?? ''
-            );
+            (string)($customerRow['customer_city'] ?? '');
     }
 
     if ($customerName === '') {
@@ -330,86 +489,70 @@ try {
 
     /*
     |--------------------------------------------------------------------------
-    | VALIDATE DETAIL
+    | VALIDASI DETAIL
     |--------------------------------------------------------------------------
     */
     $validDetails = [];
+    $calculatedTotal = 0.0;
+    $year = (int)date('Y', strtotime($returnDate));
+    $reservedInventoryIds = [];
 
     foreach ($items as $index => $item) {
-        if (!is_array($item)) {
-            continue;
-        }
+        if (!is_array($item)) continue;
 
-        $inventoryId = trim(
-            (string)(
-                $item['inventory_id'] ?? ''
-            )
-        );
+        $inventoryId =
+            trim((string)($item['inventory_id'] ?? ''));
 
-        $inventoryName = trim(
-            (string)(
-                $item['inventory_name'] ?? ''
-            )
-        );
+        $inventoryName =
+            trim((string)($item['inventory_name'] ?? ''));
 
-        $returnQty = mcpUpdateDecimal(
-            $item['return_quantity'] ?? 0
-        );
+        $returnQty =
+            mcpUpdateDecimal($item['return_quantity'] ?? 0);
 
-        $uom = trim(
-            (string)($item['uom'] ?? '')
-        );
+        $uom = trim((string)($item['uom'] ?? ''));
 
-        $returnPack = mcpUpdateDecimal(
-            $item['return_quantity_pack'] ?? 0
-        );
+        $returnPack =
+            mcpUpdateDecimal(
+                $item['return_quantity_pack'] ?? 0
+            );
 
-        $uomPack = trim(
-            (string)($item['uom_pack'] ?? '')
-        );
+        $uomPack =
+            trim((string)($item['uom_pack'] ?? ''));
 
-        $returnDetail = mcpUpdateDecimal(
-            $item['return_quantity_detail'] ?? 0
-        );
+        $returnDetail =
+            mcpUpdateDecimal(
+                $item['return_quantity_detail'] ?? 0
+            );
 
-        $uomDetail = trim(
-            (string)($item['uom_detail'] ?? '')
-        );
+        $uomDetail =
+            trim((string)($item['uom_detail'] ?? ''));
 
-        $priceUnit = mcpUpdateDecimal(
-            $item['price_unit'] ?? 0
-        );
+        $priceUnit =
+            mcpUpdateDecimal($item['price_unit'] ?? 0);
 
-        $price = mcpUpdateDecimal(
-            $item['price'] ?? 0
-        );
+        $price =
+            mcpUpdateDecimal($item['price'] ?? 0);
 
-        $submittedReturnSubtotal =
+        $submittedSubtotal =
             mcpUpdateDecimal(
                 $item['return_subtotal'] ?? 0
             );
 
-        $remarksDetail = trim(
-            (string)(
-                $item['remarks_detail'] ?? ''
-            )
-        );
+        $remarksDetail =
+            trim((string)($item['remarks_detail'] ?? ''));
 
         if (
-            $inventoryId === '' &&
             $inventoryName === '' &&
             $returnQty <= 0 &&
-            $returnPack <= 0
+            $returnPack <= 0 &&
+            $returnDetail <= 0
         ) {
             continue;
         }
 
-        if (
-            $inventoryId === '' ||
-            $inventoryName === ''
-        ) {
+        if ($inventoryName === '') {
             throw new RuntimeException(
-                'Inventory ID dan Inventory Name pada baris ' .
+                'Inventory Name baris ' .
                 ($index + 1) .
                 ' wajib diisi.'
             );
@@ -417,48 +560,52 @@ try {
 
         if (
             $returnQty <= 0 &&
-            $returnPack <= 0
+            $returnPack <= 0 &&
+            $returnDetail <= 0
         ) {
             throw new RuntimeException(
-                'Qty Return atau Qty Pack Return pada inventory ' .
-                $inventoryId .
-                ' wajib lebih dari 0.'
+                'Minimal salah satu quantity pada inventory ' .
+                $inventoryName .
+                ' harus lebih dari 0.'
             );
         }
 
         if ($uom === '') {
             throw new RuntimeException(
                 'UoM Return pada inventory ' .
-                $inventoryId .
+                $inventoryName .
                 ' wajib diisi.'
             );
         }
 
-        if ($price < 0) {
+        if ($priceUnit < 0 || $price < 0) {
             throw new RuntimeException(
-                'Price Return pada inventory ' .
-                $inventoryId .
+                'Harga pada inventory ' .
+                $inventoryName .
                 ' tidak boleh negatif.'
             );
         }
 
-        /*
-         * Sama dengan add/save MCP.
-         * Jika Qty Pack > 0:
-         * Return Subtotal = Price x Qty Pack Return.
-         * Jika Qty Pack = 0, subtotal manual boleh dipakai.
-         */
         if ($returnPack > 0) {
-            $returnSubtotal = round(
-                $price * $returnPack,
-                2
-            );
+            $returnSubtotal =
+                round($price * $returnPack, 2);
         } else {
-            $returnSubtotal = round(
-                $submittedReturnSubtotal,
-                2
-            );
+            $returnSubtotal =
+                round($submittedSubtotal, 2);
         }
+
+        if ($inventoryId === '') {
+            $inventoryId =
+                mcpUpdateGenerateInventoryId(
+                    $conn,
+                    $year,
+                    $reservedInventoryIds
+                );
+        } else {
+            $reservedInventoryIds[$inventoryId] = true;
+        }
+
+        $calculatedTotal += $returnSubtotal;
 
         $validDetails[] = [
             'inventory_id' => $inventoryId,
@@ -482,6 +629,9 @@ try {
         );
     }
 
+    $subtotal = round($calculatedTotal, 2);
+    $grandTotal = $subtotal;
+
     if ($returnAmount < 0) {
         throw new RuntimeException(
             'Return Amount tidak boleh negatif.'
@@ -494,79 +644,101 @@ try {
         );
     }
 
+    if ($returnAmount <= 0 && $grandTotal > 0) {
+        $returnAmount = $grandTotal;
+    }
+
+    $remarksReturn =
+        'Sales Order MCP: ' .
+        $externalOrderNo .
+        ' | Shipping No. MCP: ' .
+        $externalShippingNo;
+
+    $shippingRemarks =
+        'Internal Shipping CP-MCP. Shipping asli MCP: ' .
+        $externalShippingNo .
+        ' | Sales Order MCP: ' .
+        $externalOrderNo;
+
     /*
     |--------------------------------------------------------------------------
-    | UPDATE HEADER
+    | UPDATE INTERNAL HEADER
     |--------------------------------------------------------------------------
     */
-    $updateHead = "
-        UPDATE head_retur_invoice
-        SET
-            return_date = ?,
-            invoice_no = ?,
-            invoice_date = ?,
-            shipping_no = ?,
-            shipping_date = ?,
-            order_no = ?,
-            order_date = ?,
-            customer_id = ?,
-            customer_name = ?,
-            customer_address = ?,
-            customer_city = ?,
-            currency = ?,
-            reason_return = ?,
-            remarks_return = ?,
-            subtotal = ?,
-            grand_total = ?,
-            down_payment = ?,
-            titip_applied = ?,
-            payment_balance = ?,
-            return_amount = ?,
-            remaining_invoice_balance = ?,
-            user_modified = ?,
-            date_modified = NOW()
-        WHERE return_id = ?
-    ";
-
-    $stmt = mysqli_prepare(
+    mcpUpdateAvailable(
         $conn,
-        $updateHead
+        'head_sales_order',
+        [
+            'order_date' => $returnDate,
+            'po' => $externalOrderNo,
+            'customer_id' => $customerId,
+            'customer_name' => $customerName,
+            'customer_address' => $customerAddress,
+            'customer_city' => $customerCity,
+            'currency' => $currency,
+            'remarks' =>
+                'Internal Sales Order CP-MCP. Sales Order asli MCP: ' .
+                $externalOrderNo,
+            'grand_total' => $grandTotal,
+            'down_payment' => $downPayment,
+            'user_modified' => $user,
+            'date_modified' => date('Y-m-d H:i:s')
+        ],
+        'order_no',
+        $internalOrderNo
     );
 
-    mysqli_stmt_bind_param(
-        $stmt,
-        'ssssssssssssssdddddddss',
-        $returnDate,
-        $invoiceNo,
-        $invoiceDate,
-        $shippingNo,
-        $shippingDate,
-        $orderNo,
-        $orderDate,
-        $customerId,
-        $customerName,
-        $customerAddress,
-        $customerCity,
-        $currency,
-        $reasonReturn,
-        $remarksReturn,
-        $subtotal,
-        $grandTotal,
-        $downPayment,
-        $titipApplied,
-        $paymentBalance,
-        $returnAmount,
-        $remainingBalance,
-        $user,
-        $returnId
+    mcpUpdateAvailable(
+        $conn,
+        'hed_shipping',
+        [
+            'shipping_date' => $returnDate,
+            'order_no' => $internalOrderNo,
+            'order_date' => $returnDate,
+            'customer_id' => $customerId,
+            'customer_name' => $customerName,
+            'customer_address' => $customerAddress,
+            'customer_city' => $customerCity,
+            'remarks_shipping' => $shippingRemarks,
+            'user_modified' => $user,
+            'date_modified' => date('Y-m-d H:i:s')
+        ],
+        'shipping_no',
+        $internalShippingNo
     );
 
-    mysqli_stmt_execute($stmt);
-    mysqli_stmt_close($stmt);
+    mcpUpdateAvailable(
+        $conn,
+        'head_invoice',
+        [
+            'invoice_date' => $returnDate,
+            'customer_id' => $customerId,
+            'customer_name' => $customerName,
+            'customer_address' => $customerAddress,
+            'customer_city' => $customerCity,
+            'order_no' => $internalOrderNo,
+            'order_date' => $returnDate,
+            'currency' => $currency,
+            'remarks_invoice' =>
+                'Internal Invoice CP-MCP untuk Sales Return ' .
+                $returnId .
+                '. Invoice mewakili Calculated Detail Return.',
+            'subtotal' => $subtotal,
+            'grand_total' => $grandTotal,
+            'down_payment' => $downPayment,
+            'titip_applied' => $titipApplied,
+            'payment_balance' => $paymentBalance,
+            'piutang' => $grandTotal,
+            'user_modified' => $user,
+            'date_modified' => date('Y-m-d H:i:s')
+        ],
+        'invoice_no',
+        $internalInvoiceNo
+    );
 
     /*
     |--------------------------------------------------------------------------
-    | REPLACE DETAIL
+    | HAPUS DETAIL RETURN DULU
     |--------------------------------------------------------------------------
     */
     $stmt = mysqli_prepare(
@@ -575,94 +747,270 @@ try {
          WHERE return_id = ?"
     );
 
+    mysqli_stmt_bind_param($stmt, 's', $returnId);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+
+    /*
+    |--------------------------------------------------------------------------
+    | DELETE + RECREATE DET SHIPPING
+    |--------------------------------------------------------------------------
+    */
+    $stmt = mysqli_prepare(
+        $conn,
+        "DELETE FROM det_shipping
+         WHERE shipping_no = ?"
+    );
+
     mysqli_stmt_bind_param(
         $stmt,
         's',
-        $returnId
+        $internalShippingNo
     );
 
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
 
-    $insertDetail = "
-        INSERT INTO detail_retur_invoice (
-            return_id,
-            invoice_no,
-            shipping_no,
-            order_no,
-            shipping_detail_id,
-            inventory_id,
-            inventory_name,
-            original_quantity,
-            original_uom,
-            original_quantity_pack,
-            original_uom_pack,
-            original_quantity_detail,
-            original_uom_detail,
-            return_quantity,
-            uom,
-            return_quantity_pack,
-            uom_pack,
-            return_quantity_detail,
-            uom_detail,
-            pack_conversion_value,
-            price_unit,
-            price,
-            original_subtotal,
-            return_subtotal,
-            remarks_detail,
-            create_user,
-            date_created
-        ) VALUES (
-            ?, ?, ?, ?, 0,
-            ?, ?,
-            0, '',
-            0, '',
-            0, '',
-            ?, ?,
-            ?, ?,
-            ?, ?,
-            0,
-            ?, ?,
-            0,
-            ?, ?,
-            ?,
-            NOW()
-        )
-    ";
+    foreach ($validDetails as $k => $detail) {
+        if (
+            mcpUpdateColumnExists(
+                $conn,
+                'm_inventory',
+                'inventory_id'
+            ) &&
+            !mcpUpdateExists(
+                $conn,
+                'm_inventory',
+                'inventory_id',
+                $detail['inventory_id']
+            )
+        ) {
+            mcpUpdateInsertAvailable(
+                $conn,
+                'm_inventory',
+                [
+                    'inventory_id' => $detail['inventory_id'],
+                    'inventory_name' => $detail['inventory_name'],
+                    'uom' => $detail['uom'],
+                    'type' => 'MCP',
+                    'category' => 'LAIN LAIN',
+                    'remarks' =>
+                        'Internal inventory untuk Sales Return CP-MCP ' .
+                        $returnId,
+                    'is_active' => 'Checked',
+                    'create_user' => $user,
+                    'date_created' => date('Y-m-d H:i:s')
+                ]
+            );
+        } elseif (
+            mcpUpdateColumnExists(
+                $conn,
+                'm_inventory',
+                'inventory_id'
+            )
+        ) {
+            mcpUpdateAvailable(
+                $conn,
+                'm_inventory',
+                [
+                    'inventory_name' =>
+                        $detail['inventory_name'],
+                    'uom' => $detail['uom'],
+                    'user_modified' => $user,
+                    'date_modified' => date('Y-m-d H:i:s')
+                ],
+                'inventory_id',
+                $detail['inventory_id']
+            );
+        }
 
-    $detailStmt = mysqli_prepare(
-        $conn,
-        $insertDetail
-    );
+        $shippingDetailId =
+            mcpUpdateInsertAvailable(
+                $conn,
+                'det_shipping',
+                [
+                    'shipping_no' => $internalShippingNo,
+                    'inventory_id' => $detail['inventory_id'],
+                    'inventory_name' => $detail['inventory_name'],
+                    'qty_shipping' => $detail['return_quantity'],
+                    'uom_shipping' => $detail['uom'],
+                    'qty_pack_shipping' =>
+                        $detail['return_quantity_pack'],
+                    'uom_pack_shipping' => $detail['uom_pack'],
+                    'qty_detail_shipping' =>
+                        $detail['return_quantity_detail'],
+                    'uom_detail_shipping' => $detail['uom_detail'],
+                    'price_unit' => $detail['price_unit'],
+                    'subtotal' => $detail['return_subtotal'],
+                    'remarks_inventory_shipping' =>
+                        'Internal detail CP-MCP untuk return ' .
+                        $returnId,
+                    'note' => $detail['remarks_detail']
+                ]
+            );
 
-    foreach ($validDetails as $detail) {
-        mysqli_stmt_bind_param(
-            $detailStmt,
-            'ssssssdsdsdsdddsss',
-            $returnId,
-            $invoiceNo,
-            $shippingNo,
-            $orderNo,
-            $detail['inventory_id'],
-            $detail['inventory_name'],
-            $detail['return_quantity'],
-            $detail['uom'],
-            $detail['return_quantity_pack'],
-            $detail['uom_pack'],
-            $detail['return_quantity_detail'],
-            $detail['uom_detail'],
-            $detail['price_unit'],
-            $detail['price'],
-            $detail['return_subtotal'],
-            $detail['remarks_detail'],
-            $user
-        );
+        if ($shippingDetailId <= 0) {
+            $idStmt = mysqli_prepare(
+                $conn,
+                "SELECT id
+                 FROM det_shipping
+                 WHERE shipping_no = ?
+                   AND inventory_id = ?
+                 ORDER BY id DESC
+                 LIMIT 1"
+            );
 
-        mysqli_stmt_execute($detailStmt);
+            mysqli_stmt_bind_param(
+                $idStmt,
+                'ss',
+                $internalShippingNo,
+                $detail['inventory_id']
+            );
+
+            mysqli_stmt_execute($idStmt);
+
+            $idRow = mysqli_fetch_assoc(
+                mysqli_stmt_get_result($idStmt)
+            );
+
+            mysqli_stmt_close($idStmt);
+
+            $shippingDetailId =
+                (int)($idRow['id'] ?? 0);
+        }
+
+        if ($shippingDetailId <= 0) {
+            throw new RuntimeException(
+                'Gagal mendapatkan shipping_detail_id untuk ' .
+                $detail['inventory_name'] .
+                '.'
+            );
+        }
+
+        $validDetails[$k]['shipping_detail_id'] =
+            $shippingDetailId;
     }
 
-    mysqli_stmt_close($detailStmt);
+    /*
+    |--------------------------------------------------------------------------
+    | RECREATE DET INVOICE
+    |--------------------------------------------------------------------------
+    */
+    $stmt = mysqli_prepare(
+        $conn,
+        "DELETE FROM det_invoice
+         WHERE invoice_no = ?"
+    );
+
+    mysqli_stmt_bind_param(
+        $stmt,
+        's',
+        $internalInvoiceNo
+    );
+
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+
+    mcpUpdateInsertAvailable(
+        $conn,
+        'det_invoice',
+        [
+            'invoice_no' => $internalInvoiceNo,
+            'shipping_no' => $internalShippingNo,
+            'shipping_date' => $returnDate,
+            'order_no' => $internalOrderNo,
+            'subtotal' => $subtotal,
+            'total' => $grandTotal,
+            'remarks_shipping' => $shippingRemarks
+        ]
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | UPDATE RETURN HEADER
+    |--------------------------------------------------------------------------
+    */
+    mcpUpdateAvailable(
+        $conn,
+        'head_retur_invoice',
+        [
+            'return_date' => $returnDate,
+            'invoice_no' => $internalInvoiceNo,
+            'invoice_date' => $returnDate,
+            'shipping_no' => $internalShippingNo,
+            'shipping_date' => $returnDate,
+            'order_no' => $internalOrderNo,
+            'order_date' => $returnDate,
+            'customer_id' => $customerId,
+            'customer_name' => $customerName,
+            'customer_address' => $customerAddress,
+            'customer_city' => $customerCity,
+            'currency' => $currency,
+            'reason_return' => $reasonReturn,
+            'remarks_return' => $remarksReturn,
+            'subtotal' => $subtotal,
+            'grand_total' => $grandTotal,
+            'down_payment' => $downPayment,
+            'titip_applied' => $titipApplied,
+            'payment_balance' => $paymentBalance,
+            'return_amount' => $returnAmount,
+            'remaining_invoice_balance' => $remainingBalance,
+            'user_modified' => $user,
+            'date_modified' => date('Y-m-d H:i:s')
+        ],
+        'return_id',
+        $returnId
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | INSERT RETURN DETAIL BARU
+    |--------------------------------------------------------------------------
+    */
+    foreach ($validDetails as $detail) {
+        mcpUpdateInsertAvailable(
+            $conn,
+            'detail_retur_invoice',
+            [
+                'return_id' => $returnId,
+                'invoice_no' => $internalInvoiceNo,
+                'shipping_no' => $internalShippingNo,
+                'order_no' => $internalOrderNo,
+                'shipping_detail_id' =>
+                    (int)$detail['shipping_detail_id'],
+                'inventory_id' => $detail['inventory_id'],
+                'inventory_name' => $detail['inventory_name'],
+
+                'original_quantity' => 0.0,
+                'original_uom' => '',
+                'original_quantity_pack' => 0.0,
+                'original_uom_pack' => '',
+                'original_quantity_detail' => 0.0,
+                'original_uom_detail' => '',
+
+                'return_quantity' =>
+                    $detail['return_quantity'],
+                'uom' => $detail['uom'],
+                'return_quantity_pack' =>
+                    $detail['return_quantity_pack'],
+                'uom_pack' => $detail['uom_pack'],
+                'return_quantity_detail' =>
+                    $detail['return_quantity_detail'],
+                'uom_detail' => $detail['uom_detail'],
+                'pack_conversion_value' => 0.0,
+                'price_unit' => $detail['price_unit'],
+                'price' => $detail['price'],
+                'original_subtotal' => 0.0,
+                'return_subtotal' =>
+                    $detail['return_subtotal'],
+                'remarks_detail' => $detail['remarks_detail'],
+                'create_user' => $user,
+                'date_created' => date('Y-m-d H:i:s'),
+                'user_modified' => $user,
+                'date_modified' => date('Y-m-d H:i:s')
+            ]
+        );
+    }
 
     mysqli_commit($conn);
 
@@ -673,7 +1021,10 @@ try {
     );
 
 } catch (Throwable $e) {
-    mysqli_rollback($conn);
+    try {
+        mysqli_rollback($conn);
+    } catch (Throwable $ignore) {
+    }
 
     mcpUpdateRedirect(
         'danger',

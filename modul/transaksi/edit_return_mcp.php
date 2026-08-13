@@ -26,6 +26,20 @@ function formatDateDisplay($date) {
     return $ts ? date('d-M-Y', $ts) : '';
 }
 
+function extractMcpReference(string $remarks, string $label): string
+{
+    $remarks = trim($remarks);
+    if ($remarks === '') return '';
+
+    $pattern = '/(?:^|\\|\\s*)' . preg_quote($label, '/') . '\\s*:\\s*([^|]+)/i';
+
+    if (preg_match($pattern, $remarks, $m)) {
+        return trim((string)($m[1] ?? ''));
+    }
+
+    return '';
+}
+
 $returnId = trim((string)($_GET['return_id'] ?? $_GET['id'] ?? ''));
 
 if ($returnId === '') {
@@ -67,6 +81,34 @@ if (
     !== 'pending'
 ) {
     die('Sales Return yang sudah Approved tidak dapat diedit.');
+}
+
+$isMcp =
+    stripos((string)$head['return_id'], '/CP-MCP/') !== false ||
+    strpos((string)($head['invoice_no'] ?? ''), 'CP-MCP/INV/') === 0;
+
+if (!$isMcp) {
+    die('Data ini bukan Sales Return CP-MCP.');
+}
+
+$remarksReturn = (string)($head['remarks_return'] ?? '');
+
+$externalOrderNo = extractMcpReference(
+    $remarksReturn,
+    'Sales Order MCP'
+);
+
+$externalShippingNo = extractMcpReference(
+    $remarksReturn,
+    'Shipping No. MCP'
+);
+
+if ($externalOrderNo === '') {
+    $externalOrderNo = (string)($head['order_no'] ?? '');
+}
+
+if ($externalShippingNo === '') {
+    $externalShippingNo = (string)($head['shipping_no'] ?? '');
 }
 
 /*
@@ -396,12 +438,17 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
 
     <div class="mcp-banner">
         <i class="fa fa-pen-to-square"></i>
-        Edit Sales Return CP-MCP — referensi transaksi dan nominal dapat diubah manual oleh Finance.
+        Edit Sales Return CP-MCP — nomor internal dikelola otomatis oleh sistem.
     </div>
 
     <form method="POST" action="index.php?page=update_return_mcp" id="returnMcpForm">
 
         <input type="hidden" name="return_id" value="<?= h($head['return_id']) ?>">
+
+        <input type="hidden" name="internal_order_no" value="<?= h($head['order_no']) ?>">
+        <input type="hidden" name="internal_shipping_no" value="<?= h($head['shipping_no']) ?>">
+        <input type="hidden" name="internal_invoice_no" value="<?= h($head['invoice_no']) ?>">
+        <input type="hidden" name="remarks_return" id="remarks_return" value="<?= h($head['remarks_return']) ?>">
 
         <div class="panel-row">
 
@@ -445,87 +492,37 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
                         >
                     </div>
 
-                    <div class="ff">
-                        <label>Remarks Return</label>
-                        <textarea
-                            name="remarks_return"
-                            rows="3"
-                        ><?= h($head['remarks_return']) ?></textarea>
-                    </div>
                 </div>
             </div>
 
             <div class="return-panel">
                 <div class="return-panel-header">
                     <i class="fa fa-file-lines"></i>
-                    Sales Order, Shipping & Invoice
+                    Sales Order & Shipping MCP
                 </div>
 
                 <div class="return-panel-body">
                     <div class="ff">
-                        <label>Sales Order <span class="required">*</span></label>
+                        <label>Sales Order MCP <span class="required">*</span></label>
                         <input
                             type="text"
                             name="order_no"
-                            value="<?= h($head['order_no']) ?>"
+                            value="<?= h($externalOrderNo) ?>"
                             required
                             maxlength="50"
+                            placeholder="Input Sales Order asli MCP"
                         >
                     </div>
 
                     <div class="ff">
-                        <label>Order Date</label>
-                        <input
-                            type="text"
-                            name="order_date"
-                            class="datepicker"
-                            value="<?= h(formatDateDisplay($head['order_date'])) ?>"
-                            autocomplete="off"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>Shipping No. <span class="required">*</span></label>
+                        <label>Shipping No. MCP <span class="required">*</span></label>
                         <input
                             type="text"
                             name="shipping_no"
-                            value="<?= h($head['shipping_no']) ?>"
+                            value="<?= h($externalShippingNo) ?>"
                             required
                             maxlength="50"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>Shipping Date</label>
-                        <input
-                            type="text"
-                            name="shipping_date"
-                            class="datepicker"
-                            value="<?= h(formatDateDisplay($head['shipping_date'])) ?>"
-                            autocomplete="off"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>Invoice No. <span class="required">*</span></label>
-                        <input
-                            type="text"
-                            name="invoice_no"
-                            value="<?= h($head['invoice_no']) ?>"
-                            required
-                            maxlength="50"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>Invoice Date <span class="required">*</span></label>
-                        <input
-                            type="text"
-                            name="invoice_date"
-                            class="datepicker"
-                            value="<?= h(formatDateDisplay($head['invoice_date'])) ?>"
-                            required
-                            autocomplete="off"
+                            placeholder="Input Shipping No. asli MCP"
                         >
                     </div>
                 </div>
@@ -534,7 +531,7 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
             <div class="return-panel">
                 <div class="return-panel-header">
                     <i class="fa fa-building-user"></i>
-                    Customer & Invoice Information
+                    Customer Information
                 </div>
 
                 <div class="return-panel-body">
@@ -575,31 +572,7 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
                         >
                     </div>
 
-                    <div class="ff">
-                        <label>Invoice Subtotal <span class="required">*</span></label>
-                        <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            name="subtotal"
-                            class="text-right"
-                            value="<?= h((float)$head['subtotal']) ?>"
-                            required
-                        >
-                    </div>
 
-                    <div class="ff">
-                        <label>Grand Total <span class="required">*</span></label>
-                        <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            name="grand_total"
-                            class="text-right"
-                            value="<?= h((float)$head['grand_total']) ?>"
-                            required
-                        >
-                    </div>
                 </div>
             </div>
 
@@ -614,7 +587,7 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
             <div class="detail-toolbar">
                 <span class="small-note">
                     <i class="fa fa-info-circle"></i>
-                    Inventory dan quantity retur dapat diedit manual. Return Subtotal otomatis = Price × Qty Pack Return.
+                    Inventory ID disimpan otomatis/hidden. Return Subtotal otomatis = Price × Qty Pack Return.
                 </span>
 
                 <button
@@ -632,7 +605,6 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
                     <thead>
                         <tr>
                             <th style="width:45px;">No</th>
-                            <th style="width:115px;">Inventory ID</th>
                             <th>Inventory Name</th>
                             <th style="width:95px;">Qty Return</th>
                             <th style="width:70px;">UoM</th>
@@ -835,14 +807,13 @@ function itemRow(index, data) {
             <td class="text-center row-number"></td>
 
             <td>
-                <input type="text"
+                <input type="hidden"
                        name="items[${index}][inventory_id]"
-                       maxlength="50"
-                       value="${escapeHtml(data.inventory_id || '')}"
-                       required>
-            </td>
+                       value="${escapeHtml(data.inventory_id || '')}">
+                <input type="hidden"
+                       name="items[${index}][shipping_detail_id]"
+                       value="${escapeHtml(data.shipping_detail_id || '')}">
 
-            <td>
                 <input type="text"
                        class="inventory-name-input"
                        name="items[${index}][inventory_name]"
@@ -996,6 +967,20 @@ function calculateDetailTotal() {
     ).value = money(total);
 }
 
+function syncRemarksReturn() {
+    var orderInput = document.querySelector('input[name="order_no"]');
+    var shippingInput = document.querySelector('input[name="shipping_no"]');
+    var remarksInput = document.getElementById('remarks_return');
+
+    if (!remarksInput) return;
+
+    remarksInput.value =
+        'Sales Order MCP: ' +
+        String(orderInput ? orderInput.value : '').trim() +
+        ' | Shipping No. MCP: ' +
+        String(shippingInput ? shippingInput.value : '').trim();
+}
+
 document.addEventListener('input', function(event) {
     if (
         event.target.classList.contains('return-pack') ||
@@ -1012,6 +997,13 @@ document.addEventListener('input', function(event) {
         event.target.classList.contains('return-subtotal')
     ) {
         calculateDetailTotal();
+    }
+
+    if (
+        event.target.name === 'order_no' ||
+        event.target.name === 'shipping_no'
+    ) {
+        syncRemarksReturn();
     }
 });
 
@@ -1081,8 +1073,10 @@ $(document).ready(function() {
     }
 
     calculateDetailTotal();
+    syncRemarksReturn();
 
     $('#returnMcpForm').on('submit', function(event) {
+        syncRemarksReturn();
         if (!$('#customer_ref').val()) {
             event.preventDefault();
             alert('Customer Name wajib dipilih.');

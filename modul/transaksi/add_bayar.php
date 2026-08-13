@@ -273,21 +273,25 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
 }
 
 /*
- * Daftar Retur aktif per pasangan invoice + shipping.
- * User memilih No. Retur secara eksplisit untuk kebutuhan cross-check.
+ * Daftar Retur aktif per customer.
+ * Retur tidak lagi terikat ke invoice/shipping yang dicentang.
  */
-$returnsByShipping = [];
+$returnsByCustomer = [];
 
 $sqlReturnList = "
     SELECT
         return_id,
         return_date,
+        customer_id,
+        customer_name,
         invoice_no,
         TRIM(shipping_no) AS shipping_no,
         return_amount,
-        reason_return
+        reason_return,
+        remarks_return
     FROM head_retur_invoice
     WHERE LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+      AND COALESCE(customer_id, '') <> ''
     ORDER BY return_date DESC, return_id DESC
 ";
 
@@ -298,19 +302,60 @@ if (!$resReturnList) {
 }
 
 while ($ret = mysqli_fetch_assoc($resReturnList)) {
-    $key = trim((string)$ret['invoice_no']) . '|' . trim((string)$ret['shipping_no']);
+    $customerKey = trim((string)($ret['customer_id'] ?? ''));
 
-    if (!isset($returnsByShipping[$key])) {
-        $returnsByShipping[$key] = [];
+    if ($customerKey === '') {
+        continue;
     }
 
-    $returnsByShipping[$key][] = [
-        'return_id' => (string)$ret['return_id'],
-        'return_date' => (string)$ret['return_date'],
-        'return_amount' => (float)$ret['return_amount'],
+    if (!isset($returnsByCustomer[$customerKey])) {
+        $returnsByCustomer[$customerKey] = [];
+    }
+
+    $returnsByCustomer[$customerKey][] = [
+        'return_id' => (string)($ret['return_id'] ?? ''),
+        'return_date' => (string)($ret['return_date'] ?? ''),
+        'return_amount' => (float)($ret['return_amount'] ?? 0),
         'reason_return' => (string)($ret['reason_return'] ?? ''),
+        'invoice_no' => (string)($ret['invoice_no'] ?? ''),
+        'shipping_no' => (string)($ret['shipping_no'] ?? ''),
     ];
 }
+
+/*
+|--------------------------------------------------------------------------
+| CUSTOMER YANG MEMILIKI TAGIHAN TERSEDIA
+|--------------------------------------------------------------------------
+| Sumbernya dari $shippings agar daftar customer selalu konsisten dengan
+| invoice/shipping yang memang dapat dipilih untuk pembayaran.
+|--------------------------------------------------------------------------
+*/
+$paymentCustomers = [];
+
+foreach ($shippings as $ship) {
+    $cid = (string)($ship['customer_id'] ?? '');
+
+    if ($cid === '') {
+        continue;
+    }
+
+    if (!isset($paymentCustomers[$cid])) {
+        $paymentCustomers[$cid] = [
+            'customer_id' => $cid,
+            'customer_name' => (string)($ship['customer_name'] ?? ''),
+            'customer_address' => (string)($ship['customer_address'] ?? ''),
+            'customer_city' => (string)($ship['customer_city'] ?? ''),
+            'saldo_titip' => (float)($ship['saldo_titip'] ?? 0),
+        ];
+    }
+}
+
+uasort($paymentCustomers, function ($a, $b) {
+    return strcasecmp(
+        (string)($a['customer_name'] ?? ''),
+        (string)($b['customer_name'] ?? '')
+    );
+});
 ?>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -321,295 +366,94 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 
 <style>
-.pay-form-wrap * {
-    box-sizing: border-box;
-    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
-}
-.pay-form-wrap {
-    background: #f0f2f5;
-    padding: 12px;
-    color: #212529;
-    font-size: 11px;
-}
-.app-icon {
-    width: 14px;
-    height: 14px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    vertical-align: -2px;
-}
-.app-icon svg {
-    width: 14px;
-    height: 14px;
-    fill: currentColor;
-}
-.title-icon svg {
-    width: 18px;
-    height: 18px;
-}
-.crystal-header {
-    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-    color: #fff;
-    padding: 10px 15px;
-    border-radius: 5px;
-}
-.form-card {
-    background: #fff;
-    border: 1px solid #dee2e6;
-    border-radius: 5px;
-    padding: 12px;
-    margin-top: 10px;
-}
-.form-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-}
-.ff label {
-    display: block;
-    font-size: 10px;
-    font-weight: 700;
-    color: #0d6efd;
-    margin-bottom: 3px;
-    text-transform: uppercase;
-}
-.ff input,
-.ff select,
-.ff textarea {
-    width: 100%;
-    border: 1px solid #ced4da;
-    border-radius: 3px;
-    padding: 6px 8px;
-    font-size: 11px;
-    background: #fff;
-}
-.ff input[readonly] {
-    background: #f8f9fa;
-}
-.btn-vs {
-    padding: 6px 12px;
-    font-size: 11px;
-    font-weight: bold;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    line-height: 1;
-    min-height: 30px;
-}
-.btn-success { background: #198754; color: #fff; }
-.btn-secondary { background: #6c757d; color: #fff; }
-.warning-box {
-    display: none;
-    margin-top: 6px;
-    padding: 7px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: bold;
-}
-.warning-danger {
-    display: block;
-    background: #f8d7da;
-    color: #842029;
-    border: 1px solid #f5c2c7;
-}
-.warning-info {
-    display: block;
-    background: #fff3cd;
-    color: #664d03;
-    border: 1px solid #ffecb5;
-}
-.warning-ok {
-    display: block;
-    background: #d1e7dd;
-    color: #0f5132;
-    border: 1px solid #badbcc;
-}
-.select2-container {
-    width: 100% !important;
-    font-size: 11px;
-}
-.select2-container--default .select2-selection--single {
-    height: 30px;
-    border: 1px solid #ced4da;
-    border-radius: 3px;
-    display: flex;
-    align-items: center;
-}
-.select2-container--default .select2-selection--single .select2-selection__rendered {
-    line-height: 28px;
-    color: #212529;
-    padding-left: 8px;
-    font-size: 11px;
-}
-.select2-container--default .select2-selection--single .select2-selection__arrow {
-    height: 28px;
-}
-.select2-dropdown {
-    font-size: 11px;
-}
-@media (max-width: 900px) {
-    .form-grid {
-        grid-template-columns: 1fr;
-    }
-}
-.form-section {
-    border: 1px solid #d8e2ef;
-    border-radius: 6px;
-    background: #ffffff;
-    margin-bottom: 12px;
-    overflow: hidden;
-}
-
-.form-section-title {
-    background: linear-gradient(135deg, #eef5ff 0%, #f8fbff 100%);
-    color: #1e3c72;
-    font-size: 11px;
-    font-weight: 800;
-    padding: 8px 10px;
-    border-bottom: 1px solid #d8e2ef;
-    text-transform: uppercase;
-    letter-spacing: .2px;
-}
-
-.form-section-body {
-    padding: 10px;
-}
-
-.form-grid-3 {
-    display: grid;
-    grid-template-columns: 2fr 1fr 1fr;
-    gap: 10px;
-}
-
-.form-grid-2 {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-}
-
-.form-grid-4 {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-}
-
-.field-full {
-    grid-column: 1 / -1;
-}
-
-.readonly-highlight {
-    background: #f8f9fa !important;
-    font-weight: 700;
-    color: #1e3c72;
-}
-
-.payment-summary-input {
-    background: #eaf7ef !important;
-    font-weight: 800;
-    color: #0f5132;
-}
-
-.checkbox-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 30px;
-    padding: 6px 8px;
-    border: 1px solid #ced4da;
-    border-radius: 3px;
-    background: #fff;
-}
-
-.checkbox-line input {
-    width: auto !important;
-    margin: 0;
-}
-
-@media (max-width: 1100px) {
-    .form-grid-4 {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-@media (max-width: 900px) {
-    .form-grid-3,
-    .form-grid-2,
-    .form-grid-4 {
-        grid-template-columns: 1fr;
-    }
-}
+.pay-form-wrap *{box-sizing:border-box;font-family:'Segoe UI',Tahoma,Arial,sans-serif}
+.pay-form-wrap{background:#f0f2f5;padding:12px;color:#212529;font-size:11px}
+.app-icon{width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;vertical-align:-2px}
+.app-icon svg{width:14px;height:14px;fill:currentColor}.title-icon svg{width:18px;height:18px}
+.crystal-header{background:linear-gradient(135deg,#1e3c72 0%,#2a5298 100%);color:#fff;padding:10px 15px;border-radius:5px}
+.form-card{background:#fff;border:1px solid #dee2e6;border-radius:5px;padding:12px;margin-top:10px}
+.form-section{border:1px solid #d8e2ef;border-radius:6px;background:#fff;margin-bottom:12px;overflow:hidden}
+.form-section-title{background:linear-gradient(135deg,#eef5ff 0%,#f8fbff 100%);color:#1e3c72;font-size:11px;font-weight:800;padding:8px 10px;border-bottom:1px solid #d8e2ef;text-transform:uppercase}
+.form-section-body{padding:10px}
+.form-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.form-grid-3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}
+.form-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.field-full{grid-column:1/-1}
+.ff label{display:block;font-size:10px;font-weight:700;color:#0d6efd;margin-bottom:3px;text-transform:uppercase}
+.ff input,.ff select,.ff textarea{width:100%;border:1px solid #ced4da;border-radius:3px;padding:6px 8px;font-size:11px;background:#fff}
+.ff input[readonly],.ff textarea[readonly]{background:#f8f9fa}
+.readonly-highlight{background:#f8f9fa!important;font-weight:700;color:#1e3c72}
+.payment-summary-input{background:#eaf7ef!important;font-weight:800;color:#0f5132}
+.btn-vs{padding:6px 12px;font-size:11px;font-weight:bold;border:none;border-radius:3px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;line-height:1;min-height:30px}
+.btn-success{background:#198754;color:#fff}.btn-secondary{background:#6c757d;color:#fff}
+.checkbox-line{display:flex;align-items:center;gap:8px;min-height:30px;padding:6px 8px;border:1px solid #ced4da;border-radius:3px;background:#fff}
+.checkbox-line input{width:auto!important;margin:0}
+.warning-box{display:none;margin-top:6px;padding:7px;border-radius:3px;font-size:11px;font-weight:bold}
+.warning-danger{display:block;background:#f8d7da;color:#842029;border:1px solid #f5c2c7}
+.warning-info{display:block;background:#fff3cd;color:#664d03;border:1px solid #ffecb5}
+.warning-ok{display:block;background:#d1e7dd;color:#0f5132;border:1px solid #badbcc}
+.select2-container{width:100%!important;font-size:11px}
+.select2-container--default .select2-selection--single{height:30px;border:1px solid #ced4da;border-radius:3px;display:flex;align-items:center}
+.select2-container--default .select2-selection--single .select2-selection__rendered{line-height:28px;padding-left:8px;font-size:11px}
+.select2-container--default .select2-selection--single .select2-selection__arrow{height:28px}
+.invoice-table-wrap{overflow:auto;max-height:420px;border:1px solid #c9d5e2}
+.invoice-pay-table{width:100%;min-width:1250px;border-collapse:collapse;font-size:10px}
+.invoice-pay-table th{position:sticky;top:0;z-index:2;background:#e9ecef;color:#2b4c7e;border:1px solid #c0cddb;padding:6px 5px;white-space:nowrap;text-align:center}
+.invoice-pay-table td{border:1px solid #d3d3d3;padding:5px;white-space:nowrap;vertical-align:middle}
+.invoice-pay-table tbody tr:hover td{background:#f3f8ff}
+.invoice-pay-table tbody tr.selected-row td{background:#eaf7ef}
+.money{text-align:right;font-variant-numeric:tabular-nums}
+.text-center{text-align:center}
+.row-checkbox{width:16px;height:16px}
+.return-select{min-width:210px}
+.summary-count{font-weight:800;color:#0d6efd}
+@media(max-width:1100px){.form-grid-4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:900px){.form-grid-2,.form-grid-3,.form-grid-4{grid-template-columns:1fr}}
 </style>
 
 <div class="pay-form-wrap">
-    <?php if (isset($_SESSION['alert'])): ?>
-        <?= $_SESSION['alert']; unset($_SESSION['alert']); ?>
-    <?php endif; ?>
+<?php if (isset($_SESSION['alert'])): ?>
+    <?= $_SESSION['alert']; unset($_SESSION['alert']); ?>
+<?php endif; ?>
 
-    <div class="crystal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <h5 style="margin:0;display:flex;align-items:center;gap:7px;">
-            <span class="app-icon title-icon"><?= appIcon('payment') ?></span>
-            Add Pembayaran
-        </h5>
+<div class="crystal-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+    <h5 style="margin:0;display:flex;align-items:center;gap:7px;">
+        <span class="app-icon title-icon"><?= appIcon('payment') ?></span>
+        Add Pembayaran Multi Invoice
+    </h5>
+    <a class="btn-vs btn-secondary" href="index.php?page=pembayaran">
+        <span class="app-icon"><?= appIcon('back') ?></span>
+        Kembali
+    </a>
+</div>
 
-        <a class="btn-vs btn-secondary" href="index.php?page=pembayaran">
-            <span class="app-icon"><?= appIcon('back') ?></span>
-            Kembali
-        </a>
-    </div>
+<form method="POST" action="modul/transaksi/save_bayar.php" id="formBayar">
+<div class="form-card">
 
-    <form method="POST" action="modul/transaksi/save_bayar.php" id="formBayar">
-        <div class="form-card">
-
-    <!-- GROUP 1: Shipping & Payment Header -->
     <div class="form-section">
-        <div class="form-section-title">Data Shipping & Pembayaran</div>
+        <div class="form-section-title">1. Customer & Payment Header</div>
         <div class="form-section-body">
             <div class="form-grid-3">
                 <div class="ff">
-                    <label>No. Shipping</label>
-                    <select name="shipping_no" id="shipping_no" class="select2-shipping" required>
-                        <option value="">-- Pilih No. Shipping --</option>
-                        <?php foreach ($shippings as $ship): ?>
+                    <label>Customer</label>
+                    <select id="customer_selector" class="select2-customer" required>
+                        <option value="">-- Pilih Customer --</option>
+                        <?php foreach ($paymentCustomers as $cust): ?>
                             <option
-                                value="<?= h($ship['shipping_no']) ?>"
-                                data-invoice-no="<?= h($ship['invoice_no']) ?>"
-                                data-shipping-date="<?= h($ship['shipping_date']) ?>"
-                                data-customer-id="<?= h($ship['customer_id']) ?>"
-                                data-customer-name="<?= h($ship['customer_name']) ?>"
-                                data-customer-address="<?= h($ship['customer_address']) ?>"
-                                data-customer-city="<?= h($ship['customer_city']) ?>"
-                                data-shipping-amount="<?= h($ship['shipping_amount']) ?>"
-                                data-retur-amount="<?= h($ship['retur_amount']) ?>"
-                                data-paid-amount="<?= h($ship['paid_amount']) ?>"
-                                data-sisa-shipping="<?= h($ship['sisa_shipping']) ?>"
-                                data-saldo-titip="<?= h($ship['saldo_titip']) ?>">
-                                <?= h(
-                                    $ship['shipping_no']
-                                    . ' | ' . $ship['invoice_no']
-                                    . ' | ' . formatDateDisplay($ship['invoice_date'])
-                                    . ' | ' . $ship['customer_name']
-                                    . ((float)$ship['retur_amount'] > 0
-                                        ? ' | Retur Rp ' . formatMoney($ship['retur_amount'])
-                                        : '')
-                                    . ' | Sisa Rp ' . formatMoney($ship['sisa_shipping'])
-                                ) ?>
+                                value="<?= h($cust['customer_id']) ?>"
+                                data-customer-name="<?= h($cust['customer_name']) ?>"
+                                data-customer-address="<?= h($cust['customer_address']) ?>"
+                                data-customer-city="<?= h($cust['customer_city']) ?>"
+                                data-saldo-titip="<?= h($cust['saldo_titip']) ?>">
+                                <?= h($cust['customer_id'] . ' | ' . $cust['customer_name']) ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
-                    <input type="hidden" name="invoice_no" id="invoice_no" value="">
-                </div>
 
-                <div class="ff">
-                    <label>No. Retur</label>
-                    <select name="return_id" id="return_id">
-                        <option value="">-- Tidak Ada / Pilih No. Retur --</option>
-                    </select>
+                    <input type="hidden" name="customer_id" id="customer_id">
+                    <input type="hidden" name="customer_name" id="customer_name">
+                    <input type="hidden" name="customer_address" id="customer_address">
+                    <input type="hidden" name="customer_city" id="customer_city">
                 </div>
 
                 <div class="ff">
@@ -619,45 +463,137 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
 
                 <div class="ff">
                     <label><span class="app-icon"><?= appIcon('calendar') ?></span> Tanggal Bayar</label>
-                    <input type="text" name="bayar_date" class="js-date-picker" value="<?= h(date('d-M-Y')) ?>" autocomplete="off" required>
+                    <input type="text" name="bayar_date" class="js-date-picker"
+                           value="<?= h(date('d-M-Y')) ?>" autocomplete="off" required>
+                </div>
+            </div>
+
+            <div class="form-grid-2" style="margin-top:10px;">
+                <div class="ff">
+                    <label>Nama Customer</label>
+                    <input type="text" id="customer_name_display" class="readonly-highlight" readonly>
+                </div>
+                <div class="ff">
+                    <label>Customer City</label>
+                    <input type="text" id="customer_city_display" class="readonly-highlight" readonly>
+                </div>
+                <div class="ff field-full">
+                    <label>Customer Address</label>
+                    <textarea id="customer_address_display" rows="2" readonly></textarea>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- GROUP 2: Customer -->
     <div class="form-section">
-        <div class="form-section-title">Data Customer</div>
+        <div class="form-section-title">
+            2. Pilih Invoice / Shipping yang Dibayar
+            <span class="summary-count" id="selected_count_label" style="float:right;">0 dipilih</span>
+        </div>
+        <div class="form-section-body">
+            <div class="invoice-table-wrap">
+                <table class="invoice-pay-table">
+                    <thead>
+                        <tr>
+                            <th style="width:42px;">Pilih</th>
+                            <th>Invoice No.</th>
+                            <th>Invoice Date</th>
+                            <th>Shipping No.</th>
+                            <th>Shipping Date</th>
+                            <th>Nilai Shipping</th>
+                            <th>Sudah Dibayar</th>
+                            <th>Sisa</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($shippings as $i => $ship): ?>
+                        <tr class="invoice-row"
+                            data-customer-id="<?= h($ship['customer_id']) ?>"
+                            data-sisa="<?= h($ship['sisa_shipping']) ?>"
+                            data-invoice-no="<?= h($ship['invoice_no']) ?>"
+                            data-shipping-no="<?= h($ship['shipping_no']) ?>"
+                            style="display:none;">
+                            <td class="text-center">
+                                <input type="checkbox"
+                                       class="row-checkbox js-select-invoice"
+                                       name="items[<?= $i ?>][selected]"
+                                       value="1">
+
+                                <input type="hidden" name="items[<?= $i ?>][invoice_no]" value="<?= h($ship['invoice_no']) ?>">
+                                <input type="hidden" name="items[<?= $i ?>][invoice_date]" value="<?= h($ship['invoice_date']) ?>">
+                                <input type="hidden" name="items[<?= $i ?>][shipping_no]" value="<?= h($ship['shipping_no']) ?>">
+                                <input type="hidden" name="items[<?= $i ?>][shipping_date]" value="<?= h($ship['shipping_date']) ?>">
+                                <input type="hidden" name="items[<?= $i ?>][invoice_amount]" value="<?= h($ship['shipping_amount']) ?>">
+                                <input type="hidden" name="items[<?= $i ?>][sisa_before]" value="<?= h($ship['sisa_shipping']) ?>">
+                            </td>
+                            <td><?= h($ship['invoice_no']) ?></td>
+                            <td><?= h(formatDateDisplay($ship['invoice_date'])) ?></td>
+                            <td><?= h($ship['shipping_no']) ?></td>
+                            <td><?= h(formatDateDisplay($ship['shipping_date'])) ?></td>
+                            <td class="money">Rp <?= h(formatMoney($ship['shipping_amount'])) ?></td>
+                            <td class="money">Rp <?= h(formatMoney($ship['paid_amount'])) ?></td>
+                            <td class="money"><strong>Rp <?= h(formatMoney($ship['sisa_shipping'])) ?></strong></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <div id="noInvoiceMessage" style="padding:12px;text-align:center;color:#777;">
+                Pilih customer untuk melihat invoice/shipping yang masih dapat dibayar.
+            </div>
+        </div>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">3. Retur Customer (Opsional)</div>
         <div class="form-section-body">
             <div class="form-grid-2">
                 <div class="ff">
-                    <label>Customer ID</label>
-                    <input type="text" name="customer_id" id="customer_id" class="readonly-highlight" readonly required>
+                    <label>No. Retur</label>
+                    <select name="return_id" id="return_id" disabled>
+                        <option value="">-- Tidak Ada / Pilih No. Retur --</option>
+                    </select>
                 </div>
 
                 <div class="ff">
-                    <label>Nama Customer</label>
-                    <input type="text" name="customer_name" id="customer_name" class="readonly-highlight" readonly required>
+                    <label>Nilai Retur Terpilih</label>
+                    <input type="text"
+                           id="retur_amount_display"
+                           class="readonly-highlight"
+                           value="Rp 0,00"
+                           readonly>
+                    <input type="hidden"
+                           name="retur_invoice"
+                           id="retur_invoice"
+                           value="0">
                 </div>
 
                 <div class="ff field-full">
-                    <label>Customer Address</label>
-                    <textarea name="customer_address" id="customer_address" rows="2" readonly></textarea>
-                </div>
-
-                <div class="ff">
-                    <label>Customer City</label>
-                    <input type="text" name="customer_city" id="customer_city" readonly>
+                    <div id="returnInfo"
+                         class="warning-box warning-info"
+                         style="display:none;"></div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- GROUP 3: Payment Calculation -->
     <div class="form-section">
-        <div class="form-section-title">Perhitungan Pembayaran</div>
+        <div class="form-section-title">4. Perhitungan Pembayaran</div>
         <div class="form-section-body">
             <div class="form-grid-4">
+                <div class="ff">
+                    <label>Total Tagihan Terpilih</label>
+                    <input type="text" id="selected_total_display" class="readonly-highlight" readonly>
+                    <input type="hidden" name="selected_total" id="selected_total" value="0">
+                </div>
+
+                <div class="ff">
+                    <label>Total Setelah Retur</label>
+                    <input type="text" id="net_payable_display" class="payment-summary-input" readonly>
+                    <input type="hidden" name="net_payable" id="net_payable" value="0">
+                </div>
+
                 <div class="ff">
                     <label>Jumlah Titip Uang</label>
                     <input type="text" id="saldo_titip_display" class="readonly-highlight" readonly>
@@ -674,30 +610,20 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
 
                 <div class="ff">
                     <label>Nominal Titip yang Dipakai</label>
-                    <input type="text" name="nominal_titip" id="nominal_titip" value="0,00" autocomplete="off" disabled>
+                    <input type="text" name="nominal_titip" id="nominal_titip"
+                           value="0,00" autocomplete="off" disabled>
                 </div>
 
                 <div class="ff">
                     <label>Nominal Bayar Cash / Transfer</label>
-                    <input type="text" name="nominal_bayar" id="nominal_bayar" autocomplete="off" required>
-                </div>
-
-                <div class="ff">
-                    <label>Nilai Retur Terpilih</label>
-                    <input type="text" id="retur_invoice_display" class="readonly-highlight" readonly>
-                    <input type="hidden" name="retur_invoice" id="retur_invoice" value="0">
-                </div>
-
-                <div class="ff">
-                    <label>Sisa Shipping dari Sisi Pembayaran</label>
-                    <input type="text" id="sisa_shipping_display" class="readonly-highlight" readonly>
-                    <input type="hidden" name="sisa_shipping" id="sisa_shipping" value="0">
-                    <input type="hidden" name="shipping_amount" id="shipping_amount" value="0">
+                    <input type="text" name="nominal_bayar" id="nominal_bayar"
+                           value="0,00" autocomplete="off" required>
                 </div>
 
                 <div class="ff">
                     <label>Total Bayar</label>
-                    <input type="text" id="total_bayar_shipping_display" class="payment-summary-input" readonly>
+                    <input type="text" id="total_bayar_display"
+                           class="payment-summary-input" readonly>
                 </div>
 
                 <div class="ff field-full">
@@ -707,9 +633,8 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
         </div>
     </div>
 
-    <!-- GROUP 4: Payment Method & Remarks -->
     <div class="form-section">
-        <div class="form-section-title">Metode Pembayaran & Keterangan</div>
+        <div class="form-section-title">5. Metode Pembayaran & Keterangan</div>
         <div class="form-section-body">
             <div class="form-grid-2">
                 <div class="ff">
@@ -724,7 +649,8 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
 
                 <div class="ff">
                     <label>Nama Bank</label>
-                    <input type="text" name="bank_name" id="bank_name" placeholder="Contoh: BCA / Mandiri / BRI">
+                    <input type="text" name="bank_name" id="bank_name"
+                           placeholder="Contoh: BCA / Mandiri / BRI">
                 </div>
 
                 <div class="ff field-full">
@@ -742,16 +668,17 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
         </a>
         <button type="submit" class="btn-vs btn-success">
             <span class="app-icon"><?= appIcon('save') ?></span>
-            Save
+            Save Pembayaran
         </button>
     </div>
+
 </div>
-    </form>
+</form>
 </div>
 
 <script>
-const returnMap = <?= json_encode(
-    $returnsByShipping,
+const returnsByCustomer = <?= json_encode(
+    $returnsByCustomer,
     JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
 ) ?>;
 
@@ -763,67 +690,230 @@ function parseNumber(value) {
 
 function formatRupiah(value) {
     value = parseFloat(value) || 0;
+
     return value.toLocaleString('id-ID', {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     });
 }
 
-function checkNominal() {
-    const sisa = parseFloat($('#sisa_shipping').val()) || 0;
+function getSelectedTotal() {
+    let total = 0;
+    let count = 0;
+
+    $('.invoice-row:visible').each(function () {
+        const checkbox = $(this).find('.js-select-invoice');
+
+        if (checkbox.is(':checked')) {
+            total += parseFloat($(this).data('sisa')) || 0;
+            count++;
+        }
+    });
+
+    return { total, count };
+}
+
+function refreshPaymentCalculation(resetCash = true) {
+    const selected = getSelectedTotal();
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
+    const returAmount = parseFloat($('#retur_invoice').val()) || 0;
 
+    const netPayable = Math.max(
+        selected.total - returAmount,
+        0
+    );
+
+    $('#selected_total').val(selected.total);
+    $('#selected_total_display').val(
+        'Rp ' + formatRupiah(selected.total)
+    );
+
+    $('#net_payable').val(netPayable);
+    $('#net_payable_display').val(
+        'Rp ' + formatRupiah(netPayable)
+    );
+
+    $('#selected_count_label').text(
+        selected.count + ' dipilih'
+    );
+
+    if (resetCash) {
+        if ($('#pakai_titip').is(':checked')) {
+            const useTitip = Math.min(
+                saldoTitip,
+                netPayable
+            );
+
+            $('#nominal_titip')
+                .prop('disabled', false)
+                .val(formatRupiah(useTitip));
+
+            $('#nominal_bayar').val(
+                formatRupiah(
+                    Math.max(netPayable - useTitip, 0)
+                )
+            );
+        } else {
+            $('#nominal_titip')
+                .prop('disabled', true)
+                .val('0,00');
+
+            $('#nominal_bayar').val(
+                formatRupiah(netPayable)
+            );
+        }
+    }
+
+    checkNominal();
+}
+
+function checkNominal() {
+    const selectedTotal = parseFloat($('#selected_total').val()) || 0;
+    const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+    const target = Math.max(
+        selectedTotal - returAmount,
+        0
+    );
+
+    const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const nominalCash = parseNumber($('#nominal_bayar').val());
-    const nominalTitip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
+    const nominalTitip = $('#pakai_titip').is(':checked')
+        ? parseNumber($('#nominal_titip').val())
+        : 0;
 
-    const totalBayarInvoice = nominalCash + nominalTitip;
+    const totalBayar = nominalCash + nominalTitip;
     const warning = $('#warningNominal');
 
-    $('#total_bayar_shipping_display').val('Rp ' + formatRupiah(totalBayarInvoice));
+    $('#net_payable').val(target);
+    $('#net_payable_display').val(
+        'Rp ' + formatRupiah(target)
+    );
 
-    warning.removeClass('warning-danger warning-info warning-ok').hide();
+    $('#total_bayar_display').val(
+        'Rp ' + formatRupiah(totalBayar)
+    );
 
-    const returnId = $('#return_id').val() || '';
+    warning
+        .removeClass(
+            'warning-danger warning-info warning-ok'
+        )
+        .hide();
 
-    if (nominalTitip > saldoTitip) {
+    if (nominalTitip > saldoTitip + 0.01) {
         warning
             .addClass('warning-danger')
-            .html('Nominal titip yang dipakai melebihi saldo titip uang. Saldo titip: Rp ' + formatRupiah(saldoTitip))
+            .html(
+                'Nominal titip melebihi saldo titip customer. ' +
+                'Saldo: Rp ' + formatRupiah(saldoTitip)
+            )
             .show();
         return;
     }
 
-    if (totalBayarInvoice <= 0) {
-        if (returnId) {
-            warning
-                .addClass('warning-info')
-                .html('Pembayaran Rp 0,00 | No. Retur dipilih untuk kebutuhan cross-check.')
-                .show();
-        }
+    if (selectedTotal <= 0) {
         return;
     }
 
-    if (totalBayarInvoice > sisa) {
-        warning
-            .addClass('warning-danger')
-            .html('Total bayar melebihi sisa shipping. Sisa shipping: Rp ' + formatRupiah(sisa))
-            .show();
-    } else if (totalBayarInvoice < sisa) {
+    if (returAmount > selectedTotal + 0.01) {
         warning
             .addClass('warning-info')
-            .html('Pembayaran kurang dari sisa shipping. Sisa setelah bayar: Rp ' + formatRupiah(sisa - totalBayarInvoice))
+            .html(
+                'Nilai retur lebih besar dari total tagihan terpilih. ' +
+                'Total yang harus dibayar menjadi Rp 0,00. ' +
+                'Sisa retur tidak otomatis menjadi titip uang.'
+            )
+            .show();
+    }
+
+    const selisih = totalBayar - target;
+
+    if (Math.abs(selisih) <= 0.01) {
+        warning
+            .addClass('warning-ok')
+            .html(
+                'Total bayar sudah sesuai setelah dikurangi Retur.'
+            )
+            .show();
+    } else if (selisih < 0) {
+        warning
+            .addClass('warning-info')
+            .html(
+                'Total bayar masih kurang Rp ' +
+                formatRupiah(Math.abs(selisih)) +
+                '.'
+            )
             .show();
     } else {
         warning
-            .addClass('warning-ok')
-            .html('Total bayar sama dengan sisa shipping.')
+            .addClass('warning-danger')
+            .html(
+                'Total bayar melebihi total setelah Retur sebesar Rp ' +
+                formatRupiah(selisih)
+            )
+            .show();
+    }
+}
+
+function refreshReturnOptions(customerId) {
+    const select = $('#return_id');
+    const info = $('#returnInfo');
+
+    select.empty().append(
+        $('<option>', {
+            value: '',
+            text: '-- Tidak Ada / Pilih No. Retur --'
+        })
+    );
+
+    $('#retur_invoice').val(0);
+    $('#retur_amount_display').val('Rp ' + formatRupiah(0));
+    info.hide().html('');
+
+    if (!customerId) {
+        select.prop('disabled', true);
+        return;
+    }
+
+    const rows = returnsByCustomer[String(customerId)] || [];
+
+    rows.forEach(function (ret) {
+        let text =
+            ret.return_id +
+            ' | ' +
+            ret.return_date +
+            ' | Rp ' +
+            formatRupiah(ret.return_amount);
+
+        if (ret.reason_return) {
+            text += ' | ' + ret.reason_return;
+        }
+
+        select.append(
+            $('<option>', {
+                value: ret.return_id,
+                text: text
+            })
+            .attr('data-return-amount', ret.return_amount)
+            .attr('data-invoice-no', ret.invoice_no || '')
+            .attr('data-shipping-no', ret.shipping_no || '')
+            .attr('data-reason-return', ret.reason_return || '')
+        );
+    });
+
+    select.prop('disabled', false);
+
+    if (!rows.length) {
+        info
+            .removeClass('warning-danger warning-ok')
+            .addClass('warning-info')
+            .html('Customer ini tidak memiliki Retur aktif.')
             .show();
     }
 }
 
 $(document).ready(function () {
-    $('.select2-shipping').select2({
-        placeholder: '-- Pilih No. Shipping --',
+    $('.select2-customer').select2({
+        placeholder: '-- Pilih Customer --',
         allowClear: true,
         width: '100%'
     });
@@ -836,105 +926,168 @@ $(document).ready(function () {
         });
     }
 
-    $('#shipping_no').on('change', function () {
+    $('#customer_selector').on('change', function () {
         const opt = $(this).find(':selected');
+        const customerId = $(this).val() || '';
 
-       const customerId = opt.data('customer-id') || '';
-        const customerName = opt.data('customer-name') || '';
-        const customerAddress = opt.data('customer-address') || '';
-        const customerCity = opt.data('customer-city') || '';
-      const invoiceNo = opt.data('invoice-no') || '';
-      const shippingAmount = parseFloat(opt.data('shipping-amount')) || 0;
-      const returTotal = parseFloat(opt.data('retur-amount')) || 0;
-      const sisaShipping = parseFloat(opt.data('sisa-shipping')) || 0;
-      const saldoTitip = parseFloat(opt.data('saldo-titip')) || 0;
+        const name = opt.data('customer-name') || '';
+        const address = opt.data('customer-address') || '';
+        const city = opt.data('customer-city') || '';
+        const saldoTitip = parseFloat(
+            opt.data('saldo-titip')
+        ) || 0;
 
         $('#customer_id').val(customerId);
-        $('#customer_name').val(customerName);
-        $('#customer_address').val(customerAddress);
-        $('#customer_city').val(customerCity);
-        $('#invoice_no').val(invoiceNo);
-        $('#shipping_amount').val(shippingAmount);
+        $('#customer_name').val(name);
+        $('#customer_address').val(address);
+        $('#customer_city').val(city);
 
-        const returnKey = invoiceNo + '|' + ($(this).val() || '');
-        const returns = returnMap[returnKey] || [];
-        const returSelect = $('#return_id');
+        $('#customer_name_display').val(name);
+        $('#customer_address_display').val(address);
+        $('#customer_city_display').val(city);
 
-        returSelect.empty();
-        returSelect.append(
-            $('<option>', {
-                value: '',
-                text: '-- Tidak Ada / Pilih No. Retur --'
-            })
+        $('#saldo_titip').val(saldoTitip);
+        $('#saldo_titip_display').val(
+            'Rp ' + formatRupiah(saldoTitip)
         );
 
-        returns.forEach(function (ret) {
-            returSelect.append(
-                $('<option>', {
-                    value: ret.return_id,
-                    text:
-                        ret.return_id +
-                        ' | ' +
-                        ret.return_date +
-                        ' | Rp ' +
-                        formatRupiah(ret.return_amount)
-                }).attr('data-return-amount', ret.return_amount)
-            );
-        });
+        $('.invoice-row')
+            .hide()
+            .removeClass('selected-row')
+            .find('.js-select-invoice')
+            .prop('checked', false);
 
-        $('#retur_invoice').val(0);
-        $('#retur_invoice_display').val('Rp ' + formatRupiah(0));
+        let visibleCount = 0;
 
-        $('#sisa_shipping').val(sisaShipping);
-        $('#sisa_shipping_display').val('Rp ' + formatRupiah(sisaShipping));
-        $('#saldo_titip').val(saldoTitip);
-        $('#saldo_titip_display').val('Rp ' + formatRupiah(saldoTitip));
-        $('#pakai_titip').prop('checked', false);
-        $('#nominal_titip').prop('disabled', true).val('0,00');
-        $('#total_bayar_shipping_display').val('Rp ' + formatRupiah(sisaShipping));
-        $('#nominal_bayar').val('');
-        $('#warningNominal').hide().removeClass('warning-danger warning-info warning-ok');
+        if (customerId) {
+            $('.invoice-row').each(function () {
+                if (
+                    String($(this).data('customer-id')) ===
+                    String(customerId)
+                ) {
+                    $(this).show();
+                    visibleCount++;
+                }
+            });
+        }
 
-        if (sisaShipping > 0) {
-            $('#nominal_bayar').val(formatRupiah(sisaShipping));
-            checkNominal();
-        } else if (returTotal > 0) {
-            $('#nominal_bayar').val('0,00');
-            $('#warningNominal')
-                .removeClass('warning-danger warning-ok')
-                .addClass('warning-info')
-                .html(
-                    'Shipping ini sudah lunas dari sisi pembayaran tetapi mempunyai Retur. ' +
-                    'Pilih No. Retur jika ingin menyimpan transaksi Rp 0,00 untuk cross-check.'
+        if (customerId && visibleCount > 0) {
+            $('#noInvoiceMessage').hide();
+        } else if (customerId) {
+            $('#noInvoiceMessage')
+                .text(
+                    'Tidak ada invoice/shipping outstanding untuk customer ini.'
+                )
+                .show();
+        } else {
+            $('#noInvoiceMessage')
+                .text(
+                    'Pilih customer untuk melihat invoice/shipping yang masih dapat dibayar.'
                 )
                 .show();
         }
+
+        $('#pakai_titip').prop('checked', false);
+        $('#nominal_titip')
+            .prop('disabled', true)
+            .val('0,00');
+
+        refreshReturnOptions(customerId);
+        refreshPaymentCalculation(true);
+    });
+
+    $(document).on('change', '.js-select-invoice', function () {
+        const row = $(this).closest('.invoice-row');
+
+        if ($(this).is(':checked')) {
+            row.addClass('selected-row');
+        } else {
+            row.removeClass('selected-row');
+        }
+
+        refreshPaymentCalculation(true);
     });
 
     $('#return_id').on('change', function () {
         const opt = $(this).find(':selected');
+        const returnId = $(this).val() || '';
         const amount = parseFloat(opt.attr('data-return-amount')) || 0;
+        const invoiceNo = opt.attr('data-invoice-no') || '';
+        const shippingNo = opt.attr('data-shipping-no') || '';
+        const reason = opt.attr('data-reason-return') || '';
 
         $('#retur_invoice').val(amount);
-        $('#retur_invoice_display').val('Rp ' + formatRupiah(amount));
+        $('#retur_amount_display').val('Rp ' + formatRupiah(amount));
 
-        if ($(this).val() && parseNumber($('#nominal_bayar').val()) <= 0) {
-            $('#keterangan').val('Retur');
+        const info = $('#returnInfo');
+
+        if (!returnId) {
+            info.hide().html('');
+            refreshPaymentCalculation(true);
+            return;
         }
 
-        checkNominal();
-    });
+        let html =
+            'Retur terpilih: <strong>' +
+            returnId +
+            '</strong> | Rp ' +
+            formatRupiah(amount);
 
-    $('#nominal_bayar').on('input keyup blur', function () {
-        checkNominal();
-    });
-
-    $('#nominal_bayar').on('blur', function () {
-        const nominal = parseNumber($(this).val());
-        if (nominal > 0) {
-            $(this).val(formatRupiah(nominal));
+        if (reason) {
+            html += ' | ' + reason;
         }
+
+        if (invoiceNo || shippingNo) {
+            html += '<br><span style="font-weight:400;">Referensi retur: ';
+
+            if (invoiceNo) {
+                html += 'Invoice ' + invoiceNo;
+            }
+
+            if (invoiceNo && shippingNo) {
+                html += ' | ';
+            }
+
+            if (shippingNo) {
+                html += 'Shipping ' + shippingNo;
+            }
+
+            html += '</span>';
+        }
+
+        info
+            .removeClass('warning-danger warning-ok')
+            .addClass('warning-info')
+            .html(html)
+            .show();
+
+        /*
+         * Retur mengurangi total tagihan terpilih.
+         */
+        refreshPaymentCalculation(true);
     });
+
+    $('#pakai_titip').on('change', function () {
+        refreshPaymentCalculation(true);
+    });
+
+    $('#nominal_bayar, #nominal_titip').on(
+        'input keyup blur',
+        function () {
+            checkNominal();
+        }
+    );
+
+    $('#nominal_bayar, #nominal_titip').on(
+        'blur',
+        function () {
+            $(this).val(
+                formatRupiah(
+                    parseNumber($(this).val())
+                )
+            );
+        }
+    );
 
     $('#keterangan').on('change', function () {
         if ($(this).val() === 'Cash') {
@@ -942,69 +1095,100 @@ $(document).ready(function () {
         }
     });
 
-$('#formBayar').on('submit', function (e) {
-    const sisa = parseFloat($('#sisa_shipping').val()) || 0;
-    const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
-    const nominalCash = parseNumber($('#nominal_bayar').val());
-    const nominalTitip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
-    const totalBayarInvoice = nominalCash + nominalTitip;
+    $('#formBayar').on('submit', function (e) {
+        const selected = getSelectedTotal();
+        const saldoTitip =
+            parseFloat($('#saldo_titip').val()) || 0;
 
-    if (!$('#shipping_no').val()) {
-        alert('No. Shipping wajib dipilih.');
-        e.preventDefault();
-        return false;
-    }
+        const returAmount =
+            parseFloat($('#retur_invoice').val()) || 0;
 
-    const returnId = $('#return_id').val() || '';
+        const targetBayar = Math.max(
+            selected.total - returAmount,
+            0
+        );
 
-    if (totalBayarInvoice <= 0 && !returnId) {
-        alert('Total bayar Rp 0,00 hanya diperbolehkan jika No. Retur dipilih.');
-        e.preventDefault();
-        return false;
-    }
+        const nominalCash =
+            parseNumber($('#nominal_bayar').val());
 
-    if (nominalTitip > saldoTitip) {
-        alert('Nominal titip yang dipakai tidak boleh lebih dari saldo titip uang.');
-        e.preventDefault();
-        return false;
-    }
+        const nominalTitip =
+            $('#pakai_titip').is(':checked')
+                ? parseNumber($('#nominal_titip').val())
+                : 0;
 
-    if (totalBayarInvoice > sisa) {
-        alert('Total bayar tidak boleh lebih dari sisa shipping.');
-        e.preventDefault();
-        return false;
-    }
+        const totalBayar =
+            nominalCash + nominalTitip;
 
-    $('#nominal_bayar').val(nominalCash);
-    $('#nominal_titip').prop('disabled', false).val(nominalTitip);
-});
-  $('#pakai_titip').on('change', function () {
-    const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
-    const sisaShipping = parseFloat($('#sisa_shipping').val()) || 0;
+        if (!$('#customer_selector').val()) {
+            alert('Customer wajib dipilih.');
+            e.preventDefault();
+            return false;
+        }
 
-    if ($(this).is(':checked')) {
-        $('#nominal_titip').prop('disabled', false);
+        if (selected.count < 1) {
+            alert(
+                'Minimal centang 1 invoice/shipping yang akan dibayar.'
+            );
+            e.preventDefault();
+            return false;
+        }
 
-        const defaultTitip = Math.min(saldoTitip, sisaShipping);
-        const defaultCash = Math.max(sisaShipping - defaultTitip, 0);
+        if (nominalTitip > saldoTitip + 0.01) {
+            alert(
+                'Nominal titip yang dipakai melebihi saldo titip customer.'
+            );
+            e.preventDefault();
+            return false;
+        }
 
-        $('#nominal_titip').val(formatRupiah(defaultTitip));
-        $('#nominal_bayar').val(formatRupiah(defaultCash));
-    } else {
-        $('#nominal_titip').prop('disabled', true).val('0,00');
-        $('#nominal_bayar').val(formatRupiah(sisaShipping));
-    }
+        /*
+         * Total bayar harus sama dengan:
+         * Total tagihan terpilih - Retur terpilih.
+         */
+        if (
+            Math.abs(
+                totalBayar - targetBayar
+            ) > 0.01
+        ) {
+            alert(
+                'Total Bayar harus sama dengan total tagihan setelah dikurangi Retur. ' +
+                'Target: Rp ' +
+                formatRupiah(targetBayar)
+            );
 
-    checkNominal();
-});
+            e.preventDefault();
+            return false;
+        }
 
-    $('#nominal_titip').on('input keyup blur', function () {
-        checkNominal();
+        $('#nominal_bayar').val(nominalCash);
+        $('#nominal_titip')
+            .prop('disabled', false)
+            .val(nominalTitip);
+
+        /*
+         * Retur sekarang berdiri sendiri pada level pembayaran/customer.
+         */
+        $('#return_id').prop('disabled', false);
+
+        return true;
     });
 
-    $('#nominal_titip').on('blur', function () {
-        const nominal = parseNumber($(this).val());
-        $(this).val(formatRupiah(nominal));
-    });
+    $('#selected_total_display').val(
+        'Rp ' + formatRupiah(0)
+    );
+
+    $('#net_payable_display').val(
+        'Rp ' + formatRupiah(0)
+    );
+
+    $('#saldo_titip_display').val(
+        'Rp ' + formatRupiah(0)
+    );
+
+    $('#total_bayar_display').val(
+        'Rp ' + formatRupiah(0)
+    );
+
+    refreshReturnOptions('');
 });
 </script>

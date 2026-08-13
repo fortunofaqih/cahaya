@@ -805,8 +805,21 @@ function generateInventoryId($conn, $inventory_name, $type) {
             <tr>
                 <td class="sticky-col-aksi text-center">
                     <?php
+                        $jsonRaw = json_encode(
+                            $d,
+                            JSON_HEX_TAG |
+                            JSON_HEX_APOS |
+                            JSON_HEX_QUOT |
+                            JSON_HEX_AMP |
+                            JSON_INVALID_UTF8_SUBSTITUTE
+                        );
+
+                        if ($jsonRaw === false) {
+                            $jsonRaw = '{}';
+                        }
+
                         $jsonData = htmlspecialchars(
-                            json_encode($d, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP),
+                            $jsonRaw,
                             ENT_QUOTES,
                             'UTF-8'
                         );
@@ -816,19 +829,35 @@ function generateInventoryId($conn, $inventory_name, $type) {
                             'UTF-8'
                         );
                     ?>
-                    <button type="button" class="btn btn-micro btn-warning text-dark" onclick="showModalEdit(<?= $jsonData ?>)" title="Edit"><i class="fa fa-edit"></i></button>
-                    <button type="button" class="btn btn-micro btn-info text-white" onclick="showModalCopy(<?= $jsonData ?>)" title="Copy"><i class="fa fa-copy"></i></button>
-                    <a href="index.php?page=inventory&action=delete&id=<?= urlencode($d['inventory_id']) ?>" class="btn btn-micro btn-danger" onclick="return confirm(<?= $deleteConfirm ?>)" title="Hapus"><i class="fa fa-trash"></i></a>
+                    <button
+                        type="button"
+                        class="btn btn-micro btn-warning text-dark js-inventory-edit"
+                        data-inventory="<?= $jsonData ?>"
+                        title="Edit"
+                    ><i class="fa fa-edit"></i></button>
+
+                    <button
+                        type="button"
+                        class="btn btn-micro btn-info text-white js-inventory-copy"
+                        data-inventory="<?= $jsonData ?>"
+                        title="Copy"
+                    ><i class="fa fa-copy"></i></button>
+                    <a href="index.php?page=inventory&action=delete&id=<?= urlencode((string)($d['inventory_id'] ?? '')) ?>" class="btn btn-micro btn-danger" onclick="return confirm(<?= $deleteConfirm ?>)" title="Hapus"><i class="fa fa-trash"></i></a>
                 </td>
-                <td class="sticky-col-id fw-bold text-secondary"><?= htmlspecialchars($d['inventory_id']) ?></td>
-                <td class="sticky-col-name fw-bold text-dark"><?= htmlspecialchars($d['inventory_name']) ?></td>
-                <td><?= htmlspecialchars($d['type']) ?></td>
+                <td class="sticky-col-id fw-bold text-secondary"><?= htmlspecialchars((string)($d['inventory_id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                <td class="sticky-col-name fw-bold text-dark"><?= htmlspecialchars((string)($d['inventory_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= htmlspecialchars((string)($d['type'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
                 
 				<td><?= htmlspecialchars((string)($d['category_name'] ?? $d['category'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= htmlspecialchars($d['uom_pack']) ?></td>
-                <td><span class="badge bg-<?= $d['status']=='Active' ? 'success' : 'danger' ?>"><?= $d['status'] ?></span></td>
+                <td><?= htmlspecialchars((string)($d['uom_pack'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                <?php $rowStatus = (string)($d['status'] ?? ''); ?>
+                <td>
+                    <span class="badge bg-<?= $rowStatus === 'Active' ? 'success' : 'danger' ?>">
+                        <?= htmlspecialchars($rowStatus, ENT_QUOTES, 'UTF-8') ?>
+                    </span>
+                </td>
                 <td class="small"><?= !empty($d['date_created']) ? date('d-m-Y', strtotime($d['date_created'])) : '-' ?></td>
-                <td><?= htmlspecialchars($d['create_user']) ?></td>
+                <td><?= htmlspecialchars((string)($d['create_user'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
             </tr>
         <?php } } ?>
         </tbody>
@@ -978,12 +1007,18 @@ var bootstrapModalUOM = null;
 var selectedUOMs = [];
 var isModalOpen = false;
 
+/*
+ * Flag diagnostic sederhana. Jika script ini berjalan,
+ * window.inventoryModuleLoaded akan bernilai true.
+ */
+window.inventoryModuleLoaded = true;
+
 var uomList = <?php 
     $uom_array = [];
     $query_uom = mysqli_query($conn, "SELECT unit FROM m_uom WHERE is_active='Checked' ORDER BY unit ASC");
     if ($query_uom) {
         while ($row_uom = mysqli_fetch_assoc($query_uom)) {
-            $uom_array[] = $row_uom['unit'];
+            $uom_array[] = (string)($row_uom['unit'] ?? '');
         }
     }
     echo json_encode($uom_array, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
@@ -1073,6 +1108,37 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         });
     }
+
+    /*
+     * Tombol Edit / Copy tidak lagi memakai inline onclick.
+     * Ini lebih aman untuk data inventory yang berisi NULL,
+     * karakter khusus, atau hasil input manual.
+     */
+    document.querySelectorAll('.js-inventory-edit').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            try {
+                var raw = btn.getAttribute('data-inventory') || '{}';
+                var data = JSON.parse(raw);
+                showModalEdit(data);
+            } catch (e) {
+                console.error('Gagal membaca data inventory untuk Edit:', e);
+                alert('Data inventory untuk Edit tidak valid.');
+            }
+        });
+    });
+
+    document.querySelectorAll('.js-inventory-copy').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            try {
+                var raw = btn.getAttribute('data-inventory') || '{}';
+                var data = JSON.parse(raw);
+                showModalCopy(data);
+            } catch (e) {
+                console.error('Gagal membaca data inventory untuk Copy:', e);
+                alert('Data inventory untuk Copy tidak valid.');
+            }
+        });
+    });
 
     var formInventoryEl = document.getElementById('formInventory');
     if (formInventoryEl) {
@@ -1835,6 +1901,3 @@ window.downloadTemplate = downloadTemplate;
 window.submitImportCSV = submitImportCSV;
 window.exportInventory = exportInventory;
 </script>
-
-
-

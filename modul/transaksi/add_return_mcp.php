@@ -85,6 +85,120 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| AUTO NUMBERING CP-MCP
+|--------------------------------------------------------------------------
+| Sales Return ID    : nomor urut per bulan/tahun, contoh 16/CP-MCP/VIII/2026
+| Internal Invoice ID: nomor internal otomatis, contoh CP-MCP/INV/2026/00001
+| Inventory ID       : nomor unik otomatis, contoh MCP-INV/2026-000001
+|--------------------------------------------------------------------------
+*/
+function monthRoman($month) {
+    $romans = [
+        1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV',
+        5 => 'V', 6 => 'VI', 7 => 'VII', 8 => 'VIII',
+        9 => 'IX', 10 => 'X', 11 => 'XI', 12 => 'XII'
+    ];
+
+    return $romans[(int)$month] ?? '';
+}
+
+$currentYear = date('Y');
+$currentMonthRoman = monthRoman((int)date('n'));
+
+$returnNoSql = "
+    SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(return_id, '/', 1) AS UNSIGNED)), 0) AS max_no
+    FROM head_retur_invoice
+    WHERE return_id LIKE ?
+";
+$returnPattern = '%/CP-MCP/' . $currentMonthRoman . '/' . $currentYear;
+$returnNoStmt = mysqli_prepare($conn, $returnNoSql);
+if (!$returnNoStmt) {
+    die('Gagal generate Sales Return ID: ' . mysqli_error($conn));
+}
+mysqli_stmt_bind_param($returnNoStmt, 's', $returnPattern);
+mysqli_stmt_execute($returnNoStmt);
+$returnNoRow = mysqli_fetch_assoc(mysqli_stmt_get_result($returnNoStmt));
+mysqli_stmt_close($returnNoStmt);
+
+$nextReturnNo = ((int)($returnNoRow['max_no'] ?? 0)) + 1;
+$autoReturnId = $nextReturnNo . '/CP-MCP/' . $currentMonthRoman . '/' . $currentYear;
+
+
+/*
+|--------------------------------------------------------------------------
+| INTERNAL INVOICE MCP
+|--------------------------------------------------------------------------
+| Nomor ini tidak ditampilkan ke user. Dipakai agar return MCP memiliki
+| invoice internal yang valid di head_invoice dan memenuhi foreign key.
+|--------------------------------------------------------------------------
+*/
+$invoicePrefix = 'CP-MCP/INV/' . $currentYear . '/';
+$invoicePattern = $invoicePrefix . '%';
+
+$invoiceNoSql = "
+    SELECT COALESCE(
+        MAX(
+            CAST(
+                SUBSTRING(invoice_no, LENGTH(?) + 1)
+                AS UNSIGNED
+            )
+        ),
+        0
+    ) AS max_no
+    FROM head_invoice
+    WHERE invoice_no LIKE ?
+";
+
+$invoiceNoStmt = mysqli_prepare($conn, $invoiceNoSql);
+
+if (!$invoiceNoStmt) {
+    die('Gagal generate Internal Invoice No: ' . mysqli_error($conn));
+}
+
+mysqli_stmt_bind_param(
+    $invoiceNoStmt,
+    'ss',
+    $invoicePrefix,
+    $invoicePattern
+);
+
+mysqli_stmt_execute($invoiceNoStmt);
+
+$invoiceNoRow = mysqli_fetch_assoc(
+    mysqli_stmt_get_result($invoiceNoStmt)
+);
+
+mysqli_stmt_close($invoiceNoStmt);
+
+$nextInvoiceNo = ((int)($invoiceNoRow['max_no'] ?? 0)) + 1;
+$autoInvoiceNo = $invoicePrefix . str_pad(
+    (string)$nextInvoiceNo,
+    5,
+    '0',
+    STR_PAD_LEFT
+);
+
+$inventoryPrefix = 'MCP-INV/' . $currentYear . '-';
+$inventoryPattern = $inventoryPrefix . '%';
+$inventoryNoSql = "
+    SELECT COALESCE(MAX(CAST(SUBSTRING(inventory_id, LENGTH(?) + 1) AS UNSIGNED)), 0) AS max_no
+    FROM detail_retur_invoice
+    WHERE inventory_id LIKE ?
+      AND return_id LIKE '%/CP-MCP/%'
+";
+$inventoryNoStmt = mysqli_prepare($conn, $inventoryNoSql);
+if (!$inventoryNoStmt) {
+    die('Gagal generate Inventory ID: ' . mysqli_error($conn));
+}
+mysqli_stmt_bind_param($inventoryNoStmt, 'ss', $inventoryPrefix, $inventoryPattern);
+mysqli_stmt_execute($inventoryNoStmt);
+$inventoryNoRow = mysqli_fetch_assoc(mysqli_stmt_get_result($inventoryNoStmt));
+mysqli_stmt_close($inventoryNoStmt);
+
+$nextInventoryNo = ((int)($inventoryNoRow['max_no'] ?? 0)) + 1;
+
 $todayDisplay = formatDateDisplay(date('Y-m-d'));
 ?>
 
@@ -198,6 +312,13 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 .return-id-input {
     font-weight: bold;
     color: #0d6efd;
+    background: #e9ecef !important;
+}
+
+.auto-id-input {
+    background: #e9ecef !important;
+    color: #495057;
+    font-weight: 700;
 }
 
 .return-panel-full {
@@ -417,10 +538,17 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 
     <div class="mcp-banner">
         <i class="fa fa-pen-to-square"></i>
-        Sales Return CP-MCP — seluruh referensi transaksi dan nominal diinput manual oleh Finance.
+        Sales Return CP-MCP — nomor internal dibuat otomatis. Finance cukup mengisi Sales Order, Shipping No. MCP, Customer, dan detail retur.
     </div>
 
     <form method="POST" action="index.php?page=save_return_mcp" id="returnMcpForm">
+
+        <!-- Internal Invoice MCP: hidden, tetap dicek/generate ulang saat save -->
+        <input
+            type="hidden"
+            name="invoice_no"
+            value="<?= h($autoInvoiceNo) ?>"
+        >
 
         <div class="panel-row">
 
@@ -440,10 +568,14 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                             type="text"
                             name="return_id"
                             class="return-id-input"
+                            value="<?= h($autoReturnId) ?>"
+                            
                             required
                             maxlength="50"
-                            placeholder="Contoh: 15/CP-MCP/VIII/2026"
                         >
+                        <div class="small-note" style="margin-top:4px;">
+                            Nomor dibuat otomatis berdasarkan urutan CP-MCP bulan berjalan.
+                        </div>
                     </div>
 
                     <div class="ff">
@@ -473,14 +605,12 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                         >
                     </div>
 
-                    <div class="ff">
-                        <label>Remarks Return</label>
-                        <textarea
-                            name="remarks_return"
-                            rows="3"
-                            placeholder="Keterangan tambahan..."
-                        ></textarea>
-                    </div>
+                    <input
+                        type="hidden"
+                        name="remarks_return"
+                        id="remarks_return"
+                        value=""
+                    >
                 </div>
             </div>
 
@@ -488,7 +618,7 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
             <div class="return-panel">
                 <div class="return-panel-header">
                     <i class="fa fa-file-lines"></i>
-                    Sales Order, Shipping & Invoice
+                    Sales Order & Shipping
                 </div>
 
                 <div class="return-panel-body">
@@ -506,64 +636,15 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                     </div>
 
                     <div class="ff">
-                        <label>Order Date</label>
-                        <input
-                            type="text"
-                            name="order_date"
-                            class="datepicker"
-                            autocomplete="off"
-                            placeholder="dd-Mmm-yyyy"
-                        >
-                    </div>
-
-                    <div class="ff">
                         <label>
-                            Shipping No. <span class="required">*</span>
+                            Shipping No. MCP <span class="required">*</span>
                         </label>
                         <input
                             type="text"
                             name="shipping_no"
                             required
                             maxlength="50"
-                            placeholder="Input Shipping No. manual"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>Shipping Date</label>
-                        <input
-                            type="text"
-                            name="shipping_date"
-                            class="datepicker"
-                            autocomplete="off"
-                            placeholder="dd-Mmm-yyyy"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>
-                            Invoice No. <span class="required">*</span>
-                        </label>
-                        <input
-                            type="text"
-                            name="invoice_no"
-                            required
-                            maxlength="50"
-                            placeholder="Input Invoice No. manual"
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>
-                            Invoice Date <span class="required">*</span>
-                        </label>
-                        <input
-                            type="text"
-                            name="invoice_date"
-                            class="datepicker"
-                            required
-                            autocomplete="off"
-                            placeholder="dd-Mmm-yyyy"
+                            placeholder="Input Shipping No. asli dari MCP"
                         >
                     </div>
                 </div>
@@ -573,7 +654,7 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
             <div class="return-panel">
                 <div class="return-panel-header">
                     <i class="fa fa-building-user"></i>
-                    Customer & Invoice Information
+                    Customer Information
                 </div>
 
                 <div class="return-panel-body">
@@ -621,36 +702,6 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                             maxlength="10"
                         >
                     </div>
-
-                    <div class="ff">
-                        <label>
-                            Invoice Subtotal <span class="required">*</span>
-                        </label>
-                        <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            name="subtotal"
-                            class="text-right"
-                            value="0"
-                            required
-                        >
-                    </div>
-
-                    <div class="ff">
-                        <label>
-                            Grand Total <span class="required">*</span>
-                        </label>
-                        <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            name="grand_total"
-                            class="text-right"
-                            value="0"
-                            required
-                        >
-                    </div>
                 </div>
             </div>
 
@@ -666,7 +717,7 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
             <div class="detail-toolbar">
                 <span class="small-note">
                     <i class="fa fa-info-circle"></i>
-                    Inventory dan quantity retur diinput manual. Return Subtotal otomatis = Price × Qty Pack Return.
+                    Inventory ID dibuat otomatis oleh sistem dan disimpan secara hidden. Inventory Name, quantity, UoM, dan harga retur diinput oleh Finance. Return Subtotal otomatis = Price × Qty Pack Return.
                 </span>
 
                 <button
@@ -684,7 +735,6 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                     <thead>
                         <tr>
                             <th style="width:45px;">No</th>
-                            <th style="width:115px;">Inventory ID</th>
                             <th>Inventory Name</th>
                             <th style="width:95px;">Qty Return</th>
                             <th style="width:70px;">UoM</th>
@@ -807,6 +857,25 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 </div>
 
 <script>
+
+function syncRemarksReturn() {
+    var shippingInput = document.querySelector('input[name="shipping_no"]');
+    var remarksInput = document.getElementById('remarks_return');
+
+    if (!shippingInput || !remarksInput) return;
+
+    var externalShipping = String(shippingInput.value || '').trim();
+    remarksInput.value = externalShipping !== ''
+        ? 'Shipping No. MCP: ' + externalShipping
+        : '';
+}
+
+document.addEventListener('input', function(event) {
+    if (event.target && event.target.name === 'shipping_no') {
+        syncRemarksReturn();
+    }
+});
+
 function escapeHtml(value) {
     if (value === null || value === undefined) return '';
 
@@ -843,21 +912,29 @@ function uomOptionsHtml(placeholder) {
     return html;
 }
 
+var inventoryPrefix = <?= json_encode($inventoryPrefix, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+var nextInventoryNo = <?= (int)$nextInventoryNo ?>;
+
+function generateInventoryId() {
+    var id = inventoryPrefix + String(nextInventoryNo).padStart(6, '0');
+    nextInventoryNo++;
+    return id;
+}
+
 var itemIndex = 0;
 
 function itemRow(index) {
+    var autoInventoryId = generateInventoryId();
+
     return `
         <tr class="item-row">
             <td class="text-center row-number"></td>
 
             <td>
-                <input type="text"
+                <input type="hidden"
                        name="items[${index}][inventory_id]"
-                       maxlength="50"
-                       required>
-            </td>
+                       value="${escapeHtml(autoInventoryId)}">
 
-            <td>
                 <input type="text"
                        class="inventory-name-input"
                        name="items[${index}][inventory_name]"
@@ -911,31 +988,33 @@ function itemRow(index) {
             </td>
 
             <td>
-                <input type="number"
-                       step="0.0001"
-                       min="0"
-                       name="items[${index}][price_unit]"
-                       value="0">
+                <input type="text"
+                inputmode="numeric"
+                class="rupiah-input price-unit"
+                name="items[${index}][price_unit]"
+                value="0"
+                autocomplete="off">
             </td>
 
             <td>
-                <input type="number"
-                       step="0.01"
-                       min="0"
-                       class="return-price"
-                       name="items[${index}][price]"
-                       value="0"
-                       required>
+               <input type="text"
+                inputmode="numeric"
+                class="return-price rupiah-input"
+                name="items[${index}][price]"
+                value="0"
+                autocomplete="off"
+                required>
             </td>
 
             <td>
-                <input type="number"
-                       step="0.01"
-                       min="0"
-                       class="return-subtotal"
-                       name="items[${index}][return_subtotal]"
-                       value="0"
-                       required>
+                <input type="text"
+                inputmode="numeric"
+                class="return-subtotal rupiah-input"
+                name="items[${index}][return_subtotal]"
+                value="0"
+                autocomplete="off"
+                readonly
+                required>
             </td>
 
             <td>
@@ -968,13 +1047,29 @@ function addItemRow() {
     itemIndex++;
     renumberRows();
 }
+function parseRupiah(value) {
+    // 1.000.000 -> 1000000
+    return Number(
+        String(value || '')
+            .replace(/\./g, '')
+            .replace(/[^0-9]/g, '')
+    ) || 0;
+}
 
+function formatRupiah(value) {
+    var number = parseRupiah(value);
+
+    return number.toLocaleString('id-ID', {
+        maximumFractionDigits: 0
+    });
+}
 function calculateRow(row) {
     var pack = Number(row.querySelector('.return-pack').value || 0);
-    var price = Number(row.querySelector('.return-price').value || 0);
+    var price = parseRupiah(row.querySelector('.return-price').value);
     var subtotal = Math.max(0, pack * price);
 
-    row.querySelector('.return-subtotal').value = subtotal.toFixed(2);
+    row.querySelector('.return-subtotal').value = formatRupiah(subtotal);
+
     calculateDetailTotal();
 }
 
@@ -982,10 +1077,11 @@ function calculateDetailTotal() {
     var total = 0;
 
     document.querySelectorAll('.return-subtotal').forEach(function(input) {
-        total += Number(input.value || 0);
+        total += parseRupiah(input.value);
     });
 
-    document.getElementById('calculated_return_display').value = money(total);
+    document.getElementById('calculated_return_display').value =
+        formatRupiah(total);
 }
 
 document.addEventListener('input', function(event) {
@@ -999,6 +1095,13 @@ document.addEventListener('input', function(event) {
 
     if (event.target.classList.contains('return-subtotal')) {
         calculateDetailTotal();
+    }
+    if (event.target.classList.contains('rupiah-input')) {
+        var angka = parseRupiah(event.target.value);
+
+        event.target.value = angka > 0
+            ? formatRupiah(angka)
+            : '';
     }
 });
 
@@ -1049,6 +1152,7 @@ $(document).ready(function() {
     addItemRow();
 
     $('#returnMcpForm').on('submit', function(event) {
+        syncRemarksReturn();
         if (!$('#customer_ref').val()) {
             event.preventDefault();
             alert('Customer Name wajib dipilih.');

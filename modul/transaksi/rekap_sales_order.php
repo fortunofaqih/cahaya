@@ -200,6 +200,13 @@ $where = "WHERE 1=1";
 
 $where .= " AND DATE(h.order_date) BETWEEN '$start_date_safe' AND '$end_date_safe'";
 
+/*
+ * Sales Order CP-MCP adalah record internal yang dibuat oleh modul Return MCP
+ * untuk menjaga relasi data. Bukan transaksi penjualan baru, sehingga tidak
+ * boleh masuk Rekap Sales Order.
+ */
+$where .= " AND COALESCE(h.order_no, '') NOT LIKE 'CP-MCP/SO/%'";
+
 if ($customer_name_safe !== '') {
     $where .= " AND h.customer_name LIKE '%$customer_name_safe%'";
 }
@@ -624,7 +631,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                 type="text" 
                 name="start_date" 
                 class="form-control form-control-sm datepicker" 
-                value="<?= htmlspecialchars($start_date_raw) ?>"
+                value="<?= htmlspecialchars((string)$start_date_raw, ENT_QUOTES, 'UTF-8') ?>"
                 autocomplete="off"
 >
             </div>
@@ -634,20 +641,20 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                     type="text" 
                     name="end_date" 
                     class="form-control form-control-sm datepicker" 
-                    value="<?= htmlspecialchars($end_date_raw) ?>"
+                    value="<?= htmlspecialchars((string)$end_date_raw, ENT_QUOTES, 'UTF-8') ?>"
                     autocomplete="off"
                 >
             </div>
             <div class="col-md-2">
                 <label class="form-label fw-bold small">Customer Name</label>
-                <input type="text" name="customer_name" class="form-control form-control-sm" placeholder="Cari customer..." value="<?= htmlspecialchars($customer_name) ?>">
+                <input type="text" name="customer_name" class="form-control form-control-sm" placeholder="Cari customer..." value="<?= htmlspecialchars((string)$customer_name, ENT_QUOTES, 'UTF-8') ?>">
             </div>
             <div class="col-md-2">
                 <label class="form-label fw-bold small">Sales</label>
                 <select name="sales_name" class="form-select form-select-sm">
                     <option value="">-- Semua Sales --</option>
                     <?php while($s = mysqli_fetch_assoc($sales_list)): ?>
-                        <option value="<?= htmlspecialchars($s['sales_name']) ?>" <?= $sales_name == $s['sales_name'] ? 'selected' : '' ?>><?= htmlspecialchars($s['sales_name']) ?></option>
+                        <option value="<?= htmlspecialchars((string)($s['sales_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" <?= $sales_name == $s['sales_name'] ? 'selected' : '' ?>><?= htmlspecialchars((string)($s['sales_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?></option>
                     <?php endwhile; ?>
                 </select>
             </div>
@@ -656,7 +663,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                 <select name="marketing_name" class="form-select form-select-sm">
                     <option value="">-- Semua Marketing --</option>
                     <?php while($m = mysqli_fetch_assoc($marketing_list)): ?>
-                        <option value="<?= htmlspecialchars($m['marketing_name']) ?>" <?= $marketing_name == $m['marketing_name'] ? 'selected' : '' ?>><?= htmlspecialchars($m['marketing_name']) ?></option>
+                        <option value="<?= htmlspecialchars((string)($m['marketing_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" <?= $marketing_name == $m['marketing_name'] ? 'selected' : '' ?>><?= htmlspecialchars((string)($m['marketing_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?></option>
                     <?php endwhile; ?>
                 </select>
             </div>
@@ -689,17 +696,17 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
             <div style="text-align: center; margin-bottom: 20px; display: none;" class="print-title">
                 <h3>PT MUTIARA CAHAYA PLASTINDO</h3>
                 <h4>REKAP SALES ORDER</h4>
-                <p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>
+                <p>Periode: <?= htmlspecialchars((string)$start_date_raw, ENT_QUOTES, 'UTF-8') ?> - <?= htmlspecialchars((string)$end_date_raw, ENT_QUOTES, 'UTF-8') ?></p>
             </div>
             
             <?php foreach ($grouped_data as $customer): ?>
                 <div class="customer-group">
                     <div class="customer-header">
                         <h5>
-                            <?= htmlspecialchars($customer['customer_name']) ?>
-                            <small> - <?= htmlspecialchars($customer['customer_city']) ?></small>
+                            <?= htmlspecialchars((string)($customer['customer_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+                            <small> - <?= htmlspecialchars((string)($customer['customer_city'] ?? ''), ENT_QUOTES, 'UTF-8') ?></small>
                         </h5>
-                        <small><?= nl2br(htmlspecialchars(substr($customer['customer_address'], 0, 100))) ?></small>
+                        <small><?= nl2br(htmlspecialchars(substr((string)($customer['customer_address'] ?? ''), 0, 100), ENT_QUOTES, 'UTF-8')) ?></small>
                     </div>
                     
                     <?php foreach ($customer['orders'] as $order): ?>
@@ -707,13 +714,28 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                             <div class="order-header">
                                 <div class="row">
                                     <div class="col-md-6">
-                                        <strong>Order ID:</strong> <?= htmlspecialchars($order['order_no']) ?> |
+                                        <strong>Order ID:</strong> <?= htmlspecialchars((string)($order['order_no'] ?? ''), ENT_QUOTES, 'UTF-8') ?> |
                                         <strong>Date:</strong> <?= date('d/m/Y', strtotime($order['order_date'])) ?>
                                     </div>
                                     <div class="col-md-6">
-                                        <strong>Marketing/Sales:</strong> <?= htmlspecialchars($order['marketing_name']) ?> / <?= htmlspecialchars($order['sales_name']) ?>
+                                        <?php
+                                            $marketingDisplay = trim((string)($order['marketing_name'] ?? ''));
+                                            $salesDisplay = trim((string)($order['sales_name'] ?? ''));
+
+                                            if ($marketingDisplay === '') {
+                                                $marketingDisplay = '-';
+                                            }
+
+                                            if ($salesDisplay === '') {
+                                                $salesDisplay = '-';
+                                            }
+                                        ?>
+                                        <strong>Marketing/Sales:</strong>
+                                        <?= htmlspecialchars($marketingDisplay, ENT_QUOTES, 'UTF-8') ?>
+                                        /
+                                        <?= htmlspecialchars($salesDisplay, ENT_QUOTES, 'UTF-8') ?>
                                         <?php if ($order['remarks']): ?>
-                                            | <strong>Remarks:</strong> <?= htmlspecialchars(substr($order['remarks'], 0, 50)) ?>
+                                            | <strong>Remarks:</strong> <?= htmlspecialchars(substr((string)($order['remarks'] ?? ''), 0, 50), ENT_QUOTES, 'UTF-8') ?>
                                         <?php endif; ?>
                                     </div>
                                 </div>
@@ -779,12 +801,12 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                         $order_total_subtotal += $subtotal;
                                     ?>
                                     <tr>
-                                        <td><?= htmlspecialchars($item['inventory_id']) ?></td>
+                                        <td><?= htmlspecialchars((string)($item['inventory_id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
 
-                                        <td><?= htmlspecialchars($item['inventory_name']) ?></td>
+                                        <td><?= htmlspecialchars((string)($item['inventory_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
 
                                         <td class="text-center">
-                                            <?= htmlspecialchars($remarks_display) ?>
+                                            <?= htmlspecialchars((string)$remarks_display, ENT_QUOTES, 'UTF-8') ?>
                                         </td>
 
                                         <td class="text-right">
@@ -793,7 +815,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                         </td>
 
                                         <td class="text-center">
-                                            <?= htmlspecialchars($item['uom']) ?>
+                                            <?= htmlspecialchars((string)($item['uom'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
                                         </td>
 
                                         <td class="text-right">
@@ -801,7 +823,7 @@ $marketing_list = mysqli_query($conn, "SELECT marketing_name FROM m_marketing WH
                                         </td>
 
                                         <td class="text-center">
-                                            <?= htmlspecialchars($item['uom_pack']) ?>
+                                            <?= htmlspecialchars((string)($item['uom_pack'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
                                         </td>
 
                                        <td class="text-right col-currency">
@@ -875,7 +897,7 @@ $(document).ready(function() {
     var titleHtml = '<div class="print-title" style="text-align: center; margin-bottom: 20px;">' +
         '<h3>PT MUTIARA CAHAYA PLASTINDO</h3>' +
         '<h4>REKAP SALES ORDER</h4>' +
-      '<p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>' +
+      '<p>Periode: <?= htmlspecialchars((string)$start_date_raw, ENT_QUOTES, 'UTF-8') ?> - <?= htmlspecialchars((string)$end_date_raw, ENT_QUOTES, 'UTF-8') ?></p>' +
         '<hr>' +
         '</div>';
     
@@ -907,7 +929,7 @@ $(document).ready(function() {
     var titleHtml = '<div class="print-title" style="text-align: center; margin-bottom: 20px;">' +
         '<h3>CP</h3>' +
         '<h4>REKAP SALES ORDER</h4>' +
-        '<p>Periode: <?= htmlspecialchars($start_date_raw) ?> - <?= htmlspecialchars($end_date_raw) ?></p>' +
+        '<p>Periode: <?= htmlspecialchars((string)$start_date_raw, ENT_QUOTES, 'UTF-8') ?> - <?= htmlspecialchars((string)$end_date_raw, ENT_QUOTES, 'UTF-8') ?></p>' +
         '<hr>' +
         '</div>';
 

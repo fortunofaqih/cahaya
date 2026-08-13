@@ -66,6 +66,9 @@ if (strtotime($start_date) > strtotime($end_date)) {
 
 $customer_id = trim((string)($_GET['customer_id'] ?? ''));
 
+// ============================================================
+// MASTER CUSTOMER
+// ============================================================
 $customers = [];
 $sqlCustomer = "
     SELECT customer_id, customer
@@ -80,7 +83,45 @@ if ($resCustomer) {
     }
 }
 
-$where = " WHERE hb.bayar_date BETWEEN ? AND ? ";
+// ============================================================
+// SALDO TITIP AKTIF PER CUSTOMER
+// Dipakai hanya 1x per customer agar tidak double.
+// ============================================================
+$titipBalances = [];
+$sqlTitip = "
+    SELECT
+        customer_id,
+        MAX(customer_name) AS customer_name,
+        SUM(COALESCE(balance_amount, 0)) AS saldo_titip
+    FROM head_titip
+    WHERE COALESCE(balance_amount, 0) > 0
+    GROUP BY customer_id
+    HAVING SUM(COALESCE(balance_amount, 0)) > 0
+";
+$resTitip = mysqli_query($conn, $sqlTitip);
+if ($resTitip) {
+    while ($row = mysqli_fetch_assoc($resTitip)) {
+        $cid = trim((string)($row['customer_id'] ?? ''));
+        if ($cid === '') continue;
+
+        $titipBalances[$cid] = [
+            'customer_name' => (string)($row['customer_name'] ?? ''),
+            'saldo_titip'   => (float)($row['saldo_titip'] ?? 0),
+        ];
+    }
+}
+
+// ============================================================
+// DATA PEMBAYARAN
+// REVISI:
+// - Pembayaran yang memiliki Retur tetap ditampilkan.
+// - Satu bayar_no dapat memiliki banyak detail_bayar.
+// - Retur standalone disimpan hanya pada salah satu detail_bayar,
+//   sehingga nanti di level tampilan cukup diambil return_id non-empty.
+// ============================================================
+$where = "
+    WHERE hb.bayar_date BETWEEN ? AND ?
+";
 $params = [$start_date, $end_date];
 $types = "ss";
 
@@ -100,10 +141,11 @@ $sql = "
         hb.total_bayar,
         hb.keterangan,
         hb.bank_name,
-        COALESCE(di.shipping_no, '') AS shipping_no,
-        db.cash_amount,
-        db.titip_amount,
-        db.bayar_amount
+        COALESCE(db.shipping_no, di.shipping_no, '') AS shipping_no,
+        COALESCE(TRIM(db.return_id), '') AS return_id,
+        COALESCE(db.cash_amount, 0) AS cash_amount,
+        COALESCE(db.titip_amount, 0) AS titip_amount_used,
+        COALESCE(db.bayar_amount, 0) AS bayar_amount
     FROM head_bayar hb
     LEFT JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
     LEFT JOIN (
@@ -114,28 +156,188 @@ $sql = "
         GROUP BY invoice_no
     ) di ON di.invoice_no = db.invoice_no
     $where
-    ORDER BY hb.bayar_date DESC, hb.bayar_no DESC
+    ORDER BY hb.bayar_date DESC, hb.bayar_no DESC, db.id ASC
 ";
 
 $stmt = mysqli_prepare($conn, $sql);
+if (!$stmt) {
+    die('<div class="alert alert-danger">SQL Pembayaran Error: ' . h(mysqli_error($conn)) . '</div>');
+}
+
 mysqli_stmt_bind_param($stmt, $types, ...$params);
 mysqli_stmt_execute($stmt);
 $res = mysqli_stmt_get_result($stmt);
 
-$rows = [];
-$total_bayar = 0;
-$total_cash = 0;
-$total_titip = 0;
-$total_bayar_detail = 0;
+// ============================================================
+// GABUNGKAN DETAIL BAYAR MENJADI 1 BARIS PER bayar_no
+// supaya nominal head_bayar tidak ikut double jika bayar memiliki
+// lebih dari satu detail invoice/shipping.
+// ============================================================
+$paymentRows = [];
 
 while ($row = mysqli_fetch_assoc($res)) {
-    $rows[] = $row;
-    $total_bayar += (float)$row['total_bayar'];
-    $total_cash += (float)$row['cash_amount'];
-    $total_titip += (float)$row['titip_amount'];
-    $total_bayar_detail += (float)$row['bayar_amount'];
+    $bayarNo = (string)($row['bayar_no'] ?? '');
+    if ($bayarNo === '') continue;
+
+    if (!isset($paymentRows[$bayarNo])) {
+        $paymentRows[$bayarNo] = [
+            'bayar_no'       => $bayarNo,
+            'bayar_date'     => $row['bayar_date'],
+            'customer_id'    => (string)($row['customer_id'] ?? ''),
+            'customer_name'  => (string)($row['customer_name'] ?? ''),
+            'customer_city'  => (string)($row['customer_city'] ?? ''),
+            'total_bayar'    => (float)($row['total_bayar'] ?? 0),
+            'keterangan'     => (string)($row['keterangan'] ?? ''),
+            'bank_name'      => (string)($row['bank_name'] ?? ''),
+            'shipping_arr'   => [],
+            'return_id'      => '',
+            'cash_amount'    => 0.0,
+            'bayar_amount'   => 0.0,
+            'titip_display'  => 0.0,
+            'is_titip_only'  => false,
+        ];
+    }
+
+    $returnId = trim((string)($row['return_id'] ?? ''));
+    if (
+        $returnId !== '' &&
+        $paymentRows[$bayarNo]['return_id'] === ''
+    ) {
+        $paymentRows[$bayarNo]['return_id'] = $returnId;
+    }
+
+    $shippingNo = trim((string)($row['shipping_no'] ?? ''));
+    if ($shippingNo !== '') {
+        foreach (array_map('trim', explode(',', $shippingNo)) as $ship) {
+            if ($ship !== '') {
+                $paymentRows[$bayarNo]['shipping_arr'][$ship] = true;
+            }
+        }
+    }
+
+    // Detail dijumlahkan karena 1 bayar_no dapat mempunyai beberapa detail.
+    $paymentRows[$bayarNo]['cash_amount'] += (float)($row['cash_amount'] ?? 0);
+    $paymentRows[$bayarNo]['bayar_amount'] += (float)($row['bayar_amount'] ?? 0);
 }
 mysqli_stmt_close($stmt);
+
+// ============================================================
+// Tentukan baris pembayaran terbaru per customer.
+// Saldo titip hanya ditempel sekali di sini agar tidak double.
+// ============================================================
+$latestPaymentByCustomer = [];
+foreach ($paymentRows as $bayarNo => $row) {
+    $cid = trim((string)$row['customer_id']);
+    if ($cid === '') continue;
+
+    if (!isset($latestPaymentByCustomer[$cid])) {
+        $latestPaymentByCustomer[$cid] = $bayarNo;
+    }
+}
+
+$rows = [];
+$customersWithPayment = [];
+
+foreach ($paymentRows as $bayarNo => $row) {
+    $cid = trim((string)$row['customer_id']);
+    if ($cid !== '') {
+        $customersWithPayment[$cid] = true;
+    }
+
+    $row['shipping_no'] = implode(', ', array_keys($row['shipping_arr']));
+    unset($row['shipping_arr']);
+
+    // Titip yang tampil adalah SALDO YANG BELUM DIPAKAI,
+    // bukan db.titip_amount (karena db.titip_amount adalah titip yang SUDAH dipakai).
+    // Saldo hanya tampil sekali di pembayaran terbaru customer.
+    if (
+        $cid !== '' &&
+        isset($latestPaymentByCustomer[$cid]) &&
+        $latestPaymentByCustomer[$cid] === $bayarNo &&
+        isset($titipBalances[$cid])
+    ) {
+        $row['titip_display'] = max(0, (float)$titipBalances[$cid]['saldo_titip']);
+    } else {
+        $row['titip_display'] = 0.0;
+    }
+
+    $rows[] = $row;
+}
+
+// ============================================================
+// PENDEKATAN 2:
+// Customer yang MASIH mempunyai saldo titip tetapi tidak mempunyai
+// pembayaran pada periode filter tetap ditampilkan sebagai baris khusus.
+// ============================================================
+foreach ($titipBalances as $cid => $titipInfo) {
+    if ($customer_id !== '' && $customer_id !== $cid) {
+        continue;
+    }
+
+    if (isset($customersWithPayment[$cid])) {
+        continue;
+    }
+
+    $saldoTitip = max(0, (float)($titipInfo['saldo_titip'] ?? 0));
+    if ($saldoTitip <= 0) {
+        continue;
+    }
+
+    // Ambil nama/city customer dari master bila tersedia.
+    $customerName = (string)($titipInfo['customer_name'] ?? '');
+    $customerCity = '';
+
+    $stmtCustInfo = mysqli_prepare($conn, "
+        SELECT customer, city
+        FROM m_customer
+        WHERE customer_id = ?
+        LIMIT 1
+    ");
+    if ($stmtCustInfo) {
+        mysqli_stmt_bind_param($stmtCustInfo, 's', $cid);
+        mysqli_stmt_execute($stmtCustInfo);
+        $resCustInfo = mysqli_stmt_get_result($stmtCustInfo);
+        if ($custInfo = mysqli_fetch_assoc($resCustInfo)) {
+            if (trim((string)($custInfo['customer'] ?? '')) !== '') {
+                $customerName = (string)$custInfo['customer'];
+            }
+            $customerCity = (string)($custInfo['city'] ?? '');
+        }
+        mysqli_stmt_close($stmtCustInfo);
+    }
+
+    $rows[] = [
+        'bayar_no'      => '-',
+        'bayar_date'    => '',
+        'customer_id'   => $cid,
+        'customer_name' => $customerName,
+        'customer_city' => $customerCity,
+        'total_bayar'   => 0.0,
+        'keterangan'    => 'Saldo titip belum digunakan',
+        'bank_name'     => '',
+        'shipping_no'   => '-',
+        'return_id'     => '',
+        'cash_amount'   => 0.0,
+        'bayar_amount'  => 0.0,
+        'titip_display' => $saldoTitip,
+        'is_titip_only' => true,
+    ];
+}
+
+// ============================================================
+// TOTAL FOOTER
+// ============================================================
+$total_bayar = 0.0;
+$total_cash = 0.0;
+$total_titip = 0.0;
+$total_bayar_detail = 0.0;
+
+foreach ($rows as $row) {
+    $total_bayar += (float)$row['total_bayar'];
+    $total_cash += (float)$row['cash_amount'];
+    $total_titip += (float)$row['titip_display'];
+    $total_bayar_detail += (float)$row['bayar_amount'];
+}
 ?>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -245,7 +447,7 @@ mysqli_stmt_close($stmt);
 }
 .pay-table {
     width: 100%;
-    min-width: 1050px;
+    min-width: 1150px;
     border-collapse: collapse;
     font-size: 9.5px;
 }
@@ -272,6 +474,9 @@ mysqli_stmt_close($stmt);
 .pay-table tfoot td {
     background: #f8f9fa;
     font-weight: bold;
+}
+.row-titip-only td {
+    background: #fff8e1;
 }
 .text-center { text-align: center; }
 .text-right { text-align: right; }
@@ -376,6 +581,7 @@ mysqli_stmt_close($stmt);
                     <th style="width:40px;">No</th>
                     <th>Tanggal</th>
                     <th>No. Bayar</th>
+                    <th>No. Retur</th>
                     <th>Shipping No.</th>
                     <th>Customer ID</th>
                     <th>Nama Customer</th>
@@ -384,7 +590,7 @@ mysqli_stmt_close($stmt);
                     <th>Bank</th>
                     <th>Nominal Bayar</th>
                     <th>Cash/Transfer</th>
-                    <th>Pakai Titip</th>
+                    <th>Titip</th>
                     <th>Total Bayar</th>
                     <th style="width:120px;">Action</th>
                 </tr>
@@ -392,16 +598,24 @@ mysqli_stmt_close($stmt);
             <tbody>
                 <?php if (empty($rows)): ?>
                     <tr>
-                        <td colspan="14" class="text-center" style="padding:15px;color:#777;">
-                            Tidak ada data pembayaran.
+                        <td colspan="15" class="text-center" style="padding:15px;color:#777;">
+                            Tidak ada data pembayaran / saldo titip.
                         </td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($rows as $i => $row): ?>
-                        <tr>
+                        <?php $isTitipOnly = !empty($row['is_titip_only']); ?>
+                        <tr class="<?= $isTitipOnly ? 'row-titip-only' : '' ?>">
                             <td class="text-center"><?= $i + 1 ?></td>
                             <td class="text-center"><?= h(formatDateDisplay($row['bayar_date'])) ?></td>
                             <td class="text-bold"><?= h($row['bayar_no']) ?></td>
+                            <td class="text-bold">
+                                <?= h(
+                                    trim((string)($row['return_id'] ?? '')) !== ''
+                                        ? $row['return_id']
+                                        : '-'
+                                ) ?>
+                            </td>
                             <td><?= h($row['shipping_no']) ?></td>
                             <td><?= h($row['customer_id']) ?></td>
                             <td><?= h($row['customer_name']) ?></td>
@@ -410,34 +624,38 @@ mysqli_stmt_close($stmt);
                             <td><?= h($row['bank_name']) ?></td>
                             <td class="money-cell">Rp <?= h(formatMoney($row['total_bayar'])) ?></td>
                             <td class="money-cell">Rp <?= h(formatMoney($row['cash_amount'])) ?></td>
-                            <td class="money-cell">Rp <?= h(formatMoney($row['titip_amount'])) ?></td>
+                            <td class="money-cell">Rp <?= h(formatMoney($row['titip_display'])) ?></td>
                             <td class="money-cell">Rp <?= h(formatMoney($row['bayar_amount'])) ?></td>
                             <td class="text-center">
-                                <a class="btn-vs btn-warning" href="index.php?page=edit_bayar&bayar_no=<?= urlencode($row['bayar_no']) ?>">
-                                    <span class="app-icon"><?= appIcon('edit') ?></span>
-                                    Edit
-                                </a>
-                                <a class="btn-vs btn-danger"
-                                   href="modul/transaksi/delete_bayar.php?bayar_no=<?= urlencode($row['bayar_no']) ?>"
-                                   onclick="return confirm('Yakin ingin menghapus pembayaran <?= h($row['bayar_no']) ?> ?')">
-                                    <span class="app-icon"><?= appIcon('delete') ?></span>
-                                    Delete
-                                </a>
+                                <?php if (!$isTitipOnly): ?>
+                                    <a class="btn-vs btn-warning" href="index.php?page=edit_bayar&bayar_no=<?= urlencode($row['bayar_no']) ?>">
+                                        <span class="app-icon"><?= appIcon('edit') ?></span>
+                                        Edit
+                                    </a>
+                                    <a class="btn-vs btn-danger"
+                                       href="modul/transaksi/delete_bayar.php?bayar_no=<?= urlencode($row['bayar_no']) ?>"
+                                       onclick="return confirm('Yakin ingin menghapus pembayaran <?= h($row['bayar_no']) ?> ?')">
+                                        <span class="app-icon"><?= appIcon('delete') ?></span>
+                                        Delete
+                                    </a>
+                                <?php else: ?>
+                                    <span style="color:#856404;font-weight:700;">Saldo Titip</span>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
             </tbody>
-           <tfoot>
-            <tr>
-                <td colspan="9" class="text-right">TOTAL</td>
-                <td class="money-cell">Rp <?= h(formatMoney($total_bayar)) ?></td>
-                <td class="money-cell">Rp <?= h(formatMoney($total_cash)) ?></td>
-                <td class="money-cell">Rp <?= h(formatMoney($total_titip)) ?></td>
-                <td class="money-cell">Rp <?= h(formatMoney($total_bayar_detail)) ?></td>
-                <td></td>
-            </tr>
-        </tfoot>
+            <tfoot>
+                <tr>
+                    <td colspan="10" class="text-right">TOTAL</td>
+                    <td class="money-cell">Rp <?= h(formatMoney($total_bayar)) ?></td>
+                    <td class="money-cell">Rp <?= h(formatMoney($total_cash)) ?></td>
+                    <td class="money-cell">Rp <?= h(formatMoney($total_titip)) ?></td>
+                    <td class="money-cell">Rp <?= h(formatMoney($total_bayar_detail)) ?></td>
+                    <td></td>
+                </tr>
+            </tfoot>
         </table>
     </div>
 </div>
