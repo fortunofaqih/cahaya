@@ -1,8 +1,24 @@
 <?php
+/*
+ * RULE CP-MCP KARTU PIUTANG:
+ * - Invoice / Shipping yang mengandung CP-MCP adalah dokumen internal Sales Return.
+ * - CP-MCP TIDAK dihitung sebagai PENJUALAN, SALDO AWAL, atau pembayaran piutang.
+ * - Retur customer tetap dihitung standalone melalui head_retur_invoice.
+ * - Retur CP-MCP memakai grand_total; retur normal memakai return_amount.
+ */
 // PENTING LOGIKA TITIP:
 // - detail_titip.amount_in = uang titip masuk / saldo titip, TIDAK langsung mengurangi piutang.
 // - detail_bayar.titip_amount = uang titip yang SUDAH dipakai untuk pembayaran, INI yang mengurangi piutang.
 // - cash_amount + titip_amount = bayar_amount.
+// - DATA LEGACY RETUR: jika head_bayar.keterangan = 'Retur' dan detail_bayar.return_id terisi,
+//   cash_amount/bayar_amount lama tidak dihitung lagi sebagai pembayaran karena retur sudah
+//   dikurangkan melalui head_retur_invoice.
+// - TITIP:
+//   * detail_titip.amount_in tampil sebagai mutasi TITIP positif dan tidak mengurangi piutang.
+//   * detail_bayar.titip_amount tampil sebagai mutasi TITIP negatif saat dipakai, hanya sebagai informasi mutasi saldo titip.
+//   * PEMBAYARAN memakai detail_bayar.bayar_amount (cash + titip terpakai), sama dengan pembayaran.php.
+//   * Karena titip terpakai sudah termasuk di bayar_amount, titip TIDAK boleh mengurangi SISA untuk kedua kalinya.
+//   * Shipping pada pemakaian titip ditampilkan sebagai "Titip-{shipping_no}".
 // modul/transaksi/kartu_piutang.php
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -120,7 +136,7 @@ $saldo_awal = 0;
 $total_penjualan = 0;
 $total_retur = 0;
 $total_pembayaran = 0;
-$total_titip = 0; // total titip terpakai untuk hitung piutang
+$total_titip = 0; // efek titip ke piutang = 0 karena sudah termasuk bayar_amount
 $total_titip_masuk = 0; // informasi mutasi titip masuk periode
 $saldo_akhir = 0;
 
@@ -212,38 +228,58 @@ $sqlSaldo = "
                 FROM head_invoice hi
                 WHERE hi.customer_id = ?
                   AND hi.invoice_date < ?
+                  AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
                   $openingInvoiceWhere
             ), 0)
             -
             COALESCE((
                 SELECT SUM(
                     CASE
-                        WHEN COALESCE(db.cash_amount, 0) > 0
-                            THEN COALESCE(db.cash_amount, 0)
-                        ELSE GREATEST(
-                            COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
-                            0
-                        )
+                        /*
+                         * Samakan dengan pembayaran.php:
+                         * pembayaran = bayar_amount = cash + titip terpakai.
+                         * Khusus transaksi retur legacy murni tetap 0 agar
+                         * retur tidak terhitung dua kali.
+                         */
+                        WHEN LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                             AND COALESCE(TRIM(db.return_id), '') <> ''
+                            THEN 0
+                        ELSE COALESCE(db.bayar_amount, 0)
                     END
                 )
                 FROM detail_bayar db
                 INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
                 WHERE hb.customer_id = ?
                   AND hb.bayar_date < ?
+                  AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+                  AND UPPER(COALESCE(TRIM(db.shipping_no), '')) NOT LIKE '%CP-MCP%'
                   $openingPaymentWhere
             ), 0)
             -
+            /*
+             * Titip terpakai sudah termasuk dalam db.bayar_amount,
+             * sehingga tidak dikurangkan lagi dari piutang.
+             * Dua parameter customer/tanggal tetap dipakai pada dummy subquery
+             * agar struktur bind parameter tidak perlu diubah.
+             */
             COALESCE((
-                SELECT SUM(COALESCE(db.titip_amount, 0))
-                FROM detail_bayar db
-                INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
+                SELECT 0
+                FROM head_bayar hb
                 WHERE hb.customer_id = ?
                   AND hb.bayar_date < ?
                   $openingPaymentWhere
+                LIMIT 1
             ), 0)
             -
             COALESCE((
-                SELECT SUM(hri.return_amount)
+                SELECT SUM(
+                        CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
+                    )
                 FROM head_retur_invoice hri
                 WHERE hri.customer_id = ?
                   AND hri.return_date < ?
@@ -330,7 +366,14 @@ mysqli_stmt_close($stmtSaldo);
                 hri.return_id AS return_id,
                 '' AS bayar_no,
                 0 AS penjualan,
-                COALESCE(hri.return_amount, 0) AS retur,
+                (
+                    CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
+                ) AS retur,
                 0 AS pembayaran,
                 0 AS titip,
                 0 AS titip_effect_piutang,
@@ -352,15 +395,32 @@ mysqli_stmt_close($stmtSaldo);
                 0 AS penjualan,
                 0 AS retur,
                 CASE
-                    WHEN COALESCE(db.cash_amount, 0) > 0
-                        THEN COALESCE(db.cash_amount, 0)
-                    ELSE GREATEST(
-                        COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
-                        0
-                    )
+                    /*
+                     * Samakan dengan Total Bayar di pembayaran.php.
+                     * bayar_amount sudah mencakup cash + titip yang dipakai.
+                     */
+                    WHEN LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                         AND COALESCE(TRIM(db.return_id), '') <> ''
+                        THEN 0
+                    ELSE COALESCE(db.bayar_amount, 0)
                 END AS pembayaran,
-                -COALESCE(db.titip_amount, 0) AS titip,
-                COALESCE(db.titip_amount, 0) AS titip_effect_piutang,
+
+                /*
+                 * Tetap tampilkan pemakaian titip sebagai mutasi negatif,
+                 * tetapi sifatnya informasional saja.
+                 */
+                CASE
+                    WHEN LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                         AND COALESCE(TRIM(db.return_id), '') <> ''
+                        THEN 0
+                    ELSE -COALESCE(db.titip_amount, 0)
+                END AS titip,
+
+                /*
+                 * Jangan kurangi saldo piutang lagi karena titip sudah
+                 * masuk dalam bayar_amount di kolom PEMBAYARAN.
+                 */
+                0 AS titip_effect_piutang,
                 3 AS sort_order,
                 db.invoice_no AS invoice_no_sort
             FROM head_bayar hb
@@ -843,7 +903,18 @@ mysqli_stmt_close($stmtSaldo);
                             if ($isReturn) {
                                 $shippingDisplay = 'Retur';
                             } elseif ($isTitip) {
-                                $shippingDisplay = 'Titip';
+                                /*
+                                 * Titip masuk biasanya tidak memiliki shipping_no -> tampil "Titip".
+                                 * Titip yang dipakai pada pembayaran memiliki shipping_no ->
+                                 * tampil contoh: "Titip-00123".
+                                 */
+                                $titipShippingNo = trim(
+                                    (string)($row['shipping_no'] ?? '')
+                                );
+
+                                $shippingDisplay = $titipShippingNo !== ''
+                                    ? 'Titip-' . $titipShippingNo
+                                    : 'Titip';
                             } else {
                                 $shippingDisplay = (string)($row['shipping_no'] ?? '');
                             }

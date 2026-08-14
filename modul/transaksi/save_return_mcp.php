@@ -1,29 +1,6 @@
 <?php
 // modul/transaksi/save_return_mcp.php
-// Sales Return CP-MCP - versi relasi internal lengkap.
-//
-// Alur:
-// 1. Finance input Sales Order MCP + Shipping No MCP + Customer + detail return.
-// 2. Sistem membuat referensi INTERNAL:
-//      CP-MCP/SO/YYYY/00001
-//      CP-MCP/SJ/YYYY/00001
-//      CP-MCP/INV/YYYY/00001
-//      MCP-INV/YYYY-000001 (per detail; hidden di form, diverifikasi saat save)
-// 3. Sistem membuat:
-//      head_sales_order (internal)
-//      hed_shipping (internal)
-//      det_shipping (internal, per item)
-//      head_invoice (internal)
-//      det_invoice (internal)
-//      head_retur_invoice
-//      detail_retur_invoice
-// 4. Sales Order MCP asli dan Shipping No MCP asli disimpan di remarks_return.
-//
-// Tujuan desain ini:
-// - Tidak memakai FK kosong / angka 0.
-// - shipping_detail_id selalu menunjuk det_shipping.id yang valid.
-// - invoice_no/shipping_no/order_no pada return menunjuk record internal yang valid.
-// - Calculated Detail Return menjadi subtotal + grand_total internal invoice.
+// Sales Return CP-MCP - Hybrid Customer
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -39,18 +16,15 @@ include __DIR__ . '/../../koneksi.php';
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 mysqli_set_charset($conn, 'utf8mb4');
 
+// [ALL EXISTING FUNCTIONS - mcpDecimal, mcpMoney, mcpParseDate, etc.]
+// Saya tulis ulang dengan modifikasi pada bagian CUSTOMER
+
 function mcpDecimal($value): float
 {
     if (is_string($value)) {
         $value = trim($value);
         $value = str_replace(' ', '', $value);
 
-        /*
-         * Dipakai untuk quantity/desimal biasa.
-         * Contoh:
-         * 10.125  -> 10.125
-         * 10,125  -> 10.125
-         */
         if (strpos($value, ',') !== false && strpos($value, '.') === false) {
             $value = str_replace(',', '.', $value);
         }
@@ -59,18 +33,6 @@ function mcpDecimal($value): float
     return is_numeric($value) ? (float)$value : 0.0;
 }
 
-/**
- * Parser nilai uang / Rupiah dari form.
- *
- * Contoh input:
- * 100.000       => 100000
- * 1.000.000     => 1000000
- * Rp 1.000.000  => 1000000
- * 1000000       => 1000000
- *
- * Bila ada format Indonesia dengan desimal:
- * 1.000.000,50  => 1000000.50
- */
 function mcpMoney($value): float
 {
     if ($value === null || $value === '') {
@@ -87,7 +49,6 @@ function mcpMoney($value): float
         return 0.0;
     }
 
-    // Buang Rp, spasi, dan karakter selain angka, titik, koma, minus.
     $value = preg_replace('/[^0-9,.\-]/', '', $value);
 
     if ($value === '' || $value === '-') {
@@ -98,22 +59,9 @@ function mcpMoney($value): float
     $hasComma = strpos($value, ',') !== false;
 
     if ($hasComma) {
-        /*
-         * Format Indonesia:
-         * 1.000.000,50
-         * 100.000,00
-         */
         $value = str_replace('.', '', $value);
         $value = str_replace(',', '.', $value);
     } elseif ($hasDot) {
-        /*
-         * Untuk field Rupiah, titik dianggap separator ribuan.
-         * 100.000   => 100000
-         * 1.000.000 => 1000000
-         *
-         * JavaScript add_return_mcp juga membersihkan separator
-         * sebelum submit, tetapi server tetap dibuat aman.
-         */
         $value = str_replace('.', '', $value);
     }
 
@@ -170,7 +118,6 @@ function mcpTableColumns(mysqli $conn, string $table): array
         return $cache[$table];
     }
 
-    // Nama tabel berasal dari kode, bukan input user.
     $res = mysqli_query($conn, "SHOW COLUMNS FROM `{$table}`");
     $columns = [];
 
@@ -188,10 +135,6 @@ function mcpColumnExists(mysqli $conn, string $table, string $column): bool
     return isset($columns[$column]);
 }
 
-/**
- * Insert hanya kolom yang benar-benar tersedia pada tabel.
- * Ini membantu kompatibilitas bila versi tabel produksi/local berbeda sedikit.
- */
 function mcpInsertAvailable(
     mysqli $conn,
     string $table,
@@ -452,6 +395,10 @@ function mcpReleaseLock(mysqli $conn, ?string $lockName): void
     }
 }
 
+// =========================================================================
+// ========================== MAIN PROCESSING ==============================
+// =========================================================================
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     mcpRedirect('danger', 'Metode request tidak valid.', 'add_return_mcp');
 }
@@ -467,8 +414,17 @@ $returnDate = mcpParseDate($_POST['return_date'] ?? '');
 $externalOrderNo = trim((string)($_POST['order_no'] ?? ''));
 $externalShippingNo = trim((string)($_POST['shipping_no'] ?? ''));
 
-$customerId = trim((string)($_POST['customer_ref'] ?? ''));
+// CUSTOMER HYBRID PROCESSING
+$customerRef = trim((string)($_POST['customer_ref'] ?? ''));
+$isNewCustomer = isset($_POST['is_new_customer']) && $_POST['is_new_customer'] == '1';
 $customerNameFromForm = trim((string)($_POST['customer_name'] ?? ''));
+
+// Manual customer data
+$manualCustomerName = trim((string)($_POST['manual_customer_name'] ?? ''));
+$manualCity = trim((string)($_POST['manual_city'] ?? ''));
+$manualAddress = trim((string)($_POST['manual_address'] ?? ''));
+$manualNpwp = trim((string)($_POST['manual_npwp'] ?? ''));
+$manualPhone = trim((string)($_POST['manual_phone'] ?? ''));
 
 $currency = trim((string)($_POST['currency'] ?? 'IDR'));
 $reasonReturn = trim((string)($_POST['reason_return'] ?? ''));
@@ -482,6 +438,178 @@ $remainingBalance = mcpMoney($_POST['remaining_invoice_balance'] ?? 0);
 $items = $_POST['items'] ?? [];
 $user = (string)($_SESSION['username'] ?? 'SYSTEM');
 
+// VALIDASI CUSTOMER
+$customerId = '';
+$customerName = '';
+$customerAddress = $manualAddress;
+$customerCity = $manualCity;
+
+if ($isNewCustomer) {
+    // ===== MODE: CUSTOMER BARU =====
+    if (empty($manualCustomerName)) {
+        mcpRedirect(
+            'danger',
+            'Nama Customer wajib diisi untuk customer baru.',
+            'add_return_mcp'
+        );
+    }
+    
+    $customerName = $manualCustomerName;
+    
+    // Cek apakah customer sudah ada di database
+    $checkStmt = mysqli_prepare(
+        $conn,
+        "SELECT customer_id, customer FROM m_customer WHERE customer = ?"
+    );
+    mysqli_stmt_bind_param($checkStmt, 's', $customerName);
+    mysqli_stmt_execute($checkStmt);
+    $checkResult = mysqli_stmt_get_result($checkStmt);
+    $existing = mysqli_fetch_assoc($checkResult);
+    mysqli_stmt_close($checkStmt);
+    
+    if ($existing) {
+        // Customer sudah ada, gunakan yang existing
+        $customerId = $existing['customer_id'];
+        $customerName = $existing['customer'];
+        
+        // Update data jika ada perubahan
+        $updateStmt = mysqli_prepare(
+            $conn,
+            "UPDATE m_customer 
+             SET city = COALESCE(?, city),
+                 address = COALESCE(?, address),
+                 npwp = COALESCE(?, npwp),
+                 phone = COALESCE(?, phone),
+                 date_modified = NOW(),
+                 user_modified = ?
+             WHERE customer_id = ?"
+        );
+        mysqli_stmt_bind_param(
+            $updateStmt,
+            'ssssss',
+            $manualCity,
+            $manualAddress,
+            $manualNpwp,
+            $manualPhone,
+            $user,
+            $customerId
+        );
+        mysqli_stmt_execute($updateStmt);
+        mysqli_stmt_close($updateStmt);
+        
+    } else {
+        // ===== GENERATE CUSTOMER ID =====
+        // Format: CUST-YYYYMMDD-XXX
+        $prefix = 'CUST-' . date('Ymd') . '-';
+        $maxSql = "SELECT MAX(CAST(SUBSTRING(customer_id, LENGTH(?) + 1) AS UNSIGNED)) AS max_no 
+                   FROM m_customer 
+                   WHERE customer_id LIKE ?";
+        $maxStmt = mysqli_prepare($conn, $maxSql);
+        $pattern = $prefix . '%';
+        mysqli_stmt_bind_param($maxStmt, 'ss', $prefix, $pattern);
+        mysqli_stmt_execute($maxStmt);
+        $maxRow = mysqli_fetch_assoc(mysqli_stmt_get_result($maxStmt));
+        mysqli_stmt_close($maxStmt);
+        
+        $nextNo = ((int)($maxRow['max_no'] ?? 0)) + 1;
+        $customerId = $prefix . str_pad((string)$nextNo, 3, '0', STR_PAD_LEFT);
+        
+        // ===== INSERT CUSTOMER BARU KE M_CUSTOMER =====
+        $insertCustomer = "
+            INSERT INTO m_customer (
+                customer_id,
+                customer,
+                city,
+                address,
+                npwp,
+                phone,
+                is_active,
+                user_created,
+                date_created
+            ) VALUES (?, ?, ?, ?, ?, ?, 'Checked', ?, NOW())
+        ";
+        
+        $insertStmt = mysqli_prepare($conn, $insertCustomer);
+        mysqli_stmt_bind_param(
+            $insertStmt,
+            'sssssss',
+            $customerId,
+            $customerName,
+            $manualCity,
+            $manualAddress,
+            $manualNpwp,
+            $manualPhone,
+            $user
+        );
+        mysqli_stmt_execute($insertStmt);
+        mysqli_stmt_close($insertStmt);
+    }
+    
+} else {
+    // ===== MODE: CUSTOMER EXISTING =====
+    if (empty($customerRef)) {
+        mcpRedirect(
+            'danger',
+            'Silakan pilih Customer atau tambahkan customer baru.',
+            'add_return_mcp'
+        );
+    }
+    
+    // Ambil data customer dari m_customer
+    $custStmt = mysqli_prepare(
+        $conn,
+        "SELECT customer_id, customer, city, address 
+         FROM m_customer 
+         WHERE customer_id = ? AND is_active = 'Checked'"
+    );
+    mysqli_stmt_bind_param($custStmt, 's', $customerRef);
+    mysqli_stmt_execute($custStmt);
+    $custResult = mysqli_stmt_get_result($custStmt);
+    $custData = mysqli_fetch_assoc($custResult);
+    mysqli_stmt_close($custStmt);
+    
+    if (!$custData) {
+        // Fallback: coba ambil dari head_invoice
+        $fallbackStmt = mysqli_prepare(
+            $conn,
+            "SELECT customer_id, customer_name, customer_address, customer_city 
+             FROM head_invoice 
+             WHERE customer_id = ? 
+             ORDER BY invoice_date DESC, invoice_no DESC 
+             LIMIT 1"
+        );
+        mysqli_stmt_bind_param($fallbackStmt, 's', $customerRef);
+        mysqli_stmt_execute($fallbackStmt);
+        $fallbackResult = mysqli_stmt_get_result($fallbackStmt);
+        $fallbackData = mysqli_fetch_assoc($fallbackResult);
+        mysqli_stmt_close($fallbackStmt);
+        
+        if ($fallbackData) {
+            $customerId = $fallbackData['customer_id'];
+            $customerName = $fallbackData['customer_name'] ?? '';
+            $customerAddress = $fallbackData['customer_address'] ?? '';
+            $customerCity = $fallbackData['customer_city'] ?? '';
+        } else {
+            throw new RuntimeException('Customer tidak ditemukan. ID: ' . $customerRef);
+        }
+    } else {
+        $customerId = $custData['customer_id'];
+        $customerName = $custData['customer'] ?? $customerNameFromForm;
+        $customerAddress = $custData['address'] ?? '';
+        $customerCity = $custData['city'] ?? '';
+    }
+}
+
+// Validasi tambahan
+if (empty($customerId) || empty($customerName)) {
+    mcpRedirect(
+        'danger',
+        'Data Customer tidak valid. Customer ID: ' . $customerId,
+        'add_return_mcp'
+    );
+}
+
+// [REST OF VALIDATIONS - SAME AS ORIGINAL]
 if (
     !$returnDate ||
     $externalOrderNo === '' ||
@@ -524,8 +652,6 @@ try {
     |--------------------------------------------------------------------------
     | LOCK GENERATOR
     |--------------------------------------------------------------------------
-    | Satu lock pendek per tahun cukup untuk SO/SJ/INV/Inventory/Return MCP.
-    |--------------------------------------------------------------------------
     */
     $year = (int)date('Y', strtotime($returnDate));
     $globalLockName = 'CP_MCP_' . $year;
@@ -555,47 +681,7 @@ try {
 
     /*
     |--------------------------------------------------------------------------
-    | CUSTOMER
-    |--------------------------------------------------------------------------
-    */
-    $customerName = $customerNameFromForm;
-    $customerAddress = '';
-    $customerCity = '';
-
-    $stmt = mysqli_prepare(
-        $conn,
-        "SELECT
-            customer_name,
-            customer_address,
-            customer_city
-         FROM head_invoice
-         WHERE customer_id = ?
-         ORDER BY invoice_date DESC, invoice_no DESC
-         LIMIT 1"
-    );
-
-    mysqli_stmt_bind_param($stmt, 's', $customerId);
-    mysqli_stmt_execute($stmt);
-
-    $customerRow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
-    mysqli_stmt_close($stmt);
-
-    if ($customerRow) {
-        $customerName = trim((string)($customerRow['customer_name'] ?? ''));
-        $customerAddress = (string)($customerRow['customer_address'] ?? '');
-        $customerCity = (string)($customerRow['customer_city'] ?? '');
-    }
-
-    if ($customerName === '') {
-        throw new RuntimeException('Customer Name tidak ditemukan.');
-    }
-
-    /*
-    |--------------------------------------------------------------------------
     | RETURN ID
-    |--------------------------------------------------------------------------
-    | Gunakan nomor dari form hanya bila belum dipakai. Jika bentrok/blank,
-    | generate ulang berdasarkan Return Date.
     |--------------------------------------------------------------------------
     */
     $returnId = $submittedReturnId;
@@ -719,10 +805,6 @@ try {
             );
         }
 
-        /*
-         * Jangan percaya inventory_id hidden mentah dari browser.
-         * Generate ulang di server agar unik.
-         */
         $inventoryId = mcpGenerateInventoryId(
             $conn,
             $year,
@@ -769,10 +851,6 @@ try {
         throw new RuntimeException('Balance After Return tidak boleh negatif.');
     }
 
-    /*
-     * Bila Finance belum mengubah Return Amount dari default 0,
-     * gunakan Calculated Detail Return agar return tidak tersimpan 0.
-     */
     if ($returnAmount <= 0 && $grandTotal > 0) {
         $returnAmount = $grandTotal;
     }
@@ -780,8 +858,6 @@ try {
     /*
     |--------------------------------------------------------------------------
     | REMARKS RETURN
-    |--------------------------------------------------------------------------
-    | Remarks input user di-hidden; server menjadi sumber kebenaran.
     |--------------------------------------------------------------------------
     */
     $remarksReturn =
@@ -791,9 +867,6 @@ try {
     /*
     |--------------------------------------------------------------------------
     | 1. INTERNAL SALES ORDER
-    |--------------------------------------------------------------------------
-    | Membuat referensi internal supaya bila shipping/return memiliki FK order_no,
-    | nilainya tetap valid.
     |--------------------------------------------------------------------------
     */
     mcpInsertAvailable(
@@ -854,16 +927,8 @@ try {
     |--------------------------------------------------------------------------
     | 3. INTERNAL SHIPPING DETAIL
     |--------------------------------------------------------------------------
-    | shipping_detail_id untuk detail return diambil dari det_shipping.id
-    | yang benar-benar baru dibuat.
-    |--------------------------------------------------------------------------
     */
     foreach ($validDetails as $k => $detail) {
-        /*
-         * Jika m_inventory ada dan inventory_id belum ada, buat master internal.
-         * Ini mencegah FK det_shipping.inventory_id -> m_inventory.inventory_id
-         * bila constraint tersebut aktif.
-         */
         if (
             mcpColumnExists($conn, 'm_inventory', 'inventory_id') &&
             !mcpExists(
@@ -912,9 +977,6 @@ try {
         );
 
         if ($shippingDetailId <= 0) {
-            /*
-             * Jika id bukan AUTO_INCREMENT, cari ID record yang baru dibuat.
-             */
             $idStmt = mysqli_prepare(
                 $conn,
                 "SELECT id
@@ -1064,15 +1126,12 @@ try {
                 'shipping_detail_id' => (int)$detail['shipping_detail_id'],
                 'inventory_id' => $detail['inventory_id'],
                 'inventory_name' => $detail['inventory_name'],
-
-                // Original tidak dipakai pada MCP.
                 'original_quantity' => 0.0,
                 'original_uom' => '',
                 'original_quantity_pack' => 0.0,
                 'original_uom_pack' => '',
                 'original_quantity_detail' => 0.0,
                 'original_uom_detail' => '',
-
                 'return_quantity' => $detail['return_quantity'],
                 'uom' => $detail['uom'],
                 'return_quantity_pack' => $detail['return_quantity_pack'],
@@ -1095,11 +1154,15 @@ try {
     mcpReleaseLock($conn, $globalLockName);
     $globalLockName = null;
 
+    // Cek apakah customer baru
+    $customerNote = $isNewCustomer ? ' (Customer baru: ' . $customerId . ')' : '';
+
     mcpRedirect(
         'success',
         'Sales Return CP-MCP ' .
         $returnId .
-        ' berhasil disimpan. Internal SO: ' .
+        ' berhasil disimpan.' . $customerNote .
+        ' Internal SO: ' .
         $internalOrderNo .
         ', Shipping: ' .
         $internalShippingNo .

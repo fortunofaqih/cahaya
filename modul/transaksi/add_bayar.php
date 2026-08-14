@@ -1,4 +1,10 @@
 <?php
+/*
+ * RULE NILAI RETUR CP-MCP:
+ * - Retur CP-MCP memakai grand_total sebagai nominal kredit customer.
+ * - Retur normal tetap memakai return_amount.
+ */
+
 // modul/transaksi/add_bayar_shipping_revisi_lunas_legacy.php
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -66,6 +72,10 @@ $shippings = [];
  * - Belum pernah dibayar: tampil.
  * - Sudah dibayar sebagian: tampil dengan sisa terbaru.
  * - Total pembayaran >= nilai shipping: tidak tampil.
+ * - Retur yang sudah dipakai ikut mengurangi sisa efektif.
+ * - Shipping/customer dengan sisa efektif <= Rp 0,01 tidak tampil.
+ * - Invoice / Shipping yang mengandung string CP-MCP tidak boleh menjadi transaksi pembayaran.
+ * - Retur customer tetap berdiri sendiri; referensi invoice/shipping asal retur tidak dipakai di UI.
  */
 $sqlShipping = "
     SELECT
@@ -80,31 +90,44 @@ $sqlShipping = "
         src.order_no,
         src.shipping_amount,
 
-        /* Retur aktif khusus pasangan invoice_no + shipping_no. */
-        COALESCE(ret_shipping.return_amount, 0) AS retur_amount,
+        /*
+         * Retur yang SUDAH BENAR-BENAR DIPAKAI pada detail_bayar.
+         * Bukan seluruh retur yang kebetulan berasal dari invoice/shipping ini.
+         */
+        CASE
+            WHEN src.shipping_count = 1
+                THEN COALESCE(ret_used_invoice.return_amount, 0)
+            ELSE COALESCE(ret_used_shipping.return_amount, 0)
+        END AS retur_amount,
 
-        /* Pembayaran yang benar-benar tersimpan untuk Shipping No ini. */
-        COALESCE(pay_shipping.paid_amount, 0) AS paid_amount,
+        CASE
+            WHEN src.shipping_count = 1
+                THEN COALESCE(inv_pay.total_paid_invoice, 0)
+            ELSE COALESCE(pay_shipping.paid_amount, 0)
+        END AS paid_amount,
 
         /*
-         * Penentuan sisa:
-         * 1. Jika invoice secara keseluruhan sudah lunas, sisa = 0.
-         * 2. Jika pembayaran sudah memiliki shipping_no, hitung per shipping.
-         * 3. Untuk data lama tanpa shipping_no dan invoice hanya memiliki satu
-         *    shipping, pembayaran invoice lama dialokasikan ke shipping tersebut.
-         * 4. Jika transaksi terakhir pasangan shipping menyimpan sisa_after <= 0,
-         *    shipping dianggap lunas.
+         * SISA EFEKTIF:
+         * Nilai Shipping - Pembayaran - Retur yang sudah dipakai.
+         *
+         * Invoice single-shipping:
+         * pembayaran/retur legacy pada level invoice tetap ikut dihitung.
+         *
+         * Invoice multi-shipping:
+         * pembayaran/retur dihitung khusus pasangan invoice + shipping.
          */
         CASE
             WHEN src.shipping_count = 1
                 THEN GREATEST(
                     src.shipping_amount
-                    - COALESCE(inv_pay.total_paid_invoice, 0),
+                    - COALESCE(inv_pay.total_paid_invoice, 0)
+                    - COALESCE(ret_used_invoice.return_amount, 0),
                     0
                 )
             ELSE GREATEST(
                 src.shipping_amount
-                - COALESCE(pay_shipping.paid_amount, 0),
+                - COALESCE(pay_shipping.paid_amount, 0)
+                - COALESCE(ret_used_shipping.return_amount, 0),
                 0
             )
         END AS sisa_shipping,
@@ -131,7 +154,8 @@ $sqlShipping = "
 
             SUM(
                 CASE
-                    WHEN COALESCE(di.total, 0) > 0 THEN COALESCE(di.total, 0)
+                    WHEN COALESCE(di.total, 0) > 0
+                        THEN COALESCE(di.total, 0)
                     ELSE COALESCE(di.subtotal, 0)
                 END
             ) AS shipping_amount,
@@ -141,24 +165,21 @@ $sqlShipping = "
                 FROM det_invoice di_count
                 WHERE di_count.invoice_no = hi.invoice_no
                   AND COALESCE(TRIM(di_count.shipping_no), '') <> ''
-            ) AS shipping_count,
-
-            (
-                SELECT SUM(
-                    CASE
-                        WHEN COALESCE(di_total.total, 0) > 0
-                            THEN COALESCE(di_total.total, 0)
-                        ELSE COALESCE(di_total.subtotal, 0)
-                    END
-                )
-                FROM det_invoice di_total
-                WHERE di_total.invoice_no = hi.invoice_no
-            ) AS invoice_amount
+            ) AS shipping_count
 
         FROM head_invoice hi
         INNER JOIN det_invoice di
             ON di.invoice_no = hi.invoice_no
+
         WHERE COALESCE(TRIM(di.shipping_no), '') <> ''
+
+          /*
+           * CP-MCP adalah dokumen internal untuk kebutuhan Sales Return,
+           * bukan piutang normal yang boleh dipilih sebagai transaksi pembayaran.
+           */
+          AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
+          AND UPPER(COALESCE(TRIM(di.shipping_no), '')) NOT LIKE '%CP-MCP%'
+
         GROUP BY
             hi.invoice_no,
             hi.invoice_date,
@@ -169,20 +190,7 @@ $sqlShipping = "
             TRIM(di.shipping_no)
     ) src
 
-    /* Retur aktif per pasangan invoice_no + shipping_no. */
-    LEFT JOIN
-    (
-        SELECT
-            hri.invoice_no,
-            TRIM(hri.shipping_no) AS shipping_no,
-            SUM(COALESCE(hri.return_amount, 0)) AS return_amount
-        FROM head_retur_invoice hri
-        WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
-        GROUP BY hri.invoice_no, TRIM(hri.shipping_no)
-    ) ret_shipping
-        ON ret_shipping.invoice_no = src.invoice_no
-       AND ret_shipping.shipping_no = src.shipping_no
-/* Pembayaran per pasangan invoice_no + shipping_no. */
+    /* Pembayaran modern per pasangan invoice + shipping. */
     LEFT JOIN
     (
         SELECT
@@ -190,72 +198,110 @@ $sqlShipping = "
             TRIM(db.shipping_no) AS shipping_no,
             SUM(COALESCE(db.bayar_amount, 0)) AS paid_amount
         FROM detail_bayar db
-        INNER JOIN head_bayar hb
-            ON hb.bayar_no = db.bayar_no
         WHERE COALESCE(TRIM(db.shipping_no), '') <> ''
-        GROUP BY
-            db.invoice_no,
-            TRIM(db.shipping_no)
+        GROUP BY db.invoice_no, TRIM(db.shipping_no)
     ) pay_shipping
         ON pay_shipping.invoice_no = src.invoice_no
        AND pay_shipping.shipping_no = src.shipping_no
 
-    /* Semua pembayaran invoice, termasuk data lama yang shipping_no-nya kosong. */
+    /* Semua pembayaran invoice, termasuk legacy shipping_no kosong. */
     LEFT JOIN
     (
         SELECT
             db.invoice_no,
             SUM(COALESCE(db.bayar_amount, 0)) AS total_paid_invoice
         FROM detail_bayar db
-        INNER JOIN head_bayar hb
-            ON hb.bayar_no = db.bayar_no
         GROUP BY db.invoice_no
     ) inv_pay
         ON inv_pay.invoice_no = src.invoice_no
 
-    /* Transaksi pembayaran terakhir khusus pasangan invoice + shipping. */
+    /*
+     * Retur yang sudah dipakai untuk pasangan invoice + shipping.
+     * DISTINCT mencegah return_id yang sama terhitung dua kali
+     * bila ada data historis duplikat.
+     */
     LEFT JOIN
     (
         SELECT
-            db.invoice_no,
-            TRIM(db.shipping_no) AS shipping_no,
-            db.sisa_after
-        FROM detail_bayar db
-        INNER JOIN
+            used.invoice_no,
+            used.shipping_no,
+            SUM(
+                CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
+            ) AS return_amount
+        FROM
         (
-            SELECT
-                invoice_no,
-                TRIM(shipping_no) AS shipping_no,
-                MAX(id) AS max_id
-            FROM detail_bayar
-            WHERE COALESCE(TRIM(shipping_no), '') <> ''
-            GROUP BY invoice_no, TRIM(shipping_no)
-        ) last_id
-            ON last_id.max_id = db.id
-    ) last_shipping
-        ON last_shipping.invoice_no = src.invoice_no
-       AND last_shipping.shipping_no = src.shipping_no
+            SELECT DISTINCT
+                db.invoice_no,
+                TRIM(db.shipping_no) AS shipping_no,
+                TRIM(db.return_id) AS return_id
+            FROM detail_bayar db
+            WHERE COALESCE(TRIM(db.shipping_no), '') <> ''
+              AND COALESCE(TRIM(db.return_id), '') <> ''
+        ) used
+        INNER JOIN head_retur_invoice hri
+            ON TRIM(hri.return_id) = used.return_id
+           AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        GROUP BY used.invoice_no, used.shipping_no
+    ) ret_used_shipping
+        ON ret_used_shipping.invoice_no = src.invoice_no
+       AND ret_used_shipping.shipping_no = src.shipping_no
+
+    /*
+     * Retur terpakai level invoice untuk kompatibilitas single-shipping legacy.
+     */
+    LEFT JOIN
+    (
+        SELECT
+            used.invoice_no,
+            SUM(
+                CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
+            ) AS return_amount
+        FROM
+        (
+            SELECT DISTINCT
+                db.invoice_no,
+                TRIM(db.return_id) AS return_id
+            FROM detail_bayar db
+            WHERE COALESCE(TRIM(db.return_id), '') <> ''
+        ) used
+        INNER JOIN head_retur_invoice hri
+            ON TRIM(hri.return_id) = used.return_id
+           AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        GROUP BY used.invoice_no
+    ) ret_used_invoice
+        ON ret_used_invoice.invoice_no = src.invoice_no
 
     WHERE
         src.shipping_amount > 0
+        AND UPPER(COALESCE(src.invoice_no, '')) NOT LIKE '%CP-MCP%'
+        AND UPPER(COALESCE(src.shipping_no, '')) NOT LIKE '%CP-MCP%'
         AND (
-            (
-                CASE
-                    WHEN src.shipping_count = 1
-                        THEN GREATEST(
-                            src.shipping_amount
-                            - COALESCE(inv_pay.total_paid_invoice, 0),
-                            0
-                        )
-                    ELSE GREATEST(
+            CASE
+                WHEN src.shipping_count = 1
+                    THEN GREATEST(
                         src.shipping_amount
-                        - COALESCE(pay_shipping.paid_amount, 0),
+                        - COALESCE(inv_pay.total_paid_invoice, 0)
+                        - COALESCE(ret_used_invoice.return_amount, 0),
                         0
                     )
-                END
-            ) > 0.01
-            OR COALESCE(ret_shipping.return_amount, 0) > 0.01
-        )
+                ELSE GREATEST(
+                    src.shipping_amount
+                    - COALESCE(pay_shipping.paid_amount, 0)
+                    - COALESCE(ret_used_shipping.return_amount, 0),
+                    0
+                )
+            END
+        ) > 0.01
 
     ORDER BY
         src.invoice_date DESC,
@@ -275,24 +321,45 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
 /*
  * Daftar Retur aktif per customer.
  * Retur tidak lagi terikat ke invoice/shipping yang dicentang.
+ * Retur yang return_id-nya sudah pernah tersimpan di detail_bayar
+ * tidak ditampilkan lagi agar tidak dapat digunakan dua kali.
  */
 $returnsByCustomer = [];
 
 $sqlReturnList = "
     SELECT
-        return_id,
-        return_date,
-        customer_id,
-        customer_name,
-        invoice_no,
-        TRIM(shipping_no) AS shipping_no,
-        return_amount,
-        reason_return,
-        remarks_return
-    FROM head_retur_invoice
-    WHERE LOWER(COALESCE(status, 'Open')) <> 'cancelled'
-      AND COALESCE(customer_id, '') <> ''
-    ORDER BY return_date DESC, return_id DESC
+        hri.return_id,
+        hri.return_date,
+        hri.customer_id,
+        hri.customer_name,
+        hri.invoice_no,
+        TRIM(hri.shipping_no) AS shipping_no,
+        hri.return_amount,
+        hri.grand_total,
+        CASE
+            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                THEN COALESCE(hri.grand_total, 0)
+            ELSE COALESCE(hri.return_amount, 0)
+        END AS effective_return_amount,
+        hri.reason_return,
+        hri.remarks_return
+    FROM head_retur_invoice hri
+    WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+      AND COALESCE(hri.customer_id, '') <> ''
+
+      /*
+       * Retur hanya boleh dipilih satu kali.
+       * Jika return_id sudah pernah tersimpan di detail_bayar,
+       * retur tersebut dianggap sudah digunakan dan tidak ditampilkan lagi.
+       */
+      AND NOT EXISTS (
+          SELECT 1
+          FROM detail_bayar db_used
+          WHERE TRIM(COALESCE(db_used.return_id, '')) = TRIM(hri.return_id)
+      )
+
+    ORDER BY hri.return_date DESC, hri.return_id DESC
 ";
 
 $resReturnList = mysqli_query($conn, $sqlReturnList);
@@ -315,25 +382,33 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
     $returnsByCustomer[$customerKey][] = [
         'return_id' => (string)($ret['return_id'] ?? ''),
         'return_date' => (string)($ret['return_date'] ?? ''),
-        'return_amount' => (float)($ret['return_amount'] ?? 0),
+        'return_amount' => (float)($ret['effective_return_amount'] ?? 0),
         'reason_return' => (string)($ret['reason_return'] ?? ''),
-        'invoice_no' => (string)($ret['invoice_no'] ?? ''),
-        'shipping_no' => (string)($ret['shipping_no'] ?? ''),
+        /*
+         * Retur diperlakukan sebagai kredit customer yang berdiri sendiri.
+         * invoice_no / shipping_no asal retur sengaja tidak dikirim ke UI
+         * agar tidak terlihat seolah-olah retur masih terikat ke dokumen CP-MCP.
+         */
     ];
 }
 
 /*
 |--------------------------------------------------------------------------
-| CUSTOMER YANG MEMILIKI TAGIHAN TERSEDIA
+| CUSTOMER YANG BOLEH DIPROSES
 |--------------------------------------------------------------------------
-| Sumbernya dari $shippings agar daftar customer selalu konsisten dengan
-| invoice/shipping yang memang dapat dipilih untuk pembayaran.
+| Customer muncul apabila:
+| 1. punya invoice/shipping NON CP-MCP dengan sisa efektif > 0; ATAU
+| 2. punya Retur Customer aktif yang belum pernah dipakai.
+|
+| Jadi customer seperti SARMIN tetap muncul walaupun invoice/shipping yang
+| tersisa hanya CP-MCP, selama masih mempunyai retur standalone.
 |--------------------------------------------------------------------------
 */
 $paymentCustomers = [];
 
+/* Customer dari piutang normal NON CP-MCP. */
 foreach ($shippings as $ship) {
-    $cid = (string)($ship['customer_id'] ?? '');
+    $cid = trim((string)($ship['customer_id'] ?? ''));
 
     if ($cid === '') {
         continue;
@@ -348,6 +423,155 @@ foreach ($shippings as $ship) {
             'saldo_titip' => (float)($ship['saldo_titip'] ?? 0),
         ];
     }
+}
+
+/*
+ * Tambahkan customer retur-only.
+ * SELECT * dipakai agar tetap kompatibel bila nama kolom alamat berbeda.
+ */
+$stmtMasterCustomer = mysqli_prepare(
+    $conn,
+    "SELECT * FROM m_customer WHERE customer_id = ? LIMIT 1"
+);
+
+$stmtSaldoTitipCustomer = mysqli_prepare(
+    $conn,
+    "
+    SELECT COALESCE(SUM(balance_amount), 0) AS saldo_titip
+    FROM head_titip
+    WHERE customer_id = ?
+      AND balance_amount > 0
+    "
+);
+
+foreach ($returnsByCustomer as $cid => $returnRows) {
+    $cid = trim((string)$cid);
+
+    if ($cid === '' || isset($paymentCustomers[$cid])) {
+        continue;
+    }
+
+    $customerName = '';
+    $customerAddress = '';
+    $customerCity = '';
+    $saldoTitip = 0.0;
+
+    if ($stmtMasterCustomer) {
+        mysqli_stmt_bind_param(
+            $stmtMasterCustomer,
+            's',
+            $cid
+        );
+
+        mysqli_stmt_execute(
+            $stmtMasterCustomer
+        );
+
+        $masterCustomer = mysqli_fetch_assoc(
+            mysqli_stmt_get_result($stmtMasterCustomer)
+        );
+
+        if ($masterCustomer) {
+            $customerName = (string)(
+                $masterCustomer['customer']
+                ?? $masterCustomer['customer_name']
+                ?? ''
+            );
+
+            $customerAddress = (string)(
+                $masterCustomer['address']
+                ?? $masterCustomer['customer_address']
+                ?? ''
+            );
+
+            $customerCity = (string)(
+                $masterCustomer['city']
+                ?? $masterCustomer['customer_city']
+                ?? ''
+            );
+        }
+    }
+
+    /* Fallback nama dari head_retur_invoice. */
+    if ($customerName === '') {
+        $stmtRetName = mysqli_prepare(
+            $conn,
+            "
+            SELECT customer_name
+            FROM head_retur_invoice
+            WHERE customer_id = ?
+              AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
+            ORDER BY return_date DESC
+            LIMIT 1
+            "
+        );
+
+        if ($stmtRetName) {
+            mysqli_stmt_bind_param(
+                $stmtRetName,
+                's',
+                $cid
+            );
+
+            mysqli_stmt_execute(
+                $stmtRetName
+            );
+
+            $retNameRow = mysqli_fetch_assoc(
+                mysqli_stmt_get_result($stmtRetName)
+            );
+
+            $customerName = (string)(
+                $retNameRow['customer_name']
+                ?? ''
+            );
+
+            mysqli_stmt_close(
+                $stmtRetName
+            );
+        }
+    }
+
+    if ($stmtSaldoTitipCustomer) {
+        mysqli_stmt_bind_param(
+            $stmtSaldoTitipCustomer,
+            's',
+            $cid
+        );
+
+        mysqli_stmt_execute(
+            $stmtSaldoTitipCustomer
+        );
+
+        $saldoRow = mysqli_fetch_assoc(
+            mysqli_stmt_get_result($stmtSaldoTitipCustomer)
+        );
+
+        $saldoTitip = (float)(
+            $saldoRow['saldo_titip']
+            ?? 0
+        );
+    }
+
+    $paymentCustomers[$cid] = [
+        'customer_id' => $cid,
+        'customer_name' => $customerName,
+        'customer_address' => $customerAddress,
+        'customer_city' => $customerCity,
+        'saldo_titip' => $saldoTitip,
+    ];
+}
+
+if ($stmtMasterCustomer) {
+    mysqli_stmt_close(
+        $stmtMasterCustomer
+    );
+}
+
+if ($stmtSaldoTitipCustomer) {
+    mysqli_stmt_close(
+        $stmtSaldoTitipCustomer
+    );
 }
 
 uasort($paymentCustomers, function ($a, $b) {
@@ -894,8 +1118,6 @@ function refreshReturnOptions(customerId) {
                 text: text
             })
             .attr('data-return-amount', ret.return_amount)
-            .attr('data-invoice-no', ret.invoice_no || '')
-            .attr('data-shipping-no', ret.shipping_no || '')
             .attr('data-reason-return', ret.reason_return || '')
         );
     });
@@ -976,7 +1198,7 @@ $(document).ready(function () {
         } else if (customerId) {
             $('#noInvoiceMessage')
                 .text(
-                    'Tidak ada invoice/shipping outstanding untuk customer ini.'
+                    'Tidak ada invoice/shipping NON CP-MCP outstanding. Jika customer memiliki Retur aktif, pilih pada bagian Retur Customer.'
                 )
                 .show();
         } else {
@@ -1012,8 +1234,6 @@ $(document).ready(function () {
         const opt = $(this).find(':selected');
         const returnId = $(this).val() || '';
         const amount = parseFloat(opt.attr('data-return-amount')) || 0;
-        const invoiceNo = opt.attr('data-invoice-no') || '';
-        const shippingNo = opt.attr('data-shipping-no') || '';
         const reason = opt.attr('data-reason-return') || '';
 
         $('#retur_invoice').val(amount);
@@ -1035,24 +1255,6 @@ $(document).ready(function () {
 
         if (reason) {
             html += ' | ' + reason;
-        }
-
-        if (invoiceNo || shippingNo) {
-            html += '<br><span style="font-weight:400;">Referensi retur: ';
-
-            if (invoiceNo) {
-                html += 'Invoice ' + invoiceNo;
-            }
-
-            if (invoiceNo && shippingNo) {
-                html += ' | ';
-            }
-
-            if (shippingNo) {
-                html += 'Shipping ' + shippingNo;
-            }
-
-            html += '</span>';
         }
 
         info
@@ -1125,9 +1327,18 @@ $(document).ready(function () {
             return false;
         }
 
-        if (selected.count < 1) {
+        const selectedReturnId =
+            String($('#return_id').val() || '').trim();
+
+        /*
+         * Retur standalone boleh disimpan tanpa invoice/shipping.
+         */
+        if (
+            selected.count < 1 &&
+            selectedReturnId === ''
+        ) {
             alert(
-                'Minimal centang 1 invoice/shipping yang akan dibayar.'
+                'Minimal centang 1 invoice/shipping atau pilih 1 Retur Customer.'
             );
             e.preventDefault();
             return false;

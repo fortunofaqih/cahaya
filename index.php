@@ -298,8 +298,11 @@ switch ($page) {
     case 'update_return_mcp':
         include 'modul/transaksi/update_return_mcp.php';
         break;
-    case 'delete_return_mcp':
-        include 'modul/transaksi/delete_return_mcp.php';
+    case 'rekap_detail_penjualan':
+        include 'modul/transaksi/rekap_detail_penjualan.php';
+        break;
+    case 'cetak_rekap_detail_penjualan':
+        include 'modul/transaksi/cetak_rekap_detail_penjualan.php';
         break;
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':

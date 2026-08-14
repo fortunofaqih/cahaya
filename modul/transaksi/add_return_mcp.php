@@ -1,8 +1,6 @@
 <?php
 // modul/transaksi/add_return_mcp.php
-// Sales Return CP-MCP
-// Semua data transaksi diinput manual oleh Finance,
-// kecuali Customer Name yang dipilih dari daftar customer seperti add_return.php.
+// Sales Return CP-MCP - Hybrid Customer
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -27,24 +25,23 @@ function formatDateDisplay($date) {
 
 /*
 |--------------------------------------------------------------------------
-| Customer
+| CUSTOMER - HYBRID MODE
 |--------------------------------------------------------------------------
-| Disamakan dengan add_return.php:
-| customer dipilih dari customer yang pernah memiliki invoice.
+| 1. Ambil semua customer aktif dari m_customer
+| 2. Tambahkan opsi "MANUAL" untuk input customer baru
+| 3. Auto-suggest untuk customer yang sudah ada
 |--------------------------------------------------------------------------
 */
 $customerSql = "
-    SELECT DISTINCT
-        hi.customer_id,
-        hi.customer_name
-    FROM head_invoice hi
-    INNER JOIN det_invoice di
-        ON di.invoice_no = hi.invoice_no
-    INNER JOIN hed_shipping hs
-        ON hs.shipping_no = di.shipping_no
-    WHERE COALESCE(hi.status, 'Open') <> 'Cancelled'
-      AND COALESCE(hi.customer_id, '') <> ''
-    ORDER BY hi.customer_name ASC, hi.customer_id ASC
+    SELECT 
+        customer_id,
+        customer AS customer_name,
+        city,
+        address
+    FROM m_customer
+    WHERE COALESCE(is_active, 'Checked') = 'Checked'
+      AND COALESCE(customer, '') <> ''
+    ORDER BY customer ASC, customer_id ASC
 ";
 
 $customerRs = mysqli_query($conn, $customerSql);
@@ -53,12 +50,20 @@ if (!$customerRs) {
     die('Gagal mengambil daftar Customer: ' . mysqli_error($conn));
 }
 
+// Simpan semua customer ke array untuk autocomplete
+$customerList = [];
+while ($row = mysqli_fetch_assoc($customerRs)) {
+    $customerList[] = [
+        'id' => $row['customer_id'],
+        'name' => $row['customer_name'],
+        'city' => $row['city'] ?? '',
+        'address' => $row['address'] ?? ''
+    ];
+}
+
 /*
 |--------------------------------------------------------------------------
 | MASTER UOM
-|--------------------------------------------------------------------------
-| Dipakai untuk UoM, UoM Pack, dan UoM Detail.
-| Hanya mengambil unit yang aktif.
 |--------------------------------------------------------------------------
 */
 $uomSql = "
@@ -88,10 +93,6 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
 /*
 |--------------------------------------------------------------------------
 | AUTO NUMBERING CP-MCP
-|--------------------------------------------------------------------------
-| Sales Return ID    : nomor urut per bulan/tahun, contoh 16/CP-MCP/VIII/2026
-| Internal Invoice ID: nomor internal otomatis, contoh CP-MCP/INV/2026/00001
-| Inventory ID       : nomor unik otomatis, contoh MCP-INV/2026-000001
 |--------------------------------------------------------------------------
 */
 function monthRoman($month) {
@@ -125,13 +126,9 @@ mysqli_stmt_close($returnNoStmt);
 $nextReturnNo = ((int)($returnNoRow['max_no'] ?? 0)) + 1;
 $autoReturnId = $nextReturnNo . '/CP-MCP/' . $currentMonthRoman . '/' . $currentYear;
 
-
 /*
 |--------------------------------------------------------------------------
 | INTERNAL INVOICE MCP
-|--------------------------------------------------------------------------
-| Nomor ini tidak ditampilkan ke user. Dipakai agar return MCP memiliki
-| invoice internal yang valid di head_invoice dan memenuhi foreign key.
 |--------------------------------------------------------------------------
 */
 $invoicePrefix = 'CP-MCP/INV/' . $currentYear . '/';
@@ -211,6 +208,7 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.1.0-rc.0/js/select2.min.js"></script>
 
 <style>
+/* [SAME STYLES AS BEFORE] */
 .return-wrap * {
     box-sizing: border-box;
     font-family: 'Segoe UI','Consolas','Cascadia Code',monospace;
@@ -505,6 +503,66 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
     height: 26px!important;
 }
 
+/* Modal Customer Baru */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-box {
+    background: #fff;
+    border-radius: 8px;
+    padding: 25px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.modal-title {
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 15px;
+    color: #0d6efd;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.modal-close {
+    float: right;
+    cursor: pointer;
+    font-size: 20px;
+    color: #6c757d;
+    background: none;
+    border: none;
+    padding: 0 5px;
+}
+
+.modal-close:hover {
+    color: #dc3545;
+}
+
+.modal-body .ff {
+    margin-bottom: 12px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 15px;
+    justify-content: flex-end;
+}
+
 @media(max-width:1000px) {
     .panel-row {
         flex-direction: column;
@@ -538,17 +596,12 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 
     <div class="mcp-banner">
         <i class="fa fa-pen-to-square"></i>
-        Sales Return CP-MCP — nomor internal dibuat otomatis. Finance cukup mengisi Sales Order, Shipping No. MCP, Customer, dan detail retur.
+        Sales Return CP-MCP — Hybrid Customer Mode. Pilih customer yang sudah ada atau tambahkan customer baru.
     </div>
 
     <form method="POST" action="index.php?page=save_return_mcp" id="returnMcpForm">
 
-        <!-- Internal Invoice MCP: hidden, tetap dicek/generate ulang saat save -->
-        <input
-            type="hidden"
-            name="invoice_no"
-            value="<?= h($autoInvoiceNo) ?>"
-        >
+        <input type="hidden" name="invoice_no" value="<?= h($autoInvoiceNo) ?>">
 
         <div class="panel-row">
 
@@ -569,7 +622,6 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                             name="return_id"
                             class="return-id-input"
                             value="<?= h($autoReturnId) ?>"
-                            
                             required
                             maxlength="50"
                         >
@@ -605,12 +657,7 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                         >
                     </div>
 
-                    <input
-                        type="hidden"
-                        name="remarks_return"
-                        id="remarks_return"
-                        value=""
-                    >
+                    <input type="hidden" name="remarks_return" id="remarks_return" value="">
                 </div>
             </div>
 
@@ -650,58 +697,103 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                 </div>
             </div>
 
-            <!-- CUSTOMER -->
+            <!-- CUSTOMER - HYBRID -->
             <div class="return-panel">
                 <div class="return-panel-header">
                     <i class="fa fa-building-user"></i>
-                    Customer Information
+                    Customer Information <span class="required">*</span>
                 </div>
 
                 <div class="return-panel-body">
 
                     <div class="ff">
-                        <label>
-                            Customer Name <span class="required">*</span>
-                        </label>
-
-                        <select
-                            name="customer_ref"
-                            id="customer_ref"
-                            required
-                        >
-                            <option value="">
-                                -- Pilih Customer --
-                            </option>
-
-                            <?php while ($customer = mysqli_fetch_assoc($customerRs)): ?>
-                                <option
-                                    value="<?= h($customer['customer_id']) ?>"
-                                    data-customer-name="<?= h($customer['customer_name']) ?>"
+                        <label>Pilih Customer</label>
+                        <select name="customer_ref" id="customer_ref">
+                            <option value="">-- Pilih Customer --</option>
+                            <?php foreach ($customerList as $customer): ?>
+                                <option 
+                                    value="<?= h($customer['id']) ?>"
+                                    data-customer-name="<?= h($customer['name']) ?>"
+                                    data-city="<?= h($customer['city']) ?>"
+                                    data-address="<?= h($customer['address']) ?>"
                                 >
-                                    <?= h($customer['customer_name']) ?>
-                                    |
-                                    <?= h($customer['customer_id']) ?>
+                                    <?= h($customer['name']) ?> | <?= h($customer['id']) ?>
+                                    <?php if ($customer['city']): ?>
+                                        - <?= h($customer['city']) ?>
+                                    <?php endif; ?>
                                 </option>
-                            <?php endwhile; ?>
+                            <?php endforeach; ?>
+                            <option value="__MANUAL__">--- + Tambah Customer Baru ---</option>
                         </select>
-
-                        <input
-                            type="hidden"
-                            name="customer_name"
-                            id="customer_name"
-                            value=""
-                        >
                     </div>
 
-                    <div class="ff">
-                        <label>Currency</label>
-                        <input
-                            type="text"
-                            name="currency"
-                            value="IDR"
-                            maxlength="10"
-                        >
+                    <!-- Form Customer Manual (hidden by default) -->
+                    <div id="manualCustomerContainer" style="display:none; border-top: 1px dashed #dee2e6; padding-top: 10px; margin-top: 5px;">
+                        <div class="ff">
+                            <label>Nama Customer <span class="required">*</span></label>
+                            <input 
+                                type="text" 
+                                name="manual_customer_name" 
+                                id="manual_customer_name"
+                                placeholder="Input nama customer baru..."
+                                maxlength="255"
+                            >
+                        </div>
+
+                        <div class="ff">
+                            <label>Kota</label>
+                            <input 
+                                type="text" 
+                                name="manual_city" 
+                                id="manual_city"
+                                placeholder="Kota customer..."
+                                maxlength="100"
+                            >
+                        </div>
+
+                        <div class="ff">
+                            <label>Alamat</label>
+                            <textarea 
+                                name="manual_address" 
+                                id="manual_address"
+                                rows="2"
+                                placeholder="Alamat customer..."
+                                maxlength="500"
+                            ></textarea>
+                        </div>
+
+                        <div class="ff">
+                            <label>NPWP (Opsional)</label>
+                            <input 
+                                type="text" 
+                                name="manual_npwp" 
+                                id="manual_npwp"
+                                placeholder="NPWP customer..."
+                                maxlength="30"
+                            >
+                        </div>
+
+                        <div class="ff">
+                            <label>Telepon (Opsional)</label>
+                            <input 
+                                type="text" 
+                                name="manual_phone" 
+                                id="manual_phone"
+                                placeholder="Telepon customer..."
+                                maxlength="50"
+                            >
+                        </div>
+
+                        <div class="small-note" style="margin-top:5px;">
+                            <i class="fa fa-info-circle"></i>
+                            Customer baru akan otomatis tersimpan ke database dan bisa digunakan untuk transaksi berikutnya.
+                        </div>
                     </div>
+
+                    <input type="hidden" name="customer_name" id="customer_name" value="">
+                    <input type="hidden" name="customer_city" id="customer_city" value="">
+                    <input type="hidden" name="customer_address" id="customer_address" value="">
+                    <input type="hidden" name="is_new_customer" id="is_new_customer" value="0">
                 </div>
             </div>
 
@@ -857,7 +949,7 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 </div>
 
 <script>
-
+// [EXISTING FUNCTIONS - syncRemarksReturn, escapeHtml, money, etc.]
 function syncRemarksReturn() {
     var shippingInput = document.querySelector('input[name="shipping_no"]');
     var remarksInput = document.getElementById('remarks_return');
@@ -1047,8 +1139,8 @@ function addItemRow() {
     itemIndex++;
     renumberRows();
 }
+
 function parseRupiah(value) {
-    // 1.000.000 -> 1000000
     return Number(
         String(value || '')
             .replace(/\./g, '')
@@ -1063,6 +1155,7 @@ function formatRupiah(value) {
         maximumFractionDigits: 0
     });
 }
+
 function calculateRow(row) {
     var pack = Number(row.querySelector('.return-pack').value || 0);
     var price = parseRupiah(row.querySelector('.return-price').value);
@@ -1133,30 +1226,102 @@ $(document).ready(function() {
         });
     }
 
+    // CUSTOMER HYBRID HANDLER
+    var customerList = <?= json_encode($customerList, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+
     $('#customer_ref').select2({
         width: '100%',
         placeholder: '-- Pilih Customer --',
-        allowClear: true
+        allowClear: true,
+        templateResult: function(state) {
+            if (!state.id) return state.text;
+            if (state.id === '__MANUAL__') return '<i class="fa fa-plus-circle"></i> + Tambah Customer Baru';
+            return state.text;
+        },
+        escapeMarkup: function(markup) {
+            return markup;
+        }
     });
 
     $('#customer_ref').on('change', function() {
+        var selected = $(this).val();
         var option = this.options[this.selectedIndex];
+        var container = $('#manualCustomerContainer');
 
-        $('#customer_name').val(
-            option
-                ? (option.getAttribute('data-customer-name') || '')
-                : ''
-        );
+        if (selected === '__MANUAL__') {
+            container.slideDown(200);
+            $('#is_new_customer').val('1');
+            $('#customer_name').val('');
+            $('#customer_city').val('');
+            $('#customer_address').val('');
+            $('#manual_customer_name').prop('required', true);
+            $('#customer_ref').val('').trigger('change');
+        } else if (selected && selected !== '') {
+            container.slideUp(200);
+            $('#is_new_customer').val('0');
+            $('#manual_customer_name').prop('required', false);
+            
+            var customerName = option ? (option.getAttribute('data-customer-name') || '') : '';
+            var city = option ? (option.getAttribute('data-city') || '') : '';
+            var address = option ? (option.getAttribute('data-address') || '') : '';
+            
+            $('#customer_name').val(customerName);
+            $('#customer_city').val(city);
+            $('#customer_address').val(address);
+        } else {
+            container.slideUp(200);
+            $('#is_new_customer').val('0');
+            $('#customer_name').val('');
+            $('#customer_city').val('');
+            $('#customer_address').val('');
+            $('#manual_customer_name').prop('required', false);
+        }
+    });
+
+    // Auto-populate dari customer yang sudah ada di list
+    // Jika user mengetik nama yang sama, auto-select
+    $('#manual_customer_name').on('blur', function() {
+        var input = $(this).val().trim();
+        if (!input) return;
+
+        // Cari customer dengan nama yang sama persis
+        var found = customerList.find(function(c) {
+            return c.name.toLowerCase() === input.toLowerCase();
+        });
+
+        if (found) {
+            // Customer sudah ada, pindahkan ke select
+            $('#customer_ref').val(found.id).trigger('change');
+            $('#manual_customer_name').val('');
+            container = $('#manualCustomerContainer');
+            container.slideUp(200);
+            $('#is_new_customer').val('0');
+            $('#manual_customer_name').prop('required', false);
+            alert('Customer "' + found.name + '" sudah ada. Silakan pilih dari daftar.');
+        }
     });
 
     addItemRow();
 
     $('#returnMcpForm').on('submit', function(event) {
         syncRemarksReturn();
-        if (!$('#customer_ref').val()) {
-            event.preventDefault();
-            alert('Customer Name wajib dipilih.');
-            return false;
+        
+        var isNew = parseInt($('#is_new_customer').val()) === 1;
+        
+        if (isNew) {
+            var manualName = $('#manual_customer_name').val().trim();
+            if (!manualName) {
+                event.preventDefault();
+                alert('Nama Customer wajib diisi untuk customer baru.');
+                return false;
+            }
+            $('#customer_name').val(manualName);
+        } else {
+            if (!$('#customer_ref').val()) {
+                event.preventDefault();
+                alert('Silakan pilih Customer atau tambahkan customer baru.');
+                return false;
+            }
         }
 
         var rows = document.querySelectorAll('.item-row');

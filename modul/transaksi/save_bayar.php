@@ -1,14 +1,25 @@
 <?php
+/*
+ * RULE NILAI RETUR CP-MCP:
+ * - Retur CP-MCP memakai grand_total sebagai nominal kredit customer.
+ * - Retur normal tetap memakai return_amount.
+ */
+
 // modul/transaksi/save_bayar.php
+// RULE CP-MCP:
+// - Invoice / Shipping yang mengandung string CP-MCP ditolak sebagai transaksi pembayaran.
+// - Retur customer tetap boleh dipakai standalone berdasarkan return_id/customer,
+//   tanpa harus terhubung ke invoice/shipping asal retur.
 // Pembayaran multi invoice / multi shipping.
 //
 // Struktur:
 // - 1 head_bayar untuk satu transaksi pembayaran customer.
 // - N detail_bayar untuk setiap invoice/shipping yang dicentang.
+// - Retur-only disimpan sebagai 1 detail_bayar dengan invoice_no/shipping_no kosong.
 // - Semua pasangan invoice/shipping divalidasi ulang dari database.
 // - Nilai setiap detail = sisa pembayaran shipping tersebut.
 // - Titip uang dialokasikan terlebih dahulu, sisanya Cash/Transfer.
-// - Retur dipilih standalone berdasarkan Customer dan MENGURANGI total tagihan yang harus dibayar.
+// - Retur dipilih standalone berdasarkan Customer, hanya boleh dipakai satu kali, dan MENGURANGI total tagihan yang harus dibayar.
 // - Setelah semua detail tersimpan, status/payment_balance setiap invoice dihitung ulang.
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -321,16 +332,30 @@ function applyTitipUsage(
     }
 }
 
+function isCpMcpDocument(string $value): bool {
+    return stripos(trim($value), 'CP-MCP') !== false;
+}
+
 function getShippingPaymentData(
     mysqli $conn,
     string $invoiceNo,
     string $shippingNo
 ): array {
     /*
-     * Satu baris per pasangan invoice + shipping.
-     * shipping_amount dijumlahkan karena det_invoice
-     * secara historis bisa memiliki lebih dari satu row.
+     * CP-MCP adalah dokumen internal Sales Return.
+     * Dokumen ini bukan piutang normal dan tidak boleh dijadikan
+     * item transaksi pembayaran.
      */
+    if (
+        isCpMcpDocument($invoiceNo) ||
+        isCpMcpDocument($shippingNo)
+    ) {
+        throw new Exception(
+            'Invoice / Shipping CP-MCP tidak boleh dijadikan transaksi pembayaran. ' .
+            'Gunakan retur customer melalui panel Retur Customer sebagai kredit standalone.'
+        );
+    }
+
     $sql = "
         SELECT
             hi.invoice_no,
@@ -339,57 +364,33 @@ function getShippingPaymentData(
             hi.customer_name,
             hi.customer_address,
             hi.customer_city,
-            TRIM(di.shipping_no)
-                AS shipping_no,
-            MAX(di.shipping_date)
-                AS shipping_date,
-            MAX(di.order_no)
-                AS order_no,
+            TRIM(di.shipping_no) AS shipping_no,
+            MAX(di.shipping_date) AS shipping_date,
+            MAX(di.order_no) AS order_no,
 
             SUM(
                 CASE
-                    WHEN COALESCE(
-                        di.total,
-                        0
-                    ) > 0
-                        THEN COALESCE(
-                            di.total,
-                            0
-                        )
-                    ELSE COALESCE(
-                        di.subtotal,
-                        0
-                    )
+                    WHEN COALESCE(di.total, 0) > 0
+                        THEN COALESCE(di.total, 0)
+                    ELSE COALESCE(di.subtotal, 0)
                 END
             ) AS shipping_amount,
 
             (
-                SELECT COUNT(
-                    DISTINCT
-                    TRIM(di_count.shipping_no)
-                )
+                SELECT COUNT(DISTINCT TRIM(di_count.shipping_no))
                 FROM det_invoice di_count
-                WHERE
-                    di_count.invoice_no =
-                        hi.invoice_no
-                    AND COALESCE(
-                        TRIM(
-                            di_count.shipping_no
-                        ),
-                        ''
-                    ) <> ''
+                WHERE di_count.invoice_no = hi.invoice_no
+                  AND COALESCE(TRIM(di_count.shipping_no), '') <> ''
             ) AS shipping_count
 
         FROM head_invoice hi
         INNER JOIN det_invoice di
-            ON di.invoice_no =
-               hi.invoice_no
+            ON di.invoice_no = hi.invoice_no
 
-        WHERE
-            hi.invoice_no = ?
-            AND TRIM(
-                di.shipping_no
-            ) = ?
+        WHERE hi.invoice_no = ?
+          AND TRIM(di.shipping_no) = ?
+          AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
+          AND UPPER(COALESCE(TRIM(di.shipping_no), '')) NOT LIKE '%CP-MCP%'
 
         GROUP BY
             hi.invoice_no,
@@ -404,148 +405,213 @@ function getShippingPaymentData(
         FOR UPDATE
     ";
 
-    $stmt =
-        mysqli_prepare(
-            $conn,
-            $sql
-        );
-
-    mysqli_stmt_bind_param(
-        $stmt,
-        'ss',
-        $invoiceNo,
-        $shippingNo
-    );
-
+    $stmt = mysqli_prepare($conn, $sql);
+    mysqli_stmt_bind_param($stmt, 'ss', $invoiceNo, $shippingNo);
     mysqli_stmt_execute($stmt);
 
-    $row =
-        mysqli_fetch_assoc(
-            mysqli_stmt_get_result(
-                $stmt
-            )
-        );
+    $row = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmt)
+    );
 
     mysqli_stmt_close($stmt);
 
     if (!$row) {
         throw new Exception(
-            'Pasangan Invoice ' .
-            $invoiceNo .
-            ' / Shipping ' .
-            $shippingNo .
+            'Pasangan Invoice ' . $invoiceNo .
+            ' / Shipping ' . $shippingNo .
             ' tidak ditemukan.'
         );
     }
 
     /*
-     * Pembayaran shipping modern.
+     * Pembayaran dan retur yang SUDAH dipakai.
+     * Untuk single-shipping, hitung di level invoice agar
+     * transaksi legacy tanpa shipping_no tetap terbaca.
      */
-    $stmt =
-        mysqli_prepare(
+    if ((int)$row['shipping_count'] === 1) {
+        $stmt = mysqli_prepare(
             $conn,
             "
             SELECT
-                COALESCE(
-                    SUM(bayar_amount),
-                    0
-                ) AS paid_amount
-            FROM detail_bayar
-            WHERE
-                invoice_no = ?
-                AND shipping_no = ?
+                COALESCE(SUM(db.bayar_amount), 0) AS paid_amount
+            FROM detail_bayar db
+            WHERE db.invoice_no = ?
             FOR UPDATE
             "
         );
 
+        mysqli_stmt_bind_param($stmt, 's', $invoiceNo);
+    } else {
+        $stmt = mysqli_prepare(
+            $conn,
+            "
+            SELECT
+                COALESCE(SUM(db.bayar_amount), 0) AS paid_amount
+            FROM detail_bayar db
+            WHERE db.invoice_no = ?
+              AND TRIM(db.shipping_no) = ?
+            FOR UPDATE
+            "
+        );
+
+        mysqli_stmt_bind_param($stmt, 'ss', $invoiceNo, $shippingNo);
+    }
+
+    mysqli_stmt_execute($stmt);
+
+    $paidRow = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmt)
+    );
+
+    mysqli_stmt_close($stmt);
+
+    $paidAmount = (float)($paidRow['paid_amount'] ?? 0);
+
+    if ((int)$row['shipping_count'] === 1) {
+        $stmt = mysqli_prepare(
+            $conn,
+            "
+            SELECT
+                COALESCE(
+                SUM(
+                    CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
+                ),
+                0
+            ) AS return_used
+            FROM head_retur_invoice hri
+            INNER JOIN
+            (
+                SELECT DISTINCT TRIM(db.return_id) AS return_id
+                FROM detail_bayar db
+                WHERE db.invoice_no = ?
+                  AND COALESCE(TRIM(db.return_id), '') <> ''
+            ) used
+                ON TRIM(hri.return_id) = used.return_id
+            WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+            "
+        );
+
+        mysqli_stmt_bind_param($stmt, 's', $invoiceNo);
+    } else {
+        $stmt = mysqli_prepare(
+            $conn,
+            "
+            SELECT
+                COALESCE(
+                SUM(
+                    CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
+                ),
+                0
+            ) AS return_used
+            FROM head_retur_invoice hri
+            INNER JOIN
+            (
+                SELECT DISTINCT TRIM(db.return_id) AS return_id
+                FROM detail_bayar db
+                WHERE db.invoice_no = ?
+                  AND TRIM(db.shipping_no) = ?
+                  AND COALESCE(TRIM(db.return_id), '') <> ''
+            ) used
+                ON TRIM(hri.return_id) = used.return_id
+            WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+            "
+        );
+
+        mysqli_stmt_bind_param($stmt, 'ss', $invoiceNo, $shippingNo);
+    }
+
+    mysqli_stmt_execute($stmt);
+
+    $returnRow = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmt)
+    );
+
+    mysqli_stmt_close($stmt);
+
+    $returnUsed = (float)($returnRow['return_used'] ?? 0);
+
+    $row['paid_amount'] = $paidAmount;
+    $row['return_used'] = $returnUsed;
+
+    /*
+     * SISA EFEKTIF:
+     * shipping_amount - pembayaran - retur terpakai
+     */
+    $row['sisa_shipping'] = max(
+        (float)$row['shipping_amount']
+        - $paidAmount
+        - $returnUsed,
+        0
+    );
+
+    return $row;
+}
+
+function getCustomerMasterForPayment(
+    mysqli $conn,
+    string $customerId
+): array {
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT * FROM m_customer WHERE customer_id = ? LIMIT 1"
+    );
+
+    if (!$stmt) {
+        throw new Exception(
+            'Gagal prepare master customer: ' .
+            mysqli_error($conn)
+        );
+    }
+
     mysqli_stmt_bind_param(
         $stmt,
-        'ss',
-        $invoiceNo,
-        $shippingNo
+        's',
+        $customerId
     );
 
     mysqli_stmt_execute($stmt);
 
-    $paidRow =
-        mysqli_fetch_assoc(
-            mysqli_stmt_get_result(
-                $stmt
-            )
-        );
+    $row = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmt)
+    );
 
     mysqli_stmt_close($stmt);
 
-    $paidShipping =
-        (float)(
-            $paidRow['paid_amount']
-            ?? 0
+    if (!$row) {
+        throw new Exception(
+            'Customer ' . $customerId .
+            ' tidak ditemukan pada master customer.'
         );
-
-    /*
-     * Legacy:
-     * jika invoice hanya punya satu shipping,
-     * seluruh pembayaran invoice lama ikut dianggap
-     * pembayaran shipping tersebut.
-     */
-    if (
-        (int)$row['shipping_count']
-        === 1
-    ) {
-        $stmt =
-            mysqli_prepare(
-                $conn,
-                "
-                SELECT
-                    COALESCE(
-                        SUM(bayar_amount),
-                        0
-                    ) AS paid_invoice
-                FROM detail_bayar
-                WHERE invoice_no = ?
-                FOR UPDATE
-                "
-            );
-
-        mysqli_stmt_bind_param(
-            $stmt,
-            's',
-            $invoiceNo
-        );
-
-        mysqli_stmt_execute($stmt);
-
-        $legacyRow =
-            mysqli_fetch_assoc(
-                mysqli_stmt_get_result(
-                    $stmt
-                )
-            );
-
-        mysqli_stmt_close($stmt);
-
-        $paidShipping =
-            (float)(
-                $legacyRow[
-                    'paid_invoice'
-                ]
-                ?? 0
-            );
     }
 
-    $row['paid_amount'] =
-        $paidShipping;
-
-    $row['sisa_shipping'] =
-        max(
-            (float)$row[
-                'shipping_amount'
-            ] -
-            $paidShipping,
-            0
-        );
-
-    return $row;
+    return [
+        'customer_id' => $customerId,
+        'customer_name' => (string)(
+            $row['customer']
+            ?? $row['customer_name']
+            ?? ''
+        ),
+        'customer_address' => (string)(
+            $row['address']
+            ?? $row['customer_address']
+            ?? ''
+        ),
+        'customer_city' => (string)(
+            $row['city']
+            ?? $row['customer_city']
+            ?? ''
+        ),
+    ];
 }
 
 function validateSelectedReturnByCustomer(
@@ -557,13 +623,27 @@ function validateSelectedReturnByCustomer(
         return 0.0;
     }
 
+    /*
+     * Lock master retur terlebih dahulu.
+     * Ini penting agar dua user tidak bisa memakai return_id
+     * yang sama secara bersamaan.
+     */
     $stmt = mysqli_prepare(
         $conn,
         "
         SELECT
             return_id,
             return_amount,
-            customer_id
+            grand_total,
+            invoice_no,
+            shipping_no,
+            customer_id,
+            CASE
+                WHEN UPPER(COALESCE(invoice_no, '')) LIKE '%CP-MCP%'
+                  OR UPPER(COALESCE(shipping_no, '')) LIKE '%CP-MCP%'
+                    THEN COALESCE(grand_total, 0)
+                ELSE COALESCE(return_amount, 0)
+            END AS effective_return_amount
         FROM head_retur_invoice
         WHERE
             return_id = ?
@@ -605,14 +685,86 @@ function validateSelectedReturnByCustomer(
         throw new Exception(
             'No. Retur ' .
             $returnId .
-            ' tidak ditemukan atau bukan milik customer yang dipilih.'
+            ' tidak ditemukan, sudah cancelled, atau bukan milik customer yang dipilih.'
         );
     }
 
-    return (float)(
-        $row['return_amount']
-        ?? 0
+    /*
+     * Proteksi server-side:
+     * return_id yang sudah pernah tersimpan di detail_bayar
+     * tidak boleh digunakan kembali.
+     *
+     * Karena row head_retur_invoice di atas sudah FOR UPDATE,
+     * transaksi lain yang mencoba return_id sama akan menunggu
+     * sampai transaksi ini commit/rollback, lalu pengecekan ini
+     * akan membaca hasil terbaru.
+     */
+    $stmtUsed = mysqli_prepare(
+        $conn,
+        "
+        SELECT
+            bayar_no
+        FROM detail_bayar
+        WHERE
+            TRIM(
+                COALESCE(
+                    return_id,
+                    ''
+                )
+            ) = TRIM(?)
+        LIMIT 1
+        "
     );
+
+    if (!$stmtUsed) {
+        throw new Exception(
+            'Gagal prepare pengecekan penggunaan retur: ' .
+            mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param(
+        $stmtUsed,
+        's',
+        $returnId
+    );
+
+    mysqli_stmt_execute($stmtUsed);
+
+    $usedRow = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmtUsed)
+    );
+
+    mysqli_stmt_close($stmtUsed);
+
+    if ($usedRow) {
+        throw new Exception(
+            'No. Retur ' .
+            $returnId .
+            ' sudah pernah digunakan pada pembayaran ' .
+            (string)($usedRow['bayar_no'] ?? '') .
+            ' dan tidak dapat digunakan kembali.'
+        );
+    }
+
+    $returnAmount =
+        round(
+            (float)(
+                $row['effective_return_amount']
+                ?? 0
+            ),
+            2
+        );
+
+    if ($returnAmount <= 0.0001) {
+        throw new Exception(
+            'Nilai No. Retur ' .
+            $returnId .
+            ' tidak valid atau Rp 0,00.'
+        );
+    }
+
+    return $returnAmount;
 }
 
 function updateInvoicePaymentStatus(
@@ -626,35 +778,22 @@ function updateInvoicePaymentStatus(
                 (
                     SELECT SUM(
                         CASE
-                            WHEN COALESCE(
-                                di.total,
-                                0
-                            ) > 0
-                                THEN COALESCE(
-                                    di.total,
-                                    0
-                                )
-                            ELSE COALESCE(
-                                di.subtotal,
-                                0
-                            )
+                            WHEN COALESCE(di.total, 0) > 0
+                                THEN COALESCE(di.total, 0)
+                            ELSE COALESCE(di.subtotal, 0)
                         END
                     )
                     FROM det_invoice di
-                    WHERE
-                        di.invoice_no = ?
+                    WHERE di.invoice_no = ?
                 ),
                 0
             ) AS invoice_amount,
 
             COALESCE(
                 (
-                    SELECT SUM(
-                        db.bayar_amount
-                    )
+                    SELECT SUM(db.bayar_amount)
                     FROM detail_bayar db
-                    WHERE
-                        db.invoice_no = ?
+                    WHERE db.invoice_no = ?
                 ),
                 0
             ) AS paid_amount,
@@ -662,27 +801,29 @@ function updateInvoicePaymentStatus(
             COALESCE(
                 (
                     SELECT SUM(
-                        hri.return_amount
+                        CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total, 0)
+                            ELSE COALESCE(hri.return_amount, 0)
+                        END
                     )
                     FROM head_retur_invoice hri
-                    WHERE
-                        hri.invoice_no = ?
-                        AND LOWER(
-                            COALESCE(
-                                hri.status,
-                                'Open'
-                            )
-                        ) <> 'cancelled'
+                    INNER JOIN
+                    (
+                        SELECT DISTINCT TRIM(db.return_id) AS return_id
+                        FROM detail_bayar db
+                        WHERE db.invoice_no = ?
+                          AND COALESCE(TRIM(db.return_id), '') <> ''
+                    ) used
+                        ON TRIM(hri.return_id) = used.return_id
+                    WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
                 ),
                 0
             ) AS return_amount
     ";
 
-    $stmt =
-        mysqli_prepare(
-            $conn,
-            $sql
-        );
+    $stmt = mysqli_prepare($conn, $sql);
 
     mysqli_stmt_bind_param(
         $stmt,
@@ -694,67 +835,41 @@ function updateInvoicePaymentStatus(
 
     mysqli_stmt_execute($stmt);
 
-    $row =
-        mysqli_fetch_assoc(
-            mysqli_stmt_get_result(
-                $stmt
-            )
-        );
+    $row = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmt)
+    );
 
     mysqli_stmt_close($stmt);
 
-    $invoiceAmount =
-        (float)(
-            $row['invoice_amount']
-            ?? 0
-        );
+    $invoiceAmount = (float)($row['invoice_amount'] ?? 0);
+    $invoicePaid = (float)($row['paid_amount'] ?? 0);
+    $invoiceRetur = (float)($row['return_amount'] ?? 0);
 
-    $invoicePaid =
-        (float)(
-            $row['paid_amount']
-            ?? 0
-        );
+    $invoiceBalance = max(
+        $invoiceAmount - $invoicePaid - $invoiceRetur,
+        0
+    );
 
-    $invoiceRetur =
-        (float)(
-            $row['return_amount']
-            ?? 0
-        );
-
-    $invoiceBalance =
-        max(
-            $invoiceAmount -
-            $invoiceRetur -
-            $invoicePaid,
-            0
-        );
-
-    if (
-        $invoiceBalance <= 0.0001
-    ) {
+    if ($invoiceBalance <= 0.0001) {
         $newStatus = 'Paid';
-    } elseif (
-        $invoicePaid > 0.0001 ||
-        $invoiceRetur > 0.0001
-    ) {
+    } elseif ($invoicePaid > 0.0001 || $invoiceRetur > 0.0001) {
         $newStatus = 'Partial';
     } else {
         $newStatus = 'Open';
     }
 
-    $stmt =
-        mysqli_prepare(
-            $conn,
-            "
-            UPDATE head_invoice
-            SET
-                payment_balance = ?,
-                status = ?,
-                user_modified = ?,
-                date_modified = NOW()
-            WHERE invoice_no = ?
-            "
-        );
+    $stmt = mysqli_prepare(
+        $conn,
+        "
+        UPDATE head_invoice
+        SET
+            payment_balance = ?,
+            status = ?,
+            user_modified = ?,
+            date_modified = NOW()
+        WHERE invoice_no = ?
+        "
+    );
 
     mysqli_stmt_bind_param(
         $stmt,
@@ -942,6 +1057,22 @@ foreach (
         );
     }
 
+    /*
+     * Jangan hanya mengandalkan filter pada add_bayar.php.
+     * Tolak juga POST manual/manipulasi yang mencoba memasukkan CP-MCP.
+     */
+    if (
+        isCpMcpDocument($invoiceNo) ||
+        isCpMcpDocument($shippingNo)
+    ) {
+        redirectWithAlert(
+            'error',
+            'Invoice / Shipping CP-MCP tidak boleh dijadikan transaksi pembayaran. ' .
+            'Pilih retur customer pada panel Retur Customer bila ingin menggunakan retur sebagai pengurang pembayaran.',
+            'add_bayar'
+        );
+    }
+
     $key =
         $invoiceNo .
         '|' .
@@ -970,10 +1101,13 @@ foreach (
     ];
 }
 
-if (!$selectedPosted) {
+if (
+    !$selectedPosted &&
+    $returnId === ''
+) {
     redirectWithAlert(
         'error',
-        'Minimal pilih 1 Invoice / Shipping.',
+        'Minimal pilih 1 Invoice / Shipping atau 1 Retur Customer.',
         'add_bayar'
     );
 }
@@ -997,10 +1131,27 @@ try {
     $validItems = [];
     $selectedTotal = 0.0;
 
-    $customerId = '';
-    $customerName = '';
-    $customerAddress = '';
-    $customerCity = '';
+    /*
+     * Customer selalu diambil ulang dari master.
+     * Ini diperlukan untuk transaksi retur-only tanpa invoice/shipping.
+     */
+    $customerMaster =
+        getCustomerMasterForPayment(
+            $conn,
+            $customerIdPosted
+        );
+
+    $customerId =
+        (string)$customerMaster['customer_id'];
+
+    $customerName =
+        (string)$customerMaster['customer_name'];
+
+    $customerAddress =
+        (string)$customerMaster['customer_address'];
+
+    $customerCity =
+        (string)$customerMaster['customer_city'];
 
     /*
      * Retur sekarang berdiri sendiri pada level pembayaran/customer.
@@ -1024,48 +1175,14 @@ try {
             );
 
         /*
-         * Semua invoice dalam satu bayar_no
-         * harus milik customer yang sama.
+         * Semua invoice/shipping yang dipilih harus sesuai customer form.
          */
-        if ($customerId === '') {
-            $customerId =
-                (string)$shipping[
-                    'customer_id'
-                ];
-
-            $customerName =
-                (string)$shipping[
-                    'customer_name'
-                ];
-
-            $customerAddress =
-                (string)$shipping[
-                    'customer_address'
-                ];
-
-            $customerCity =
-                (string)$shipping[
-                    'customer_city'
-                ];
-        } elseif (
-            $customerId !==
-            (string)$shipping[
-                'customer_id'
-            ]
-        ) {
-            throw new Exception(
-                'Semua Invoice / Shipping yang dipilih harus berasal dari customer yang sama.'
-            );
-        }
-
         if (
-            $customerIdPosted !==
-            (string)$shipping[
-                'customer_id'
-            ]
+            $customerId !==
+            (string)$shipping['customer_id']
         ) {
             throw new Exception(
-                'Customer form tidak sesuai dengan invoice yang dipilih.'
+                'Invoice / Shipping yang dipilih bukan milik Customer form.'
             );
         }
 
@@ -1075,23 +1192,20 @@ try {
             ];
 
         /*
-         * Pada mode multi invoice,
-         * checkbox berarti shipping dibayar penuh
-         * sebesar sisa sisi pembayaran.
+         * Sesuai rule add_bayar terbaru:
+         * hanya Invoice / Shipping yang masih memiliki piutang
+         * yang boleh diproses.
          *
-         * Shipping dengan sisa 0 hanya boleh
-         * dipilih bila ada No. Retur untuk cross-check.
+         * Jangan mengandalkan filter di halaman input saja,
+         * karena data POST dapat dimanipulasi.
          */
-        if (
-            $sisaShipping <= 0.0001 &&
-            $returnId === ''
-        ) {
+        if ($sisaShipping <= 0.01) {
             throw new Exception(
                 'Shipping ' .
                 $posted[
                     'shipping_no'
                 ] .
-                ' sudah lunas. Untuk transaksi Rp 0,00 wajib pilih No. Retur.'
+                ' sudah lunas / tidak memiliki sisa piutang dan tidak dapat diproses kembali.'
             );
         }
 
@@ -1128,10 +1242,14 @@ try {
     |--------------------------------------------------------------------------
     | VALIDASI RETUR BERDASARKAN CUSTOMER
     |--------------------------------------------------------------------------
-    | Retur tidak perlu mempunyai invoice_no / shipping_no yang sama dengan
-    | invoice pembayaran yang dicentang. Syaratnya hanya:
-    | - return_id aktif
+    | Retur berdiri sendiri sebagai kredit customer.
+    | invoice_no / shipping_no asal retur (termasuk dokumen CP-MCP)
+    | TIDAK dipakai untuk menghubungkan retur ke item pembayaran.
+    |
+    | Syarat retur hanya:
+    | - return_id aktif / tidak Cancelled
     | - milik customer pembayaran yang sama
+    | - belum dipakai pada pembayaran lain
     |--------------------------------------------------------------------------
     */
     if ($returnId !== '') {
@@ -1500,25 +1618,35 @@ try {
             $remainingCash = 0;
         }
 
-        $sisaAfter =
-            max(
-                $sisaBefore -
-                $detailAmount,
-                0
-            );
-
-        $detailRemarks =
-            $remarks;
+        $detailRemarks = $remarks;
 
         $detailReturnId = '';
+        $detailReturnApplied = 0.0;
 
         if (
             !$returnStored &&
             $returnId !== ''
         ) {
             $detailReturnId = $returnId;
+
+            /*
+             * return_id secara schema disimpan satu kali pada detail pertama.
+             * sisa_after dibuat konsisten dengan sisa efektif.
+             */
+            $detailReturnApplied = min(
+                $selectedReturnAmount,
+                $sisaBefore
+            );
+
             $returnStored = true;
         }
+
+        $sisaAfter = max(
+            $sisaBefore
+            - $detailAmount
+            - $detailReturnApplied,
+            0
+        );
 
         mysqli_stmt_bind_param(
             $stmtDetail,
@@ -1546,6 +1674,49 @@ try {
                 'invoice_no'
             ]
         ] = true;
+    }
+
+    /*
+     * Retur standalone tanpa invoice/shipping.
+     * invoice_no dan shipping_no sengaja kosong agar TIDAK terhubung
+     * ke dokumen CP-MCP asal retur.
+     */
+    if (
+        empty($validItems) &&
+        $returnId !== ''
+    ) {
+        $blankInvoiceNo = '';
+        $blankShippingNo = '';
+        $blankInvoiceDate = '';
+        $zeroAmount = 0.0;
+
+        $returnOnlyRemarks =
+            $remarks !== ''
+                ? $remarks
+                : 'Retur Customer Standalone';
+
+        mysqli_stmt_bind_param(
+            $stmtDetail,
+            'sssssdddddss',
+            $bayarNo,
+            $blankInvoiceNo,
+            $blankShippingNo,
+            $returnId,
+            $blankInvoiceDate,
+            $zeroAmount,
+            $zeroAmount,
+            $zeroAmount,
+            $zeroAmount,
+            $zeroAmount,
+            $returnOnlyRemarks,
+            $username
+        );
+
+        mysqli_stmt_execute(
+            $stmtDetail
+        );
+
+        $returnStored = true;
     }
 
     mysqli_stmt_close(

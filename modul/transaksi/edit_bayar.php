@@ -1,4 +1,10 @@
 <?php
+/*
+ * RULE NILAI RETUR CP-MCP:
+ * - CP-MCP memakai grand_total.
+ * - Retur normal memakai return_amount.
+ */
+
 // modul/transaksi/edit_bayar.php
 // Edit Pembayaran Multi Invoice / Multi Shipping.
 //
@@ -6,7 +12,7 @@
 // Customer pembayaran tidak diganti saat edit.
 // User dapat menambah/mengurangi Invoice/Shipping yang dicentang.
 // Checkbox = bayar penuh sebesar sisa shipping sebelum pembayaran ini.
-// Retur dipilih standalone berdasarkan Customer untuk kebutuhan cross-check.
+// Retur dipilih standalone berdasarkan Customer; retur yang dipakai pembayaran lain tidak boleh dipilih.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -164,14 +170,40 @@ $sqlShipping = "
         src.order_no,
         src.shipping_amount,
 
-        COALESCE(pay_other.paid_amount, 0) AS paid_except_current,
+        CASE
+            WHEN src.shipping_count = 1
+                THEN COALESCE(inv_pay_other.total_paid_invoice, 0)
+            ELSE COALESCE(pay_shipping_other.paid_amount, 0)
+        END AS paid_except_current,
 
-        GREATEST(
-            src.shipping_amount - COALESCE(pay_other.paid_amount, 0),
-            0
-        ) AS sisa_before_current,
+        CASE
+            WHEN src.shipping_count = 1
+                THEN COALESCE(ret_used_invoice_other.return_amount, 0)
+            ELSE COALESCE(ret_used_shipping_other.return_amount, 0)
+        END AS retur_except_current,
 
-        COALESCE(ret_shipping.return_amount, 0) AS retur_amount
+        /*
+         * Sisa sebelum transaksi yang sedang diedit:
+         * Nilai Shipping - pembayaran lain - retur terpakai pada pembayaran lain.
+         *
+         * Efek bayar_no yang sedang diedit sengaja dikeluarkan agar
+         * item existing tetap bisa tampil dan tetap tercentang.
+         */
+        CASE
+            WHEN src.shipping_count = 1
+                THEN GREATEST(
+                    src.shipping_amount
+                    - COALESCE(inv_pay_other.total_paid_invoice, 0)
+                    - COALESCE(ret_used_invoice_other.return_amount, 0),
+                    0
+                )
+            ELSE GREATEST(
+                src.shipping_amount
+                - COALESCE(pay_shipping_other.paid_amount, 0)
+                - COALESCE(ret_used_shipping_other.return_amount, 0),
+                0
+            )
+        END AS sisa_before_current
 
     FROM
     (
@@ -185,18 +217,31 @@ $sqlShipping = "
             TRIM(di.shipping_no) AS shipping_no,
             MAX(di.shipping_date) AS shipping_date,
             MAX(di.order_no) AS order_no,
+
             SUM(
                 CASE
                     WHEN COALESCE(di.total, 0) > 0
                         THEN COALESCE(di.total, 0)
                     ELSE COALESCE(di.subtotal, 0)
                 END
-            ) AS shipping_amount
+            ) AS shipping_amount,
+
+            (
+                SELECT COUNT(DISTINCT TRIM(di_count.shipping_no))
+                FROM det_invoice di_count
+                WHERE di_count.invoice_no = hi.invoice_no
+                  AND COALESCE(TRIM(di_count.shipping_no), '') <> ''
+            ) AS shipping_count
+
         FROM head_invoice hi
         INNER JOIN det_invoice di
             ON di.invoice_no = hi.invoice_no
+
         WHERE hi.customer_id = ?
           AND COALESCE(TRIM(di.shipping_no), '') <> ''
+          AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
+          AND UPPER(COALESCE(TRIM(di.shipping_no), '')) NOT LIKE '%CP-MCP%'
+
         GROUP BY
             hi.invoice_no,
             hi.invoice_date,
@@ -210,45 +255,102 @@ $sqlShipping = "
     LEFT JOIN
     (
         SELECT
-            invoice_no,
-            TRIM(shipping_no) AS shipping_no,
-            SUM(COALESCE(bayar_amount, 0)) AS paid_amount
-        FROM detail_bayar
-        WHERE bayar_no <> ?
-          AND COALESCE(TRIM(shipping_no), '') <> ''
-        GROUP BY invoice_no, TRIM(shipping_no)
-    ) pay_other
-        ON pay_other.invoice_no = src.invoice_no
-       AND pay_other.shipping_no = src.shipping_no
+            db.invoice_no,
+            TRIM(db.shipping_no) AS shipping_no,
+            SUM(COALESCE(db.bayar_amount, 0)) AS paid_amount
+        FROM detail_bayar db
+        WHERE db.bayar_no <> ?
+          AND COALESCE(TRIM(db.shipping_no), '') <> ''
+        GROUP BY db.invoice_no, TRIM(db.shipping_no)
+    ) pay_shipping_other
+        ON pay_shipping_other.invoice_no = src.invoice_no
+       AND pay_shipping_other.shipping_no = src.shipping_no
 
     LEFT JOIN
     (
         SELECT
-            invoice_no,
-            TRIM(shipping_no) AS shipping_no,
-            SUM(COALESCE(return_amount, 0)) AS return_amount
-        FROM head_retur_invoice
-        WHERE LOWER(COALESCE(status, 'Open')) <> 'cancelled'
-        GROUP BY invoice_no, TRIM(shipping_no)
-    ) ret_shipping
-        ON ret_shipping.invoice_no = src.invoice_no
-       AND ret_shipping.shipping_no = src.shipping_no
+            db.invoice_no,
+            SUM(COALESCE(db.bayar_amount, 0)) AS total_paid_invoice
+        FROM detail_bayar db
+        WHERE db.bayar_no <> ?
+        GROUP BY db.invoice_no
+    ) inv_pay_other
+        ON inv_pay_other.invoice_no = src.invoice_no
+
+    LEFT JOIN
+    (
+        SELECT
+            used.invoice_no,
+            used.shipping_no,
+            SUM(COALESCE(hri.return_amount, 0)) AS return_amount
+        FROM
+        (
+            SELECT DISTINCT
+                db.invoice_no,
+                TRIM(db.shipping_no) AS shipping_no,
+                TRIM(db.return_id) AS return_id
+            FROM detail_bayar db
+            WHERE db.bayar_no <> ?
+              AND COALESCE(TRIM(db.shipping_no), '') <> ''
+              AND COALESCE(TRIM(db.return_id), '') <> ''
+        ) used
+        INNER JOIN head_retur_invoice hri
+            ON TRIM(hri.return_id) = used.return_id
+           AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        GROUP BY used.invoice_no, used.shipping_no
+    ) ret_used_shipping_other
+        ON ret_used_shipping_other.invoice_no = src.invoice_no
+       AND ret_used_shipping_other.shipping_no = src.shipping_no
+
+    LEFT JOIN
+    (
+        SELECT
+            used.invoice_no,
+            SUM(COALESCE(hri.return_amount, 0)) AS return_amount
+        FROM
+        (
+            SELECT DISTINCT
+                db.invoice_no,
+                TRIM(db.return_id) AS return_id
+            FROM detail_bayar db
+            WHERE db.bayar_no <> ?
+              AND COALESCE(TRIM(db.return_id), '') <> ''
+        ) used
+        INNER JOIN head_retur_invoice hri
+            ON TRIM(hri.return_id) = used.return_id
+           AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+        GROUP BY used.invoice_no
+    ) ret_used_invoice_other
+        ON ret_used_invoice_other.invoice_no = src.invoice_no
 
     WHERE
         src.shipping_amount > 0
         AND (
-            GREATEST(
-                src.shipping_amount - COALESCE(pay_other.paid_amount, 0),
-                0
-            ) > 0.01
-            OR COALESCE(ret_shipping.return_amount, 0) > 0.01
-        )
+            CASE
+                WHEN src.shipping_count = 1
+                    THEN GREATEST(
+                        src.shipping_amount
+                        - COALESCE(inv_pay_other.total_paid_invoice, 0)
+                        - COALESCE(ret_used_invoice_other.return_amount, 0),
+                        0
+                    )
+                ELSE GREATEST(
+                    src.shipping_amount
+                    - COALESCE(pay_shipping_other.paid_amount, 0)
+                    - COALESCE(ret_used_shipping_other.return_amount, 0),
+                    0
+                )
+            END
+        ) > 0.01
 
-    ORDER BY src.invoice_date DESC, src.shipping_date DESC, src.shipping_no DESC
+    ORDER BY
+        src.invoice_date DESC,
+        src.shipping_date DESC,
+        src.shipping_no DESC
 ";
 
 $stmt = mysqli_prepare($conn, $sqlShipping);
-mysqli_stmt_bind_param($stmt, 'ss', $customerId, $bayarNo);
+mysqli_stmt_bind_param($stmt, 'sssss', $customerId, $bayarNo, $bayarNo, $bayarNo, $bayarNo);
 mysqli_stmt_execute($stmt);
 $res = mysqli_stmt_get_result($stmt);
 
@@ -271,19 +373,37 @@ $currentReturnAmount = 0.0;
 $stmt = mysqli_prepare(
     $conn,
     "SELECT
-        return_id,
-        return_date,
-        invoice_no,
-        TRIM(shipping_no) AS shipping_no,
-        return_amount,
-        reason_return
-     FROM head_retur_invoice
-     WHERE customer_id = ?
-       AND LOWER(COALESCE(status, 'Open')) <> 'cancelled'
-     ORDER BY return_date DESC, return_id DESC"
+        hri.return_id,
+        hri.return_date,
+        hri.return_amount,
+        hri.grand_total,
+        CASE
+            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                THEN COALESCE(hri.grand_total, 0)
+            ELSE COALESCE(hri.return_amount, 0)
+        END AS effective_return_amount,
+        hri.reason_return
+     FROM head_retur_invoice hri
+     WHERE hri.customer_id = ?
+       AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+
+       /*
+        * Saat edit:
+        * - retur yang sedang dipakai bayar_no ini tetap ditampilkan;
+        * - retur yang dipakai pembayaran lain tidak ditampilkan.
+        */
+       AND NOT EXISTS (
+           SELECT 1
+           FROM detail_bayar db_used
+           WHERE TRIM(COALESCE(db_used.return_id, '')) = TRIM(hri.return_id)
+             AND db_used.bayar_no <> ?
+       )
+
+     ORDER BY hri.return_date DESC, hri.return_id DESC"
 );
 
-mysqli_stmt_bind_param($stmt, 's', $customerId);
+mysqli_stmt_bind_param($stmt, 'ss', $customerId, $bayarNo);
 mysqli_stmt_execute($stmt);
 $res = mysqli_stmt_get_result($stmt);
 
@@ -444,6 +564,14 @@ $saldoTitipAvailable =
                     </tr>
                 </thead>
                 <tbody>
+                <?php if (empty($rows)): ?>
+                    <tr>
+                        <td colspan="8" class="text-center" style="padding:12px;color:#777;">
+                            Tidak ada invoice/shipping NON CP-MCP outstanding.
+                            Transaksi tetap dapat diedit sebagai Retur Customer standalone.
+                        </td>
+                    </tr>
+                <?php endif; ?>
                 <?php foreach ($rows as $i => $row): ?>
                     <?php
                         $key = trim((string)$row['invoice_no']) . '|' . trim((string)$row['shipping_no']);
@@ -492,9 +620,7 @@ $saldoTitipAvailable =
                     <?php foreach ($returnOptions as $ret): ?>
                         <option
                             value="<?= h($ret['return_id']) ?>"
-                            data-return-amount="<?= h($ret['return_amount']) ?>"
-                            data-invoice-no="<?= h($ret['invoice_no']) ?>"
-                            data-shipping-no="<?= h($ret['shipping_no']) ?>"
+                            data-return-amount="<?= h($ret['effective_return_amount']) ?>"
                             data-reason-return="<?= h($ret['reason_return']) ?>"
                             <?= $currentReturnId === (string)$ret['return_id'] ? 'selected' : '' ?>
                         >
@@ -798,8 +924,6 @@ $(document).ready(function () {
         const opt = $(this).find(':selected');
         const returnId = $(this).val() || '';
         const amount = parseFloat(opt.attr('data-return-amount')) || 0;
-        const invoiceNo = opt.attr('data-invoice-no') || '';
-        const shippingNo = opt.attr('data-shipping-no') || '';
         const reason = opt.attr('data-reason-return') || '';
 
         $('#retur_invoice').val(amount);
@@ -835,16 +959,6 @@ $(document).ready(function () {
 
         if (reason) {
             html += ' | ' + reason;
-        }
-
-        if (invoiceNo || shippingNo) {
-            html += '<br><span style="font-weight:400;">Referensi retur: ';
-
-            if (invoiceNo) html += 'Invoice ' + invoiceNo;
-            if (invoiceNo && shippingNo) html += ' | ';
-            if (shippingNo) html += 'Shipping ' + shippingNo;
-
-            html += '</span>';
         }
 
         info
@@ -914,8 +1028,16 @@ $(document).ready(function () {
             : 0;
         const total = cash + titip;
 
-        if (selected.count < 1) {
-            alert('Minimal pilih 1 Invoice / Shipping.');
+        const selectedReturnId =
+            String($('#return_id').val() || '').trim();
+
+        if (
+            selected.count < 1 &&
+            selectedReturnId === ''
+        ) {
+            alert(
+                'Minimal pilih 1 Invoice / Shipping atau pilih 1 Retur Customer.'
+            );
             e.preventDefault();
             return false;
         }
