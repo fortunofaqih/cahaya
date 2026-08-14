@@ -1,8 +1,19 @@
 <?php
+/*
+ * RULE FINAL PIUTANG / AGING:
+ * - Invoice / Shipping CP-MCP tidak masuk transaksi Penjualan / Piutang.
+ * - Retur CP-MCP tetap dihitung standalone dengan nilai grand_total.
+ * - Retur normal memakai return_amount.
+ * - Pembayaran memakai detail_bayar.bayar_amount.
+ * - Titip terpakai tidak dikurangi lagi karena sudah termasuk bayar_amount.
+ * - Saldo titip belum terpakai hanya display.
+ */
+
 // PENTING LOGIKA TITIP:
 // - detail_titip.amount_in = uang titip masuk / saldo titip, TIDAK langsung mengurangi piutang.
-// - detail_bayar.titip_amount = uang titip yang SUDAH dipakai untuk pembayaran, INI yang mengurangi piutang.
-// - cash_amount + titip_amount = bayar_amount.
+// - detail_bayar.bayar_amount = total pembayaran (cash + titip yang sudah dipakai).
+// - detail_bayar.titip_amount hanya informasi porsi titip yang dipakai; jangan dikurangi dua kali.
+// - saldo titip yang BELUM terpakai hanya DISPLAY dan tidak mengurangi piutang.
 // modul/transaksi/cetak_aging_piutang_detail.php
 //
 // REVISI BESAR:
@@ -11,7 +22,7 @@
 // 3. Urutan kolom:
 //    Nama Customer | Awal | Penjualan | Bayar | Titip | Akhir |
 //    TITIP = saldo titip customer yang BELUM terpakai per akhir periode.
-//    Titip terpakai tetap mengurangi piutang secara internal.
+//    Titip terpakai sudah termasuk di bayar_amount dan tidak dikurangi lagi.
 //    1-30 Hari | 31-60 Hari | 61-90 Hari | Lebih | Belum Jatuh Tempo
 // 4. Sales Return / Retur Invoice mengurangi piutang.
 // 5. Kolom "Lebih" = outstanding >90 hari + saldo historis tanpa umur - Retur Invoice.
@@ -189,7 +200,10 @@ $invoiceGrossExpr = "
 /*
  * Filter yang sama diterapkan pada data invoice/customer.
  */
-$whereInvoice = " WHERE hi.invoice_date <= ? ";
+$whereInvoice = "
+    WHERE hi.invoice_date <= ?
+      AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
+";
 $params = [$endDate];
 $types = 's';
 
@@ -527,6 +541,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = db.invoice_no
             WHERE hb.customer_id = cob.customer_id
               AND hb.bayar_date >= cob.opening_date
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hb.bayar_date < ?
               AND (
                     hi_old.invoice_no IS NULL
@@ -552,6 +568,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = db.invoice_no
             WHERE hb.customer_id = cob.customer_id
               AND hb.bayar_date >= cob.opening_date
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hb.bayar_date BETWEEN ? AND ?
               AND (
                     hi_old.invoice_no IS NULL
@@ -577,6 +595,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = db.invoice_no
             WHERE hb.customer_id = cob.customer_id
               AND hb.bayar_date >= cob.opening_date
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hb.bayar_date <= ?
               AND (
                     hi_old.invoice_no IS NULL
@@ -594,6 +614,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = db.invoice_no
             WHERE hb.customer_id = cob.customer_id
               AND hb.bayar_date >= cob.opening_date
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hb.bayar_date < ?
               AND (
                     hi_old.invoice_no IS NULL
@@ -610,6 +632,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = db.invoice_no
             WHERE hb.customer_id = cob.customer_id
               AND hb.bayar_date >= cob.opening_date
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hb.bayar_date BETWEEN ? AND ?
               AND (
                     hi_old.invoice_no IS NULL
@@ -626,6 +650,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = db.invoice_no
             WHERE hb.customer_id = cob.customer_id
               AND hb.bayar_date >= cob.opening_date
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hb.bayar_date <= ?
               AND (
                     hi_old.invoice_no IS NULL
@@ -641,6 +667,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = hri.invoice_no
             WHERE hri.customer_id = cob.customer_id
               AND hri.return_date >= cob.opening_date
+              AND UPPER(COALESCE(hri.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(hri.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hri.return_date < ?
               AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
               AND (
@@ -656,6 +684,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = hri.invoice_no
             WHERE hri.customer_id = cob.customer_id
               AND hri.return_date >= cob.opening_date
+              AND UPPER(COALESCE(hri.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(hri.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hri.return_date BETWEEN ? AND ?
               AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
               AND (
@@ -671,6 +701,8 @@ $sqlOpening = "
                 ON hi_old.invoice_no = hri.invoice_no
             WHERE hri.customer_id = cob.customer_id
               AND hri.return_date >= cob.opening_date
+              AND UPPER(COALESCE(hri.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(hri.shipping_no, '')) NOT LIKE '%CP-MCP%'
               AND hri.return_date <= ?
               AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
               AND (
@@ -725,7 +757,6 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     $customers[$customerKey]['amounts']['saldo_awal'] +=
         $openingAmount
         - $legacyCashBefore
-        - $legacyTitipBefore
         - $legacyReturBefore;
 
     // Mutasi periode terhadap saldo historis tetap tampil pada kolom masing-masing.
@@ -741,7 +772,6 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     $openingAtEnd =
         $openingAmount
         - $legacyCashCutoff
-        - $legacyTitipCutoff
         - $legacyReturCutoff;
 
     $customers[$customerKey]['amounts']['b_lebih'] +=
@@ -834,7 +864,6 @@ while (
         $openingInvoice =
             $invoiceGross
             - $paymentBefore
-            - $titipBefore
             - $returnBefore;
 
         $amounts['saldo_awal'] +=
@@ -873,8 +902,7 @@ while (
      */
     $outstandingBeforeReturn =
         $invoiceGross
-        - $paymentCutoff
-        - $titipCutoff;
+        - $paymentCutoff;
 
     if ($outstandingBeforeReturn > 0.0001) {
         $ageDays = 0;
@@ -929,6 +957,148 @@ while (
 }
 
 mysqli_stmt_close($stmtInvoice);
+
+
+/*
+ * ============================================================
+ * RETUR CP-MCP STANDALONE
+ * ============================================================
+ *
+ * Invoice/Shipping CP-MCP adalah dokumen internal dan tidak masuk Penjualan/Aging.
+ * Namun return customer tetap mengurangi piutang sebagai kredit standalone.
+ *
+ * Nilai retur CP-MCP = head_retur_invoice.grand_total.
+ * Retur normal tetap ditangani oleh relasi invoice dan memakai return_amount.
+ */
+$whereCpRetur = "
+    WHERE hri.return_date <= ?
+      AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+      AND (
+            UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+            OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+          )
+      AND (
+            cob.opening_date IS NULL
+            OR hri.return_date >= cob.opening_date
+          )
+";
+
+$cpReturParams = [
+    $startDate,
+    $startDate,
+    $endDate,
+    $endDate
+];
+$cpReturTypes = 'ssss';
+
+if ($filterBy === 'grup' && $filterValue !== '') {
+    $whereCpRetur .= " AND COALESCE(c.area_code, '') = ? ";
+    $cpReturParams[] = $filterValue;
+    $cpReturTypes .= 's';
+} elseif ($filterBy === 'kota' && $filterValue !== '') {
+    $whereCpRetur .= "
+        AND COALESCE(
+                NULLIF(c.city, ''),
+                NULLIF(hri.customer_city, '')
+            ) = ?
+    ";
+    $cpReturParams[] = $filterValue;
+    $cpReturTypes .= 's';
+} elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
+    $whereCpRetur .= " AND hri.customer_id = ? ";
+    $cpReturParams[] = $filterValue;
+    $cpReturTypes .= 's';
+}
+
+$sqlCpRetur = "
+    SELECT
+        hri.customer_id,
+        COALESCE(
+            NULLIF(c.customer, ''),
+            NULLIF(hri.customer_name, ''),
+            '-'
+        ) AS customer_name,
+        COALESCE(
+            NULLIF(c.city, ''),
+            NULLIF(hri.customer_city, ''),
+            'TANPA KOTA'
+        ) AS city,
+
+        COALESCE(SUM(
+            CASE
+                WHEN hri.return_date < ?
+                    THEN COALESCE(hri.grand_total, 0)
+                ELSE 0
+            END
+        ), 0) AS retur_before,
+
+        COALESCE(SUM(
+            CASE
+                WHEN hri.return_date BETWEEN ? AND ?
+                    THEN COALESCE(hri.grand_total, 0)
+                ELSE 0
+            END
+        ), 0) AS retur_period,
+
+        COALESCE(SUM(COALESCE(hri.grand_total, 0)), 0) AS retur_cutoff
+
+    FROM head_retur_invoice hri
+    LEFT JOIN m_customer c
+        ON c.customer_id = hri.customer_id
+    LEFT JOIN customer_opening_balance cob
+        ON cob.customer_id = hri.customer_id
+       AND LOWER(COALESCE(cob.status, 'Active')) = 'active'
+
+    $whereCpRetur
+
+    GROUP BY
+        hri.customer_id,
+        c.customer,
+        hri.customer_name,
+        c.city,
+        hri.customer_city
+";
+
+$stmtCpRetur = mysqli_prepare($conn, $sqlCpRetur);
+mysqli_stmt_bind_param($stmtCpRetur, $cpReturTypes, ...$cpReturParams);
+mysqli_stmt_execute($stmtCpRetur);
+$resCpRetur = mysqli_stmt_get_result($stmtCpRetur);
+
+while ($cr = mysqli_fetch_assoc($resCpRetur)) {
+    $customerId = trim((string)($cr['customer_id'] ?? ''));
+    $customerName = trim((string)($cr['customer_name'] ?? ''));
+    $city = normalizeCity($cr['city'] ?? '');
+
+    $customerKey =
+        $customerId !== ''
+            ? $customerId
+            : $city . '|' . $customerName;
+
+    if (!isset($customers[$customerKey])) {
+        $customers[$customerKey] = [
+            'customer_id' => $customerId,
+            'customer_name' => $customerName !== '' ? $customerName : '-',
+            'city' => $city,
+            'opening_date' => '',
+            'amounts' => initAmountRow(),
+        ];
+    }
+
+    $returBefore = (float)($cr['retur_before'] ?? 0);
+    $returPeriod = (float)($cr['retur_period'] ?? 0);
+    $returCutoff = (float)($cr['retur_cutoff'] ?? 0);
+
+    // Retur sebelum periode sudah membentuk saldo awal.
+    $customers[$customerKey]['amounts']['saldo_awal'] -= $returBefore;
+
+    // Retur pada periode tampil sebagai mutasi retur.
+    $customers[$customerKey]['amounts']['retur'] += $returPeriod;
+
+    // Sesuai rule Aging, seluruh retur ditempatkan sebagai pengurang kolom Lebih.
+    $customers[$customerKey]['amounts']['b_lebih'] -= $returCutoff;
+}
+
+mysqli_stmt_close($stmtCpRetur);
 
 /*
  * ============================================================
@@ -1066,10 +1236,7 @@ foreach ($customers as $key => &$customer) {
         $a['saldo_awal']
         + $a['penjualan']
         - $a['bayar']
-        - $a['titip_used']
-		- $a['titip']
         - $a['retur'];
-		 $a['b_lebih'] -= $a['titip'];
 
     $activityTotal =
         abs($a['saldo_awal'])

@@ -173,8 +173,7 @@ $detailSql = "
         d.uom_pack,
         d.return_quantity_detail,
         d.uom_detail,
-        d.price_unit,
-        d.original_subtotal,
+        d.price,
         d.return_subtotal,
         d.remarks_detail
     FROM detail_retur_invoice d
@@ -328,7 +327,7 @@ if ($detailStmt) {
 }
 .return-table {
     width: 100%;
-    min-width: 2450px;
+    min-width: 1180px;
     border-collapse: collapse;
     font-size: 10.5px;
 }
@@ -518,11 +517,11 @@ if ($detailStmt) {
                     <input type="text" name="return_id" value="<?= returnH($return_id_search) ?>"
                            placeholder="Cari Return ID...">
                 </div>
-                <div class="return-ff">
+                <!--<div class="return-ff">
                     <label>Shipping No.</label>
                     <input type="text" name="shipping_no" value="<?= returnH($shipping_no_search) ?>"
                            placeholder="Cari Shipping No...">
-                </div>
+                </div>-->
                 <div style="display:flex;gap:6px;">
                     <button type="submit" class="return-btn-vs return-btn-dark">
                         <span class="return-app-icon"><?= returnIcon('search') ?></span>
@@ -544,36 +543,17 @@ if ($detailStmt) {
                     <th class="return-sticky-action">Aksi</th>
                     <th>Return ID</th>
                     <th>Return Date</th>
-                    <th>Invoice No.</th>
-                    <th>Invoice Date</th>
-                    <th>Shipping No.</th>
-                    <th>Shipping Date</th>
+                    <th>Customer ID</th>
                     <th>Order No.</th>
-                    <th>Customer Name</th>
-                    <th>Customer Address</th>
-                    <th>Customer City</th>
-                    <th>Currency</th>
                     <th>Reason Return</th>
+                    <th>Invoice No.</th>
                     <th>Remarks Return</th>
-                    <th>Subtotal Invoice</th>
-                    <th>Grand Total Invoice</th>
-                    <th>Down Payment</th>
-                    <th>Titip</th>
-                    <th>Payment Balance</th>
-                    <th>Return Amount</th>
-                    <th>Balance After Return</th>
-                    <th>Status</th>
-                    <th>Approval</th>
-                    <th>User Created</th>
-                    <th>Date Created</th>
-                    <th>User Modified</th>
-                    <th>Date Modified</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (!$result || mysqli_num_rows($result) === 0): ?>
                     <tr>
-                        <td colspan="27" style="text-align:center;color:#777;padding:15px;">
+                        <td colspan="8" style="text-align:center;color:#777;padding:15px;">
                             Tidak ada data Sales Return.
                         </td>
                     </tr>
@@ -644,34 +624,15 @@ if ($detailStmt) {
                                 </span>
                             </td>
                             <td><?= returnH(formatReturnDate($row['return_date'])) ?></td>
-                            <td><?= returnH($row['invoice_no']) ?></td>
-                            <td><?= returnH(formatReturnDate($row['invoice_date'])) ?></td>
-                            <td><?= returnH($row['shipping_no']) ?></td>
-                            <td><?= returnH(formatReturnDate($row['shipping_date'])) ?></td>
+                            <td><?= returnH($row['customer_id']) ?></td>
                             <td><?= returnH($row['order_no']) ?></td>
-                            <td><?= returnH($row['customer_name']) ?></td>
-                            <td><?= returnH($row['customer_address']) ?></td>
-                            <td><?= returnH($row['customer_city']) ?></td>
-                            <td><?= returnH($row['currency']) ?></td>
                             <td><?= returnH($row['reason_return']) ?></td>
+                            <td><?= returnH($row['invoice_no']) ?></td>
                             <td><?= returnH($row['remarks_return']) ?></td>
-                            <td class="return-text-right">Rp <?= returnH(formatReturnMoney($row['subtotal'])) ?></td>
-                            <td class="return-text-right">Rp <?= returnH(formatReturnMoney($row['grand_total'])) ?></td>
-                            <td class="return-text-right">Rp <?= returnH(formatReturnMoney($row['down_payment'])) ?></td>
-                            <td class="return-text-right">Rp <?= returnH(formatReturnMoney($row['titip_applied'])) ?></td>
-                            <td class="return-text-right">Rp <?= returnH(formatReturnMoney($row['payment_balance'])) ?></td>
-                            <td class="return-text-right return-text-bold">Rp <?= returnH(formatReturnMoney($row['return_amount'])) ?></td>
-                            <td class="return-text-right return-text-bold">Rp <?= returnH(formatReturnMoney($row['remaining_invoice_balance'])) ?></td>
-                            <td class="return-text-center"><span class="<?= returnH($statusClass) ?>"><?= returnH($statusText) ?></span></td>
-                            <td class="return-text-center"><span class="<?= returnH($approvalClass) ?>"><?= returnH($approvalText) ?></span></td>
-                            <td><?= returnH($row['create_user']) ?></td>
-                            <td><?= returnH($row['date_created']) ?></td>
-                            <td><?= returnH($row['user_modified']) ?></td>
-                            <td><?= returnH($row['date_modified']) ?></td>
                         </tr>
 
                         <tr id="<?= returnH($detailTargetId) ?>" class="return-detail-row">
-                            <td colspan="27" class="return-detail-cell">
+                            <td colspan="8" class="return-detail-cell">
                                 <div class="return-detail-box">
                                     <div class="return-detail-title">
                                         Detail Sales Return <?= returnH($typeLabel) ?>: <?= returnH($returnId) ?>
@@ -679,70 +640,38 @@ if ($detailStmt) {
                                     <table class="return-detail-table">
                                         <thead>
                                             <tr>
-                                                <th>No.</th>
-                                                <th>Shipping No.</th>
-                                                <th>Invoice No.</th>
-                                                <th>Order No.</th>
                                                 <th>Inventory ID</th>
                                                 <th>Inventory Name</th>
-
-                                                <?php if (!$isMcp): ?>
-                                                    <th>Original Qty</th>
-                                                    <th>Original UoM</th>
-                                                    <th>Original Qty Pack</th>
-                                                    <th>Original UoM Pack</th>
-                                                <?php endif; ?>
-
                                                 <th>Qty Return</th>
                                                 <th>UoM</th>
                                                 <th>Qty Pack Return</th>
                                                 <th>UoM Pack</th>
                                                 <th>Qty Detail Return</th>
                                                 <th>UoM Detail</th>
-                                                <th>Price Unit</th>
-
-                                                <?php if (!$isMcp): ?>
-                                                    <th>Original Subtotal</th>
-                                                <?php endif; ?>
-
-                                                <th>Return Subtotal</th>
+                                                <th>Price</th>
+                                                <th>Subtotal</th>
                                                 <th>Remarks</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                         <?php if (empty($detailRows)): ?>
                                             <tr>
-                                                <td colspan="<?= $isMcp ? 15 : 20 ?>" class="return-text-center">
+                                                <td colspan="11" class="return-text-center">
                                                     Detail inventory tidak ditemukan.
                                                 </td>
                                             </tr>
                                         <?php else: ?>
                                             <?php foreach ($detailRows as $detailIndex => $detailRow): ?>
                                                 <tr>
-                                                    <td class="return-text-center"><?= $detailIndex + 1 ?></td>
-                                                    <td><?= returnH($detailRow['shipping_no']) ?></td>
-                                                    <td><?= returnH($detailRow['invoice_no']) ?></td>
-                                                    <td><?= returnH($detailRow['order_no']) ?></td>
                                                     <td><?= returnH($detailRow['inventory_id']) ?></td>
                                                     <td><?= returnH($detailRow['inventory_name']) ?></td>
-                                                    <?php if (!$isMcp): ?>
-                                                        <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['original_quantity'])) ?></td>
-                                                        <td><?= returnH($detailRow['original_uom']) ?></td>
-                                                        <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['original_quantity_pack'])) ?></td>
-                                                        <td><?= returnH($detailRow['original_uom_pack']) ?></td>
-                                                    <?php endif; ?>
                                                     <td class="return-text-right return-text-bold"><?= returnH(formatReturnMoney($detailRow['return_quantity'])) ?></td>
                                                     <td><?= returnH($detailRow['uom']) ?></td>
                                                     <td class="return-text-right return-text-bold"><?= returnH(formatReturnMoney($detailRow['return_quantity_pack'])) ?></td>
                                                     <td><?= returnH($detailRow['uom_pack']) ?></td>
                                                     <td class="return-text-right"><?= returnH(formatReturnMoney($detailRow['return_quantity_detail'])) ?></td>
                                                     <td><?= returnH($detailRow['uom_detail']) ?></td>
-                                                    <td class="return-text-right">Rp <?= returnH(formatReturnMoney($detailRow['price_unit'])) ?></td>
-
-                                                    <?php if (!$isMcp): ?>
-                                                        <td class="return-text-right">Rp <?= returnH(formatReturnMoney($detailRow['original_subtotal'])) ?></td>
-                                                    <?php endif; ?>
-
+                                                    <td class="return-text-right">Rp <?= returnH(formatReturnMoney($detailRow['price'])) ?></td>
                                                     <td class="return-text-right return-text-bold">Rp <?= returnH(formatReturnMoney($detailRow['return_subtotal'])) ?></td>
                                                     <td><?= returnH($detailRow['remarks_detail']) ?></td>
                                                 </tr>
