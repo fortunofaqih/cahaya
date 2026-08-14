@@ -2,6 +2,7 @@
 // modul/transaksi/update_return_mcp.php
 // Update Sales Return CP-MCP - sinkron dengan relasi internal terbaru.
 //
+// Sales Return ID dapat diubah dengan sinkronisasi referensi.
 // Internal SO/SJ/INV dipertahankan nomornya.
 // Sales Order MCP asli + Shipping No MCP asli disimpan di remarks_return.
 // Calculated Detail Return menjadi subtotal/grand_total internal invoice + return.
@@ -314,6 +315,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     );
 }
 
+$originalReturnId = trim((string)($_POST['original_return_id'] ?? ''));
 $returnId = trim((string)($_POST['return_id'] ?? ''));
 $returnDate = mcpUpdateParseDate($_POST['return_date'] ?? '');
 
@@ -338,6 +340,7 @@ $items = $_POST['items'] ?? [];
 $user = (string)($_SESSION['username'] ?? 'SYSTEM');
 
 if (
+    $originalReturnId === '' ||
     $returnId === '' ||
     !$returnDate ||
     $externalOrderNo === '' ||
@@ -348,7 +351,7 @@ if (
         'danger',
         'Header Sales Return CP-MCP belum lengkap.',
         'edit_return_mcp',
-        $returnId
+        $originalReturnId
     );
 }
 
@@ -357,7 +360,7 @@ if ($reasonReturn === '') {
         'danger',
         'Reason Return wajib diisi.',
         'edit_return_mcp',
-        $returnId
+        $originalReturnId
     );
 }
 
@@ -366,7 +369,7 @@ if (!is_array($items) || !$items) {
         'danger',
         'Detail inventory retur belum diisi.',
         'edit_return_mcp',
-        $returnId
+        $originalReturnId
     );
 }
 
@@ -396,7 +399,7 @@ try {
          FOR UPDATE"
     );
 
-    mysqli_stmt_bind_param($stmt, 's', $returnId);
+    mysqli_stmt_bind_param($stmt, 's', $originalReturnId);
     mysqli_stmt_execute($stmt);
 
     $existing = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
@@ -425,7 +428,7 @@ try {
         trim((string)($existing['order_no'] ?? ''));
 
     $isMcp =
-        stripos($returnId, '/CP-MCP/') !== false ||
+        stripos($originalReturnId, '/CP-MCP/') !== false ||
         strpos($internalInvoiceNo, 'CP-MCP/INV/') === 0;
 
     if (!$isMcp) {
@@ -442,6 +445,42 @@ try {
         throw new RuntimeException(
             'Internal reference CP-MCP tidak lengkap.'
         );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDASI SALES RETURN ID BARU
+    |--------------------------------------------------------------------------
+    */
+    if ($returnId !== $originalReturnId) {
+        $stmt = mysqli_prepare(
+            $conn,
+            "SELECT 1
+             FROM head_retur_invoice
+             WHERE return_id = ?
+             LIMIT 1"
+        );
+
+        if (!$stmt) {
+            throw new RuntimeException(
+                'Gagal mengecek Sales Return ID baru: ' . mysqli_error($conn)
+            );
+        }
+
+        mysqli_stmt_bind_param($stmt, 's', $returnId);
+        mysqli_stmt_execute($stmt);
+
+        $duplicateReturnId = (bool)mysqli_fetch_assoc(
+            mysqli_stmt_get_result($stmt)
+        );
+
+        mysqli_stmt_close($stmt);
+
+        if ($duplicateReturnId) {
+            throw new RuntimeException(
+                'Sales Return ID ' . $returnId . ' sudah digunakan. Gunakan ID lain.'
+            );
+        }
     }
 
     /*
@@ -747,7 +786,7 @@ try {
          WHERE return_id = ?"
     );
 
-    mysqli_stmt_bind_param($stmt, 's', $returnId);
+    mysqli_stmt_bind_param($stmt, 's', $originalReturnId);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
 
@@ -934,6 +973,7 @@ try {
         $conn,
         'head_retur_invoice',
         [
+            'return_id' => $returnId,
             'return_date' => $returnDate,
             'invoice_no' => $internalInvoiceNo,
             'invoice_date' => $returnDate,
@@ -959,8 +999,45 @@ try {
             'date_modified' => date('Y-m-d H:i:s')
         ],
         'return_id',
-        $returnId
+        $originalReturnId
     );
+
+    /*
+    |--------------------------------------------------------------------------
+    | SINKRONKAN REFERENSI RETURN ID PADA PEMBAYARAN
+    |--------------------------------------------------------------------------
+    *
+    * Jika Sales Return ID diganti, link audit pada detail_bayar juga harus
+    * mengikuti agar histori pembayaran/retur tidak putus.
+    */
+    if (
+        $returnId !== $originalReturnId &&
+        mcpUpdateColumnExists($conn, 'detail_bayar', 'return_id')
+    ) {
+        $stmt = mysqli_prepare(
+            $conn,
+            "UPDATE detail_bayar
+             SET return_id = ?
+             WHERE return_id = ?"
+        );
+
+        if (!$stmt) {
+            throw new RuntimeException(
+                'Gagal prepare sinkronisasi return_id pada detail_bayar: ' .
+                mysqli_error($conn)
+            );
+        }
+
+        mysqli_stmt_bind_param(
+            $stmt,
+            'ss',
+            $returnId,
+            $originalReturnId
+        );
+
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -1030,6 +1107,6 @@ try {
         'danger',
         'Error: ' . $e->getMessage(),
         'edit_return_mcp',
-        $returnId
+        $originalReturnId
     );
 }

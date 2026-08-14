@@ -304,6 +304,12 @@ switch ($page) {
     case 'cetak_rekap_detail_penjualan':
         include 'modul/transaksi/cetak_rekap_detail_penjualan.php';
         break;
+    case 'register_penjualan_global_detail':
+        include 'modul/transaksi/register_penjualan_global_detail.php';
+        break;
+    case 'cetak_register_penjualan_global_detail':
+        include 'modul/transaksi/cetak_register_penjualan_global_detail.php';
+        break;
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';

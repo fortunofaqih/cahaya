@@ -438,12 +438,12 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
 
     <div class="mcp-banner">
         <i class="fa fa-pen-to-square"></i>
-        Edit Sales Return CP-MCP — nomor internal dikelola otomatis oleh sistem.
+        Edit Sales Return CP-MCP — Sales Return ID dapat diubah, sedangkan nomor internal SO/SJ/INV tetap dipertahankan.
     </div>
 
     <form method="POST" action="index.php?page=update_return_mcp" id="returnMcpForm">
 
-        <input type="hidden" name="return_id" value="<?= h($head['return_id']) ?>">
+        <input type="hidden" name="original_return_id" value="<?= h($head['return_id']) ?>">
 
         <input type="hidden" name="internal_order_no" value="<?= h($head['order_no']) ?>">
         <input type="hidden" name="internal_shipping_no" value="<?= h($head['shipping_no']) ?>">
@@ -463,10 +463,17 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
                         <label>Sales Return ID</label>
                         <input
                             type="text"
+                            name="return_id"
+                            id="return_id"
                             class="return-id-input"
                             value="<?= h($head['return_id']) ?>"
-                            readonly
+                            maxlength="50"
+                            required
+                            autocomplete="off"
                         >
+                        <div class="small-note" style="margin-top:4px;">
+                            Sales Return ID dapat diubah. Sistem akan mengecek agar ID baru tidak duplikat.
+                        </div>
                     </div>
 
                     <div class="ff">
@@ -1077,6 +1084,13 @@ $(document).ready(function() {
 
     $('#returnMcpForm').on('submit', function(event) {
         syncRemarksReturn();
+
+        if (!String($('#return_id').val() || '').trim()) {
+            event.preventDefault();
+            alert('Sales Return ID wajib diisi.');
+            return false;
+        }
+
         if (!$('#customer_ref').val()) {
             event.preventDefault();
             alert('Customer Name wajib dipilih.');

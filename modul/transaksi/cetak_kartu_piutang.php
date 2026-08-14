@@ -583,8 +583,8 @@ $rows = [];
 $total_penjualan = 0;
 $total_retur = 0;
 $total_pembayaran = 0;
-$total_titip = 0; // titip terpakai
-$total_titip_masuk = 0; // titip masuk
+$total_titip_masuk = 0;
+$total_titip_terpakai = 0;
 
 $runningSaldo = $saldo_awal;
 
@@ -606,10 +606,12 @@ while ($row = mysqli_fetch_assoc($resRows)) {
     $total_penjualan += $penjualan;
     $total_retur += $retur;
     $total_pembayaran += $pembayaran;
-    if ($titip > 0) {
-        $total_titip_masuk += $titip;
+   if ($titip > 0) {
+    $total_titip_masuk += $titip;
+
+    } elseif ($titip < 0) {
+        $total_titip_terpakai += abs($titip);
     }
-    $total_titip += $titipEffectPiutang;
 
     $rows[] = $row;
 }
@@ -620,8 +622,7 @@ $saldo_akhir =
     $saldo_awal
     + $total_penjualan
     - $total_retur
-    - $total_pembayaran
-    - $total_titip;
+    - $total_pembayaran;
 
 $tgl_cetak = date('d-M-Y');
 ?>
@@ -1072,7 +1073,11 @@ $tgl_cetak = date('d-M-Y');
                 </td>
 
                 <td class="money-cell text-titip">
-                    <?php $totalMutasiTitip = $total_titip_masuk - $total_titip; ?>
+                    <?php
+                    $totalMutasiTitip =
+                        $total_titip_masuk
+                        - $total_titip_terpakai;
+                    ?>
                     <?= $totalMutasiTitip < 0 ? '- ' : '' ?>Rp <?= h(formatMoney(abs($totalMutasiTitip))) ?>
                 </td>
 

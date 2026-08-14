@@ -136,8 +136,8 @@ $saldo_awal = 0;
 $total_penjualan = 0;
 $total_retur = 0;
 $total_pembayaran = 0;
-$total_titip = 0; // efek titip ke piutang = 0 karena sudah termasuk bayar_amount
-$total_titip_masuk = 0; // informasi mutasi titip masuk periode
+$total_titip_masuk = 0;      // seluruh titip masuk
+$total_titip_terpakai = 0;   // titip yang sudah dipakai
 $saldo_akhir = 0;
 
 if ($customer_id !== '') {
@@ -508,21 +508,24 @@ mysqli_stmt_close($stmtSaldo);
         $titip = (float)($row['titip'] ?? 0);
         $titipEffectPiutang = (float)($row['titip_effect_piutang'] ?? 0);
 
-        $runningSaldo +=
-            $penjualan
-            - $retur
-            - $pembayaran
-            - $titipEffectPiutang;
+       $runningSaldo +=
+        $penjualan
+        - $retur
+        - $pembayaran;
 
         $row['sisa'] = $runningSaldo;
 
         $total_penjualan += $penjualan;
         $total_retur += $retur;
         $total_pembayaran += $pembayaran;
-        if ($titip > 0) {
-            $total_titip_masuk += $titip;
+       if ($titip > 0) {
+        // Titip masuk
+        $total_titip_masuk += $titip;
+
+        } elseif ($titip < 0) {
+            // Titip yang sudah dipakai untuk pembayaran
+            $total_titip_terpakai += abs($titip);
         }
-        $total_titip += $titipEffectPiutang;
 
         $rows[] = $row;
     }
@@ -861,9 +864,13 @@ mysqli_stmt_close($stmtSaldo);
                 <div class="label">Total Pembayaran</div>
                 <div class="value">Rp <?= h(formatMoney($total_pembayaran)) ?></div>
             </div>
-            <div class="summary-card titip-card">
+           <div class="summary-card titip-card">
                 <div class="label">Mutasi Titip</div>
-                <div class="value">Masuk Rp <?= h(formatMoney($total_titip_masuk)) ?> | Terpakai Rp <?= h(formatMoney($total_titip)) ?></div>
+                <div class="value">
+                    Masuk Rp <?= h(formatMoney($total_titip_masuk)) ?>
+                    | Terpakai Rp <?= h(formatMoney($total_titip_terpakai)) ?>
+                    | Saldo Rp <?= h(formatMoney($total_titip_masuk - $total_titip_terpakai)) ?>
+                </div>
             </div>
             <div class="summary-card">
                 <div class="label">Saldo Akhir</div>
@@ -967,7 +974,11 @@ mysqli_stmt_close($stmtSaldo);
                         <td class="money-cell text-retur">- Rp <?= h(formatMoney($total_retur)) ?></td>
                         <td class="money-cell">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
                         <td class="money-cell text-titip">
-                            <?php $totalMutasiTitip = $total_titip_masuk - $total_titip; ?>
+                            <?php
+                            $totalMutasiTitip =
+                                $total_titip_masuk
+                                - $total_titip_terpakai;
+                            ?>
                             <?= $totalMutasiTitip < 0 ? '- ' : '' ?>Rp <?= h(formatMoney(abs($totalMutasiTitip))) ?>
                         </td>
                         <td class="money-cell">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
