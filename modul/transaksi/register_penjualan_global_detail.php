@@ -32,7 +32,7 @@ function emptyGrandR(){
     return [
         'total'=>0.0,'penjualan'=>0.0,
         
-        'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),
+        'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
         'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
         'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR()
     ];
@@ -91,6 +91,10 @@ SELECT
 
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%KERTAS%'
         THEN 'KERTAS'
+
+    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
+     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SABLON%'
+        THEN 'PP SABLON'
 
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
         THEN 'PP'
@@ -182,6 +186,10 @@ LEFT JOIN detail_sales_order dso
 WHERE hi.invoice_date BETWEEN ? AND ?
 GROUP BY
     di.invoice_no,di.shipping_no,hi.invoice_date,hi.customer_name,category_group
+HAVING category_group IN (
+    'HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON',
+    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX'
+)
 ORDER BY
     {$orderColumn} {$orderDirection},
     hi.invoice_date ASC,
@@ -196,10 +204,18 @@ mysqli_stmt_bind_param($stmt,'ss',$startDate,$endDate);
 mysqli_stmt_execute($stmt);
 $res=mysqli_stmt_get_result($stmt);
 
+$cats=['HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX'];
 $rows=[];
 $grand=emptyGrandR();
 
 while($item=mysqli_fetch_assoc($res)){
+    $g = $item['category_group'];
+
+    // Hanya tampilkan invoice/shipping yang memiliki kategori detail yang diizinkan.
+    if ($g === null || !in_array($g, $cats, true)) {
+        continue;
+    }
+
     $key=$item['invoice_no'].'|'.$item['shipping_no'];
 
     if(!isset($rows[$key])){
@@ -210,15 +226,13 @@ while($item=mysqli_fetch_assoc($res)){
             'total'=>(float)$item['total_invoice_shipping'],
             'penjualan'=>(float)$item['penjualan_shipping'],
             
-            'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),
+            'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
             'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
             'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR()
         ];
         $grand['total']+=(float)$item['total_invoice_shipping'];
         $grand['penjualan']+=(float)$item['penjualan_shipping'];
     }
-
-    $g=$item['category_group'];
 
     // Tidak ada kategori LAIN LAIN pada versi detail.
     // Jika suatu inventory tidak cocok dengan seluruh kategori,
@@ -234,7 +248,7 @@ while($item=mysqli_fetch_assoc($res)){
     }
 }
 mysqli_stmt_close($stmt);
-$cats=['HD','HD WARNA','HD KRESEK','HD SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX'];
+
 ?>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
@@ -323,7 +337,7 @@ $cats=['HD','HD WARNA','HD KRESEK','HD SABLON','TALI KG','TALI LOS','BAHAN','TER
             </thead>
             <tbody>
             <?php if(empty($rows)): ?>
-                <tr><td colspan="32" class="text-center" style="padding:18px;color:#777">Tidak ada data invoice pada periode ini.</td></tr>
+                <tr><td colspan="35" class="text-center" style="padding:18px;color:#777">Tidak ada data untuk kategori HD, HD WARNA, HD KRESEK, HD SABLON, PP SABLON, TALI KG, TALI LOS, BAHAN, TERPAL, atau BOX pada periode ini.</td></tr>
             <?php else: foreach($rows as $row): ?>
                 <tr>
                     <td><?=h($row['shipping_no'])?></td>

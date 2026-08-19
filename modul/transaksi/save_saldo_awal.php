@@ -102,13 +102,7 @@ if (
 
 $opening_balance = (float)$opening_balance_raw;
 
-if ($opening_balance < 0) {
-    redirectWithAlert(
-        'error',
-        'Saldo awal tidak boleh negatif.',
-        'add_saldo_awal'
-    );
-}
+
 
 $username = trim(
     (string)($_SESSION['username'] ?? '')

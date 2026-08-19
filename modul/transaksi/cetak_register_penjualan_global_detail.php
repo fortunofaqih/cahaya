@@ -54,6 +54,7 @@ function emptyGrandR(){
         'HD WARNA'=>emptyCatR(),
         'HD KRESEK'=>emptyCatR(),
         'HD SABLON'=>emptyCatR(),
+        'PP SABLON'=>emptyCatR(),
         'TALI KG'=>emptyCatR(),
         'TALI LOS'=>emptyCatR(),
         'BAHAN'=>emptyCatR(),
@@ -97,6 +98,10 @@ SELECT
 
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%KERTAS%'
         THEN 'KERTAS'
+
+    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
+     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SABLON%'
+        THEN 'PP SABLON'
 
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
         THEN 'PP'
@@ -193,6 +198,10 @@ GROUP BY
     hi.invoice_date,
     hi.customer_name,
     category_group
+HAVING category_group IN (
+    'HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON',
+    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX'
+)
 ORDER BY
     {$orderColumn} {$orderDirection},
     hi.invoice_date ASC,
@@ -216,6 +225,7 @@ $cats = [
     'HD WARNA',
     'HD KRESEK',
     'HD SABLON',
+    'PP SABLON',
     'TALI KG',
     'TALI LOS',
     'BAHAN',
@@ -227,6 +237,13 @@ $rows = [];
 $grand = emptyGrandR();
 
 while ($item = mysqli_fetch_assoc($res)) {
+    $g = $item['category_group'];
+
+    // Hanya tampilkan invoice/shipping yang memiliki kategori detail yang diizinkan.
+    if ($g === null || !in_array($g, $cats, true)) {
+        continue;
+    }
+
     $key = $item['invoice_no'] . '|' . $item['shipping_no'];
 
     if (!isset($rows[$key])) {
@@ -245,8 +262,6 @@ while ($item = mysqli_fetch_assoc($res)) {
         $grand['total'] += (float)$item['total_invoice_shipping'];
         $grand['penjualan'] += (float)$item['penjualan_shipping'];
     }
-
-    $g = $item['category_group'];
 
     /*
      * Tidak ada kolom LAIN LAIN.
@@ -275,7 +290,7 @@ mysqli_stmt_close($stmt);
 <style>
 @page {
     size: A4 landscape;
-    margin: 7mm 5mm 7mm 5mm;
+    margin: 8mm 7mm;
 }
 
 * {
@@ -286,19 +301,58 @@ body {
     margin: 0;
     font-family: Arial, Helvetica, sans-serif;
     color: #000;
+    background: #f3f5f7;
+    font-size: 9px;
+    padding: 18px 28px;
+}
+
+.print-actions {
+    margin: 10px;
+    text-align: right;
+}
+
+.print-btn {
+    border: 0;
+    border-radius: 3px;
+    background: #1e3c72;
+    color: #fff;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.register-page {
+    width: 100%;
+    max-width: 1500px;
+    margin: 0 auto 22px;
+    padding: 16px 18px;
     background: #fff;
-    font-size: 6.5px;
+    border: 1px solid #d9dee5;
+    border-radius: 6px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+}
+
+.register-page:not(:last-child) {
+    page-break-after: always;
+    break-after: page;
 }
 
 .print-header {
     text-align: center;
-    margin-bottom: 7px;
+    margin-bottom: 8px;
 }
 
 .print-header h2 {
     margin: 0 0 3px;
-    font-size: 14px;
+    font-size: 15px;
     text-transform: uppercase;
+}
+
+.print-header .register-title {
+    margin: 2px 0 2px;
+    font-size: 11px;
+    font-weight: bold;
 }
 
 .print-header .period {
@@ -310,13 +364,13 @@ body {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-size: 6.4px;
+    font-size: 8.5px;
 }
 
 .report-table th,
 .report-table td {
-    border: 0.5px solid #555;
-    padding: 2px 1px;
+    border: 0.6px solid #444;
+    padding: 3px 2px;
     vertical-align: middle;
 }
 
@@ -331,15 +385,15 @@ body {
     white-space: nowrap;
 }
 
-.shipping-col { width: 64px; }
-.invoice-col  { width: 64px; }
-.customer-col { width: 92px; }
-.total-col    { width: 55px; }
+.shipping-col { width: 74px; }
+.invoice-col  { width: 74px; }
+.customer-col { width: 130px; }
+.total-col    { width: 72px; }
 
 .customer-cell {
     white-space: normal !important;
     overflow-wrap: anywhere;
-    line-height: 1.1;
+    line-height: 1.15;
 }
 
 .qty-cell,
@@ -349,11 +403,11 @@ body {
 }
 
 .category-head {
-    font-size: 6.1px;
+    font-size: 8.3px;
 }
 
 .sub-head {
-    font-size: 5.7px;
+    font-size: 7.8px;
 }
 
 tfoot td {
@@ -363,29 +417,36 @@ tfoot td {
 
 .no-data {
     text-align: center;
-    padding: 12px !important;
-    font-size: 9px;
-}
-
-.print-actions {
-    margin-bottom: 8px;
-    text-align: right;
-}
-
-.print-btn {
-    border: 0;
-    border-radius: 3px;
-    background: #1e3c72;
-    color: #fff;
-    padding: 6px 12px;
-    font-size: 11px;
-    font-weight: bold;
-    cursor: pointer;
+    padding: 14px !important;
+    font-size: 10px;
 }
 
 @media print {
     .print-actions {
         display: none !important;
+    }
+
+    body {
+        padding: 0 !important;
+        background: #fff !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    .register-page {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        background: #fff !important;
+    }
+
+    .register-page:not(:last-child) {
+        page-break-after: always !important;
+        break-after: page !important;
     }
 
     thead {
@@ -398,11 +459,7 @@ tfoot td {
 
     tr {
         page-break-inside: avoid;
-    }
-
-    body {
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
+        break-inside: avoid;
     }
 }
 </style>
@@ -414,75 +471,155 @@ tfoot td {
     <button type="button" class="print-btn" onclick="window.print()">Print</button>
 </div>
 
-<div class="print-header">
-    <h2>Register Penjualan Global Detail</h2>
-    <div class="period">
-        Periode <?= h(fmtDateR($startDate)) ?> s/d <?= h(fmtDateR($endDate)) ?>
-    </div>
-</div>
+<?php
+$registerGroups = [
+    [
+        'title' => 'REGISTER 1 - HD / HD WARNA / HD KRESEK',
+        'cats' => ['HD', 'HD WARNA', 'HD KRESEK'],
+    ],
+    [
+        'title' => 'REGISTER 2 - HD SABLON / PP SABLON',
+        'cats' => ['HD SABLON', 'PP SABLON'],
+    ],
+    [
+        'title' => 'REGISTER 3 - TALI / BAHAN / TERPAL / BOX',
+        'cats' => ['TALI KG', 'TALI LOS', 'BAHAN', 'TERPAL', 'BOX'],
+    ],
+];
 
-<table class="report-table">
-    <thead>
-        <tr>
-            <th rowspan="2" class="shipping-col">SHIPPING NO.</th>
-            <th rowspan="2" class="invoice-col">INVOICE NO.</th>
-            <th rowspan="2" class="customer-col">NAMA CUST.</th>
-            <th rowspan="2" class="total-col">TOTAL</th>
-            <th rowspan="2" class="total-col">PENJUALAN</th>
+function rowHasRegisterData(array $row, array $groupCats): bool {
+    foreach ($groupCats as $cat) {
+        if (
+            abs((float)($row[$cat]['qty'] ?? 0)) > 0.0001 ||
+            abs((float)($row[$cat]['qty_kg'] ?? 0)) > 0.0001 ||
+            abs((float)($row[$cat]['rp'] ?? 0)) > 0.0001
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
 
-            <?php foreach ($cats as $cat): ?>
-                <th colspan="3" class="category-head"><?= h($cat) ?></th>
-            <?php endforeach; ?>
-        </tr>
-        <tr>
-            <?php foreach ($cats as $cat): ?>
-                <th class="sub-head">Qty</th>
-                <th class="sub-head">Qty KG</th>
-                <th class="sub-head">Rp</th>
-            <?php endforeach; ?>
-        </tr>
-    </thead>
+function registerTotals(array $rows, array $groupCats): array {
+    $totals = [
+        'total' => 0.0,
+        'penjualan' => 0.0,
+    ];
 
-    <tbody>
-    <?php if (empty($rows)): ?>
-        <tr>
-            <td colspan="32" class="no-data">
-                Tidak ada data invoice pada periode ini.
-            </td>
-        </tr>
-    <?php else: ?>
-        <?php foreach ($rows as $row): ?>
-            <tr>
-                <td><?= h($row['shipping_no']) ?></td>
-                <td><?= h($row['invoice_no']) ?></td>
-                <td class="customer-cell"><?= h($row['customer_name']) ?></td>
-                <td class="money-cell"><?= h(fmtMoneyR($row['total'])) ?></td>
-                <td class="money-cell"><?= h(fmtMoneyR($row['penjualan'])) ?></td>
+    foreach ($groupCats as $cat) {
+        $totals[$cat] = emptyCatR();
+    }
 
-                <?php foreach ($cats as $cat): ?>
-                    <td class="qty-cell"><?= h(fmtQtyR($row[$cat]['qty'])) ?></td>
-                    <td class="qty-cell"><?= h(fmtQtyR($row[$cat]['qty_kg'])) ?></td>
-                    <td class="money-cell"><?= h(fmtMoneyR($row[$cat]['rp'])) ?></td>
+    foreach ($rows as $row) {
+        if (!rowHasRegisterData($row, $groupCats)) {
+            continue;
+        }
+
+        $totals['total'] += (float)($row['total'] ?? 0);
+        $totals['penjualan'] += (float)($row['penjualan'] ?? 0);
+
+        foreach ($groupCats as $cat) {
+            $totals[$cat]['qty'] += (float)($row[$cat]['qty'] ?? 0);
+            $totals[$cat]['qty_kg'] += (float)($row[$cat]['qty_kg'] ?? 0);
+            $totals[$cat]['rp'] += (float)($row[$cat]['rp'] ?? 0);
+        }
+    }
+
+    return $totals;
+}
+?>
+
+<?php foreach ($registerGroups as $register): ?>
+    <?php
+        $groupCats = $register['cats'];
+        $groupRows = [];
+
+        foreach ($rows as $row) {
+            if (rowHasRegisterData($row, $groupCats)) {
+                $groupRows[] = $row;
+            }
+        }
+
+        $groupTotals = registerTotals($rows, $groupCats);
+        $colspan = 5 + (count($groupCats) * 3);
+    ?>
+
+    <section class="register-page">
+        <div class="print-header">
+            <h2>Register Penjualan Global Detail</h2>
+            <div class="register-title">
+                <?= h($register['title']) ?>
+            </div>
+            <div class="period">
+                Periode <?= h(fmtDateR($startDate)) ?> s/d <?= h(fmtDateR($endDate)) ?>
+            </div>
+        </div>
+
+        <table class="report-table">
+            <thead>
+                <tr>
+                    <th rowspan="2" class="shipping-col">SHIPPING NO.</th>
+                    <th rowspan="2" class="invoice-col">INVOICE NO.</th>
+                    <th rowspan="2" class="customer-col">NAMA CUST.</th>
+                    <th rowspan="2" class="total-col">TOTAL</th>
+                    <th rowspan="2" class="total-col">PENJUALAN</th>
+
+                    <?php foreach ($groupCats as $cat): ?>
+                        <th colspan="3" class="category-head"><?= h($cat) ?></th>
+                    <?php endforeach; ?>
+                </tr>
+
+                <tr>
+                    <?php foreach ($groupCats as $cat): ?>
+                        <th class="sub-head">Qty</th>
+                        <th class="sub-head">Qty KG</th>
+                        <th class="sub-head">Rp</th>
+                    <?php endforeach; ?>
+                </tr>
+            </thead>
+
+            <tbody>
+            <?php if (empty($groupRows)): ?>
+                <tr>
+                    <td colspan="<?= (int)$colspan ?>" class="no-data">
+                        Tidak ada data untuk kelompok kategori ini pada periode yang dipilih.
+                    </td>
+                </tr>
+            <?php else: ?>
+                <?php foreach ($groupRows as $row): ?>
+                    <tr>
+                        <td><?= h($row['shipping_no']) ?></td>
+                        <td><?= h($row['invoice_no']) ?></td>
+                        <td class="customer-cell"><?= h($row['customer_name']) ?></td>
+                        <td class="money-cell"><?= h(fmtMoneyR($row['total'])) ?></td>
+                        <td class="money-cell"><?= h(fmtMoneyR($row['penjualan'])) ?></td>
+
+                        <?php foreach ($groupCats as $cat): ?>
+                            <td class="qty-cell"><?= h(fmtQtyR($row[$cat]['qty'])) ?></td>
+                            <td class="qty-cell"><?= h(fmtQtyR($row[$cat]['qty_kg'])) ?></td>
+                            <td class="money-cell"><?= h(fmtMoneyR($row[$cat]['rp'])) ?></td>
+                        <?php endforeach; ?>
+                    </tr>
                 <?php endforeach; ?>
-            </tr>
-        <?php endforeach; ?>
-    <?php endif; ?>
-    </tbody>
+            <?php endif; ?>
+            </tbody>
 
-    <tfoot>
-        <tr>
-            <td colspan="3" style="text-align:right;">TOTAL</td>
-            <td class="money-cell"><?= h(fmtMoneyR($grand['total'])) ?></td>
-            <td class="money-cell"><?= h(fmtMoneyR($grand['penjualan'])) ?></td>
+            <tfoot>
+                <tr>
+                    <td colspan="3" style="text-align:right;">TOTAL</td>
+                    <td class="money-cell"><?= h(fmtMoneyR($groupTotals['total'])) ?></td>
+                    <td class="money-cell"><?= h(fmtMoneyR($groupTotals['penjualan'])) ?></td>
 
-            <?php foreach ($cats as $cat): ?>
-                <td class="qty-cell"><?= h(fmtQtyR($grand[$cat]['qty'])) ?></td>
-                <td class="qty-cell"><?= h(fmtQtyR($grand[$cat]['qty_kg'])) ?></td>
-                <td class="money-cell"><?= h(fmtMoneyR($grand[$cat]['rp'])) ?></td>
-            <?php endforeach; ?>
-        </tr>
-    </tfoot>
-</table>
+                    <?php foreach ($groupCats as $cat): ?>
+                        <td class="qty-cell"><?= h(fmtQtyR($groupTotals[$cat]['qty'])) ?></td>
+                        <td class="qty-cell"><?= h(fmtQtyR($groupTotals[$cat]['qty_kg'])) ?></td>
+                        <td class="money-cell"><?= h(fmtMoneyR($groupTotals[$cat]['rp'])) ?></td>
+                    <?php endforeach; ?>
+                </tr>
+            </tfoot>
+        </table>
+    </section>
+<?php endforeach; ?>
 
 <script>
 window.addEventListener('load', function () {

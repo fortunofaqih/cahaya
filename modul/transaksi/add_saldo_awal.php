@@ -508,7 +508,7 @@ $(document).ready(function () {
             return;
         }
 
-        if (!Number.isFinite(saldo) || saldo < 0) {
+        if (!Number.isFinite(saldo)) {
             alert('Saldo awal tidak valid.');
             e.preventDefault();
             return;

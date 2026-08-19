@@ -108,13 +108,7 @@ if (
 
 $opening_balance = (float)$opening_balance_raw;
 
-if ($opening_balance < 0) {
-    redirectWithAlert(
-        'error',
-        'Saldo awal tidak boleh negatif.',
-        'edit_saldo_awal&opening_id=' . $opening_id
-    );
-}
+
 
 $allowedStatuses = ['Active', 'Cancelled'];
 

@@ -413,7 +413,7 @@ document.getElementById('formSaldoAwal')
             document.getElementById('opening_balance_display').value
         );
 
-        if (!Number.isFinite(saldo) || saldo < 0) {
+      if (!Number.isFinite(saldo)) {
             alert('Saldo awal tidak valid.');
             e.preventDefault();
             return;

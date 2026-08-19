@@ -17,7 +17,7 @@
 // - N detail_bayar untuk setiap invoice/shipping yang dicentang.
 // - Retur-only disimpan sebagai 1 detail_bayar dengan invoice_no/shipping_no kosong.
 // - Semua pasangan invoice/shipping divalidasi ulang dari database.
-// - Nilai setiap detail = sisa pembayaran shipping tersebut.
+// - Nilai setiap detail = nominal pembayaran yang dialokasikan ke shipping tersebut; pembayaran parsial diperbolehkan.
 // - Titip uang dialokasikan terlebih dahulu, sisanya Cash/Transfer.
 // - Retur dipilih standalone berdasarkan Customer, hanya boleh dipakai satu kali, dan MENGURANGI total tagihan yang harus dibayar.
 // - Setelah semua detail tersimpan, status/payment_balance setiap invoice dihitung ulang.
@@ -1299,45 +1299,32 @@ try {
 
     /*
     |--------------------------------------------------------------------------
-    | VALIDASI TOTAL SETELAH RETUR
+    | VALIDASI TOTAL SETELAH RETUR - SUPPORT PEMBAYARAN PARSIAL
     |--------------------------------------------------------------------------
+    | Total Cash + Titip boleh lebih kecil dari netPayable.
+    | Yang tidak diperbolehkan adalah pembayaran melebihi sisa tagihan.
     */
+    if ($totalBayar > $netPayable + 0.01) {
+        throw new Exception(
+            'Total bayar tidak boleh melebihi total tagihan setelah dikurangi Retur. ' .
+            'Total tagihan: Rp ' .
+            number_format($selectedTotal, 2, ',', '.') .
+            ' | Retur: Rp ' .
+            number_format($selectedReturnAmount, 2, ',', '.') .
+            ' | Maksimal pembayaran: Rp ' .
+            number_format($netPayable, 2, ',', '.') .
+            ' | Total bayar: Rp ' .
+            number_format($totalBayar, 2, ',', '.')
+        );
+    }
+
     if (
-        abs(
-            $totalBayar -
-            $netPayable
-        ) > 0.01
+        $totalBayar <= 0.0001 &&
+        $netPayable > 0.0001 &&
+        $returnId === ''
     ) {
         throw new Exception(
-            'Total bayar harus sama dengan total tagihan setelah dikurangi Retur. ' .
-            'Total tagihan: Rp ' .
-            number_format(
-                $selectedTotal,
-                2,
-                ',',
-                '.'
-            ) .
-            ' | Retur: Rp ' .
-            number_format(
-                $selectedReturnAmount,
-                2,
-                ',',
-                '.'
-            ) .
-            ' | Total harus dibayar: Rp ' .
-            number_format(
-                $netPayable,
-                2,
-                ',',
-                '.'
-            ) .
-            ' | Total bayar: Rp ' .
-            number_format(
-                $totalBayar,
-                2,
-                ',',
-                '.'
-            )
+            'Nominal pembayaran harus lebih dari Rp 0,00.'
         );
     }
 
@@ -1476,8 +1463,9 @@ try {
     | Alokasi:
     | - Titip dipakai dahulu secara berurutan.
     | - Sisanya cash/transfer.
-    | - bayar_amount per detail selalu = sisa_before
-    |   karena checkbox berarti bayar penuh.
+    | - bayar_amount per detail mengikuti nominal pembayaran yang tersedia.
+    | - Jika nominal lebih kecil dari sisa tagihan, pembayaran disimpan sebagai Partial.
+    | - Alokasi berjalan berurutan ke Shipping yang dipilih.
     |--------------------------------------------------------------------------
     */
     $remainingTitip =
@@ -1490,7 +1478,7 @@ try {
      * Total pembayaran yang masih harus dialokasikan ke detail setelah Retur.
      */
     $remainingPaymentToAllocate =
-        $netPayable;
+        $totalBayar;
 
     $stmtDetail =
         mysqli_prepare(
@@ -1825,6 +1813,13 @@ try {
         ' | Total Bayar Rp ' .
         number_format(
             $totalBayar,
+            2,
+            ',',
+            '.'
+        ) .
+        ' | Sisa Setelah Pembayaran Rp ' .
+        number_format(
+            max($netPayable - $totalBayar, 0),
             2,
             ',',
             '.'

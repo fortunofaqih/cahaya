@@ -757,6 +757,7 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     $customers[$customerKey]['amounts']['saldo_awal'] +=
         $openingAmount
         - $legacyCashBefore
+        - $legacyTitipBefore
         - $legacyReturBefore;
 
     // Mutasi periode terhadap saldo historis tetap tampil pada kolom masing-masing.
@@ -772,6 +773,7 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     $openingAtEnd =
         $openingAmount
         - $legacyCashCutoff
+        - $legacyTitipCutoff
         - $legacyReturCutoff;
 
     $customers[$customerKey]['amounts']['b_lebih'] +=
@@ -864,6 +866,7 @@ while (
         $openingInvoice =
             $invoiceGross
             - $paymentBefore
+            - $titipBefore
             - $returnBefore;
 
         $amounts['saldo_awal'] +=
@@ -902,7 +905,8 @@ while (
      */
     $outstandingBeforeReturn =
         $invoiceGross
-        - $paymentCutoff;
+        - $paymentCutoff
+        - $titipCutoff;
 
     if ($outstandingBeforeReturn > 0.0001) {
         $ageDays = 0;
@@ -1232,11 +1236,34 @@ mysqli_stmt_close($stmtSaldoTitip);
 foreach ($customers as $key => &$customer) {
     $a =& $customer['amounts'];
 
+    /*
+     * RUMUS 1 FINAL:
+     * Saldo Akhir = Saldo Awal + Penjualan Neto - Pembayaran - Titip Terpakai
+     *
+     * Retur periode menjadi pengurang Penjualan agar Rumus 1 tidak membutuhkan
+     * kolom Retur tersendiri. Nilai retur yang sama tetap tampil sebagai minus
+     * pada bucket Lebih / Retur untuk Rumus 2.
+     */
+    $a['penjualan'] -= $a['retur'];
+
     $a['akhir'] =
         $a['saldo_awal']
         + $a['penjualan']
         - $a['bayar']
-        - $a['retur'];
+        - $a['titip_used'];
+
+    /*
+     * RUMUS 2 FINAL:
+     * 1-30 + 31-60 + 61-90 + Lebih/Retur + Belum Jatuh Tempo = Saldo Akhir
+     */
+    $bucketTotal =
+        $a['b_1_30']
+        + $a['b_31_60']
+        + $a['b_61_90']
+        + $a['b_lebih']
+        + $a['belum_jatuh_tempo'];
+
+    $a['selisih_balance'] = $a['akhir'] - $bucketTotal;
 
     $activityTotal =
         abs($a['saldo_awal'])
@@ -1780,7 +1807,7 @@ foreach ($grouped as $cityGroup) {
                                 </td>
 
                                 <td class="money-cell">
-                                    <?= h(formatMoney($a['titip'])) ?>
+                                    <?= h(formatMoney($a['titip_used'])) ?>
                                 </td>
 
                                 <td class="money-cell">
@@ -1832,7 +1859,7 @@ foreach ($grouped as $cityGroup) {
                             </td>
 
                             <td class="money-cell">
-                                <?= h(formatMoney($ct['titip'])) ?>
+                                <?= h(formatMoney($ct['titip_used'])) ?>
                             </td>
 
                             <td class="money-cell">
@@ -1885,7 +1912,7 @@ foreach ($grouped as $cityGroup) {
                     </td>
 
                     <td class="money-cell">
-                        <?= h(formatMoney($grand['titip'])) ?>
+                        <?= h(formatMoney($grand['titip_used'])) ?>
                     </td>
 
                     <td class="money-cell">

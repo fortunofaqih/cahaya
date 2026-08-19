@@ -1055,16 +1055,16 @@ function checkNominal() {
         warning
             .addClass('warning-ok')
             .html(
-                'Total bayar sudah sesuai setelah dikurangi Retur.'
+                'Total bayar melunasi seluruh tagihan terpilih setelah dikurangi Retur.'
             )
             .show();
     } else if (selisih < 0) {
         warning
             .addClass('warning-info')
             .html(
-                'Total bayar masih kurang Rp ' +
+                'Pembayaran parsial. Setelah transaksi ini masih tersisa Rp ' +
                 formatRupiah(Math.abs(selisih)) +
-                '.'
+                ' dari tagihan terpilih.'
             )
             .show();
     } else {
@@ -1353,20 +1353,27 @@ $(document).ready(function () {
         }
 
         /*
-         * Total bayar harus sama dengan:
-         * Total tagihan terpilih - Retur terpilih.
+         * Pembayaran parsial diperbolehkan.
+         * Total Cash + Titip tidak boleh melebihi sisa tagihan
+         * setelah dikurangi Retur.
          */
-        if (
-            Math.abs(
-                totalBayar - targetBayar
-            ) > 0.01
-        ) {
+        if (totalBayar > targetBayar + 0.01) {
             alert(
-                'Total Bayar harus sama dengan total tagihan setelah dikurangi Retur. ' +
-                'Target: Rp ' +
+                'Total Bayar tidak boleh melebihi total tagihan setelah dikurangi Retur. ' +
+                'Maksimal: Rp ' +
                 formatRupiah(targetBayar)
             );
 
+            e.preventDefault();
+            return false;
+        }
+
+        if (
+            totalBayar <= 0.01 &&
+            targetBayar > 0.01 &&
+            selectedReturnId === ''
+        ) {
+            alert('Nominal pembayaran harus lebih dari Rp 0,00.');
             e.preventDefault();
             return false;
         }

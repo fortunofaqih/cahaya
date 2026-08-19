@@ -108,8 +108,19 @@ function getLabelTitle($filterBy) {
 }
 
 function cashExpr($alias = 'db') {
-    // bayar_amount sudah mencakup cash + titip yang dipakai.
-    return "COALESCE({$alias}.bayar_amount, 0)";
+    /*
+     * Pembayaran pada laporan Aging = CASH / TRANSFER saja.
+     * Porsi titip dihitung terpisah melalui titip_amount agar tidak double count.
+     * Fallback legacy: bila cash_amount kosong/0, ambil bayar_amount - titip_amount.
+     */
+    return "CASE
+        WHEN COALESCE({$alias}.cash_amount, 0) > 0
+            THEN COALESCE({$alias}.cash_amount, 0)
+        ELSE GREATEST(
+            COALESCE({$alias}.bayar_amount, 0) - COALESCE({$alias}.titip_amount, 0),
+            0
+        )
+    END";
 }
 
 $bulan = (int)($_GET['bulan'] ?? date('n'));
@@ -450,6 +461,7 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     $openingAtPeriod =
         $openingAmount
         - $legacyCashBefore
+        - $legacyTitipBefore
         - $legacyReturBefore;
 
     /*
@@ -458,6 +470,7 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     $openingAtEnd =
         $openingAmount
         - $legacyCashCutoff
+        - $legacyTitipCutoff
         - $legacyReturCutoff;
 
     $rows[$groupLabel]['saldo_awal'] += $openingAtPeriod;
@@ -722,6 +735,7 @@ while ($inv = mysqli_fetch_assoc($resInvoice)) {
         $rows[$groupLabel]['saldo_awal'] +=
             $invoiceAmount
             - $cashBefore
+            - $titipBefore
             - $returBefore;
     }
 
@@ -749,7 +763,8 @@ while ($inv = mysqli_fetch_assoc($resInvoice)) {
      */
     $outstandingBeforeReturn =
         $invoiceAmount
-        - $cashCutoff;
+        - $cashCutoff
+        - $titipCutoff;
 
     $outstandingEnd =
         $outstandingBeforeReturn
@@ -1031,6 +1046,40 @@ if ($stmtSaldoTitip) {
  */
 
 /*
+ * ============================================================
+ * 4A. FINALISASI RUMUS BALANCE
+ * ============================================================
+ * RUMUS 1:
+ * Saldo Akhir = Saldo Awal + Penjualan Neto - Pembayaran - Titip Terpakai
+ *
+ * Retur periode menjadi pengurang Penjualan (penjualan neto), sementara
+ * seluruh retur sampai akhir periode tetap ditempatkan sebagai nilai minus
+ * pada bucket Lebih / Retur untuk RUMUS 2.
+ *
+ * RUMUS 2:
+ * 1-30 + 31-60 + 61-90 + Lebih/Retur + Belum Jatuh Tempo = Saldo Akhir
+ */
+foreach ($rows as &$row) {
+    $row['penjualan'] -= $row['retur'];
+
+    $row['saldo_akhir'] =
+        $row['saldo_awal']
+        + $row['penjualan']
+        - $row['pembayaran']
+        - $row['titip_used'];
+
+    $bucketTotal =
+        $row['b_1_30']
+        + $row['b_31_60']
+        + $row['b_61_90']
+        + $row['b_lebih']
+        + $row['belum_jatuh_tempo'];
+
+    $row['selisih_balance'] = $row['saldo_akhir'] - $bucketTotal;
+}
+unset($row);
+
+/*
  * Singkirkan baris benar-benar kosong.
  */
 foreach ($rows as $key => $row) {
@@ -1038,7 +1087,6 @@ foreach ($rows as $key => $row) {
         abs((float)$row['saldo_awal'])
         + abs((float)$row['penjualan'])
         + abs((float)$row['pembayaran'])
-        + abs((float)$row['titip'])
         + abs((float)$row['titip_used'])
         + abs((float)$row['retur'])
         + abs((float)$row['saldo_akhir']);
@@ -1449,7 +1497,7 @@ foreach ($rows as $row) {
                             <td class="money-cell"><?= h(formatMoney($row['saldo_awal'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['penjualan'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['pembayaran'])) ?></td>
-                            <td class="money-cell"><?= h(formatMoney($row['titip'])) ?></td>
+                            <td class="money-cell"><?= h(formatMoney($row['titip_used'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['saldo_akhir'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['b_1_30'])) ?></td>
                             <td class="money-cell"><?= h(formatMoney($row['b_31_60'])) ?></td>
@@ -1466,7 +1514,7 @@ foreach ($rows as $row) {
                     <td class="money-cell"><?= h(formatMoney($grand['saldo_awal'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['penjualan'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['pembayaran'])) ?></td>
-                    <td class="money-cell"><?= h(formatMoney($grand['titip'])) ?></td>  
+                    <td class="money-cell"><?= h(formatMoney($grand['titip_used'])) ?></td>  
                     <td class="money-cell"><?= h(formatMoney($grand['saldo_akhir'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['b_1_30'])) ?></td>
                     <td class="money-cell"><?= h(formatMoney($grand['b_31_60'])) ?></td>
