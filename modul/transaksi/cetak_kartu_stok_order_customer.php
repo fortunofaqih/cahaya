@@ -127,10 +127,29 @@ $sql = "
         inv.t,
         inv.quality,
         inv.colour,
-        inv.cap
+        inv.cap,
+        mm.marketing_name,
+        dp.ukuran AS po_ukuran,
+        dsop.keterangan_rol,
+        dsop.keterangan_potong
     FROM head_sales_order h
     INNER JOIN detail_sales_order d ON d.order_no = h.order_no
     LEFT JOIN m_inventory inv ON inv.inventory_id = d.inventory_id
+    LEFT JOIN m_marketing mm
+        ON mm.marketing_id = COALESCE(NULLIF(h.marketing_id, ''), h.sales_id)
+    LEFT JOIN det_po dp
+        ON dp.no_po = h.po
+       AND (
+            dp.ukuran = d.inventory_name
+            OR dp.ukuran = inv.internal_name
+            OR dp.ukuran LIKE CONCAT('%', d.inventory_name, '%')
+            OR d.inventory_name LIKE CONCAT('%', dp.ukuran, '%')
+       )
+    LEFT JOIN head_sop hsop
+        ON hsop.order_no = h.order_no
+    LEFT JOIN det_sop dsop
+        ON dsop.sop_id = hsop.sop_id
+       AND dsop.inventory_id = d.inventory_id
     WHERE h.order_no = ? AND d.inventory_id = ?
     ORDER BY d.id ASC
     LIMIT 1
@@ -251,18 +270,36 @@ $outstanding = [
 ];
 
 $hargaText = '-';
-$harga = (float)($order['price'] ?? 0);
-if ($harga <= 0) {
-    $harga = (float)($order['price_unit'] ?? 0);
+
+// Harga/KG berdasarkan:
+// detail_sales_order.subtotal / detail_sales_order.quantity
+$qty_raw = (float)($order['quantity'] ?? 0);
+$subtotal_raw = (float)($order['subtotal'] ?? 0);
+
+$harga_kg = 0.0;
+
+if ($qty_raw > 0 && $subtotal_raw > 0) {
+    $harga_kg = $subtotal_raw / $qty_raw;
+
+    // Cek pecahan terhadap kelipatan 1.000
+    $nilai_ribuan = $harga_kg / 1000;
+    $pecahan_ribuan = $nilai_ribuan - floor($nilai_ribuan);
+
+    // Jika pecahannya 0,98 atau lebih, bulatkan ke ribuan berikutnya
+    if ($pecahan_ribuan >= 0.98) {
+        $harga_kg = ceil($nilai_ribuan) * 1000;
+    }
 }
-if ($harga > 0) {
-    $hargaText = fmtNum($harga) . ' / ' . strtoupper((string)($order['uom_pack'] ?: $order['uom'] ?: 'UNIT'));
-    if (strtolower((string)$order['vat']) !== 'none' && (string)$order['vat'] !== '') {
+
+if ($harga_kg > 0) {
+    $hargaText = fmtNum($harga_kg) . ' / KG';
+
+    if (strtolower((string)$order['vat']) !== 'none' && trim((string)$order['vat']) !== '') {
         $hargaText .= ' + PPN';
     }
 }
 
-$ukuranText = shortSizeFromName($order['inventory_name'], $order['catalog']);
+$ukuranText =  shortSizeFromName($order['inventory_name'], $order['catalog']);
 $jumlahOrderText = formatJumlahOrderText($order ?? []);
 
 function formatJumlahOrderText($order) {
@@ -284,7 +321,24 @@ if (strtoupper((string)$order['uom_detail']) === 'BAL' && (float)$order['quantit
     $isiBalText = '@' . fmtNum(((float)$order['quantity_pack'] / (float)$order['quantity_detail'])) . ' ' . strtoupper((string)$order['uom_pack']) . '/BAL';
 }
 
-$keterangan = trim((string)($order['detail_remarks'] ?? ''));
+// Keterangan diambil dari det_sop:
+// - Inventory ROLL   -> keterangan_rol
+// - Inventory POTONG -> keterangan_potong
+$inventoryText = strtoupper(trim(
+    (string)($order['inventory_name'] ?? '') . ' ' .
+    (string)($order['quality'] ?? '') . ' ' .
+    (string)($order['catalog'] ?? '')
+));
+
+if (strpos($inventoryText, 'ROLL') !== false || strpos($inventoryText, ' ROL ') !== false) {
+    $keterangan = trim((string)($order['keterangan_rol'] ?? ''));
+} elseif (strpos($inventoryText, 'POTONG') !== false || strpos($inventoryText, 'PTG') !== false) {
+    $keterangan = trim((string)($order['keterangan_potong'] ?? ''));
+} else {
+    // Fallback jika nama inventory tidak mengandung ROLL/POTONG
+    $keterangan = trim((string)($order['detail_remarks'] ?? ''));
+}
+
 if ($keterangan === '') {
     $keterangan = '-';
 }
@@ -296,8 +350,8 @@ if ($keterangan === '') {
     <title>Cetak Kartu Stok Order Customer - <?= e($order_no) ?></title>
     <style>
         @page {
-            size: 33cm 21.5cm;
-            margin: 5mm 6mm 5mm 6mm;
+            size: landscape;
+            margin: 5mm 6mm;
         }
 
         * { box-sizing: border-box; }
@@ -311,6 +365,10 @@ if ($keterangan === '') {
             background: #fff;
         }
 
+        body {
+            width: 100%;
+        }
+
         body * { visibility: hidden !important; }
         .print-page, .print-page * { visibility: visible !important; }
 
@@ -319,7 +377,6 @@ if ($keterangan === '') {
             left: 0;
             top: 0;
             width: 100%;
-            min-height: 20.5cm;
             border: 1px dotted #000;
             padding: 5px 6px;
         }
@@ -388,8 +445,23 @@ if ($keterangan === '') {
             cursor: pointer;
         }
         @media print {
-            .print-button { display: none !important; }
-            .print-page { border: 1px dotted #000; }
+            .print-button {
+                display: none !important;
+            }
+
+            html, body {
+                padding: 0;
+                margin: 0;
+            }
+
+            body {
+                width: 32cm;
+            }
+
+            .print-page {
+                width: 100%;
+                border: 1px dotted #000;
+            }
         }
     </style>
 </head>
@@ -416,7 +488,7 @@ if ($keterangan === '') {
             </tr>
             <tr>
                 <td class="label">NO. PO</td><td class="colon">:</td><td><?= e($order['po'] ?: '-') ?></td>
-                <td class="right-label">Sales</td><td class="colon">:</td><td><?= e($order['marketing_id'] ?: $order['sales_id'] ?: '-') ?></td>
+                <td class="right-label">Marketing</td><td class="colon">:</td><td><?= e($order['marketing_name'] ?: $order['marketing_id'] ?: $order['sales_id'] ?: '-') ?></td>
             </tr>
             <tr>
                 <td class="label">HARGA</td><td class="colon">:</td><td><?= e($hargaText) ?></td>
