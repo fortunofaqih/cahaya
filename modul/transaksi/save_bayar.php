@@ -557,6 +557,104 @@ function getShippingPaymentData(
     return $row;
 }
 
+
+function getOpeningPaymentData(
+    mysqli $conn,
+    int $openingId,
+    string $customerId
+): array {
+    $stmt = mysqli_prepare(
+        $conn,
+        "
+        SELECT
+            opening_id,
+            opening_date,
+            customer_id,
+            customer_name,
+            customer_city,
+            opening_balance
+        FROM customer_opening_balance
+        WHERE opening_id = ?
+          AND customer_id = ?
+          AND LOWER(COALESCE(status, 'Active')) = 'active'
+          AND ABS(opening_balance) > 0.01
+        LIMIT 1
+        FOR UPDATE
+        "
+    );
+
+    if (!$stmt) {
+        throw new Exception(
+            'Gagal prepare saldo awal: ' . mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param(
+        $stmt,
+        'is',
+        $openingId,
+        $customerId
+    );
+
+    mysqli_stmt_execute($stmt);
+
+    $row = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmt)
+    );
+
+    mysqli_stmt_close($stmt);
+
+    if (!$row) {
+        throw new Exception(
+            'Saldo awal customer tidak ditemukan, tidak aktif, atau sudah bernilai nol.'
+        );
+    }
+
+    $stmtPaid = mysqli_prepare(
+        $conn,
+        "
+        SELECT
+            COALESCE(SUM(ABS(bayar_amount)), 0) AS paid_amount
+        FROM detail_bayar
+        WHERE payment_source = 'OPENING'
+          AND opening_id = ?
+        FOR UPDATE
+        "
+    );
+
+    if (!$stmtPaid) {
+        throw new Exception(
+            'Gagal prepare pembayaran saldo awal: ' . mysqli_error($conn)
+        );
+    }
+
+    mysqli_stmt_bind_param(
+        $stmtPaid,
+        'i',
+        $openingId
+    );
+
+    mysqli_stmt_execute($stmtPaid);
+
+    $paidRow = mysqli_fetch_assoc(
+        mysqli_stmt_get_result($stmtPaid)
+    );
+
+    mysqli_stmt_close($stmtPaid);
+
+    $openingBalance = (float)($row['opening_balance'] ?? 0);
+    $paidAmount = (float)($paidRow['paid_amount'] ?? 0);
+
+    $row['paid_amount'] = $paidAmount;
+    $row['opening_sign'] = $openingBalance < 0 ? -1 : 1;
+    $row['sisa_opening'] = max(
+        abs($openingBalance) - $paidAmount,
+        0
+    );
+
+    return $row;
+}
+
 function getCustomerMasterForPayment(
     mysqli $conn,
     string $customerId
@@ -1030,6 +1128,54 @@ foreach (
         continue;
     }
 
+    $source = strtoupper(
+        trim(
+            (string)(
+                $item['source']
+                ?? 'INVOICE'
+            )
+        )
+    );
+
+    if (!in_array($source, ['INVOICE', 'OPENING'], true)) {
+        redirectWithAlert(
+            'error',
+            'Sumber pembayaran tidak valid.',
+            'add_bayar'
+        );
+    }
+
+    if ($source === 'OPENING') {
+        $openingId = (int)($item['opening_id'] ?? 0);
+
+        if ($openingId <= 0) {
+            redirectWithAlert(
+                'error',
+                'Saldo awal terpilih tidak memiliki opening_id yang valid.',
+                'add_bayar'
+            );
+        }
+
+        $key = 'OPENING|' . $openingId;
+
+        if (isset($selectedPosted[$key])) {
+            redirectWithAlert(
+                'error',
+                'Saldo awal terpilih ganda.',
+                'add_bayar'
+            );
+        }
+
+        $selectedPosted[$key] = [
+            'source' => 'OPENING',
+            'opening_id' => $openingId,
+            'invoice_no' => '',
+            'shipping_no' => ''
+        ];
+
+        continue;
+    }
+
     $invoiceNo =
         trim(
             (string)(
@@ -1094,6 +1240,8 @@ foreach (
     }
 
     $selectedPosted[$key] = [
+        'source' => 'INVOICE',
+        'opening_id' => 0,
         'invoice_no' =>
             $invoiceNo,
         'shipping_no' =>
@@ -1107,7 +1255,7 @@ if (
 ) {
     redirectWithAlert(
         'error',
-        'Minimal pilih 1 Invoice / Shipping atau 1 Retur Customer.',
+        'Minimal pilih 1 piutang (Invoice/Shipping atau Saldo Awal) atau 1 Retur Customer.',
         'add_bayar'
     );
 }
@@ -1163,6 +1311,38 @@ try {
         $selectedPosted
         as $posted
     ) {
+        if (($posted['source'] ?? 'INVOICE') === 'OPENING') {
+            $opening = getOpeningPaymentData(
+                $conn,
+                (int)$posted['opening_id'],
+                $customerId
+            );
+
+            $sisaOpening = (float)($opening['sisa_opening'] ?? 0);
+
+            if ($sisaOpening <= 0.01) {
+                throw new Exception(
+                    'Saldo awal customer sudah nol / tidak memiliki sisa yang dapat diproses.'
+                );
+            }
+
+            $selectedTotal += $sisaOpening;
+
+            $validItems[] = [
+                'source' => 'OPENING',
+                'opening_id' => (int)$opening['opening_id'],
+                'opening_sign' => (int)($opening['opening_sign'] ?? 1),
+                'invoice_no' => '',
+                'invoice_date' => (string)$opening['opening_date'],
+                'shipping_no' => '',
+                'shipping_date' => '',
+                'shipping_amount' => abs((float)$opening['opening_balance']),
+                'sisa_before' => $sisaOpening
+            ];
+
+            continue;
+        }
+
         $shipping =
             getShippingPaymentData(
                 $conn,
@@ -1191,14 +1371,6 @@ try {
                 'sisa_shipping'
             ];
 
-        /*
-         * Sesuai rule add_bayar terbaru:
-         * hanya Invoice / Shipping yang masih memiliki piutang
-         * yang boleh diproses.
-         *
-         * Jangan mengandalkan filter di halaman input saja,
-         * karena data POST dapat dimanipulasi.
-         */
         if ($sisaShipping <= 0.01) {
             throw new Exception(
                 'Shipping ' .
@@ -1212,15 +1384,22 @@ try {
         $selectedTotal +=
             $sisaShipping;
 
+        $invoiceDateValue =
+            !empty($shipping['invoice_date']) &&
+            $shipping['invoice_date'] !== '0000-00-00'
+                ? (string)$shipping['invoice_date']
+                : null;
+
         $validItems[] = [
+            'source' => 'INVOICE',
+            'opening_id' => null,
+            'opening_sign' => 1,
             'invoice_no' =>
                 (string)$shipping[
                     'invoice_no'
                 ],
             'invoice_date' =>
-                (string)$shipping[
-                    'invoice_date'
-                ],
+                $invoiceDateValue,
             'shipping_no' =>
                 (string)$shipping[
                     'shipping_no'
@@ -1236,6 +1415,46 @@ try {
             'sisa_before' =>
                 $sisaShipping
         ];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | VALIDASI ARAH TRANSAKSI OPENING
+    |--------------------------------------------------------------------------
+    | Opening negatif adalah kredit/lebih customer dan diproses tersendiri.
+    | Tidak boleh dicampur invoice/opening positif, retur, atau titip.
+    |--------------------------------------------------------------------------
+    */
+    $hasNegativeOpening = false;
+    $hasPositiveDebtItem = false;
+
+    foreach ($validItems as $validItem) {
+        if (
+            ($validItem['source'] ?? 'INVOICE') === 'OPENING' &&
+            (int)($validItem['opening_sign'] ?? 1) < 0
+        ) {
+            $hasNegativeOpening = true;
+        } else {
+            $hasPositiveDebtItem = true;
+        }
+    }
+
+    if ($hasNegativeOpening && $hasPositiveDebtItem) {
+        throw new Exception(
+            'Saldo Awal (-) / Kredit harus diproses tersendiri dan tidak boleh digabung dengan Invoice atau Saldo Awal (+).'
+        );
+    }
+
+    if ($hasNegativeOpening && $returnId !== '') {
+        throw new Exception(
+            'Saldo Awal (-) / Kredit tidak boleh digabung dengan Retur Customer.'
+        );
+    }
+
+    if ($hasNegativeOpening && $nominalTitip > 0.0001) {
+        throw new Exception(
+            'Saldo Awal (-) / Kredit tidak boleh diselesaikan menggunakan Titip Uang.'
+        );
     }
 
     /*
@@ -1489,6 +1708,8 @@ try {
                 bayar_no,
                 invoice_no,
                 shipping_no,
+                opening_id,
+                payment_source,
                 return_id,
                 invoice_date,
                 invoice_amount,
@@ -1501,7 +1722,7 @@ try {
                 date_created
             )
             VALUES (
-                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?,
                 NOW()
@@ -1636,12 +1857,24 @@ try {
             0
         );
 
+        $detailOpeningId =
+            ($item['source'] ?? 'INVOICE') === 'OPENING'
+                ? (int)$item['opening_id']
+                : null;
+
+        $detailPaymentSource =
+            ($item['source'] ?? 'INVOICE') === 'OPENING'
+                ? 'OPENING'
+                : 'INVOICE';
+
         mysqli_stmt_bind_param(
             $stmtDetail,
-            'sssssdddddss',
+            'sssisssdddddss',
             $bayarNo,
             $item['invoice_no'],
             $item['shipping_no'],
+            $detailOpeningId,
+            $detailPaymentSource,
             $detailReturnId,
             $item['invoice_date'],
             $item['shipping_amount'],
@@ -1657,11 +1890,16 @@ try {
             $stmtDetail
         );
 
-        $affectedInvoices[
-            $item[
-                'invoice_no'
-            ]
-        ] = true;
+        if (
+            ($item['source'] ?? 'INVOICE') === 'INVOICE' &&
+            trim((string)$item['invoice_no']) !== ''
+        ) {
+            $affectedInvoices[
+                $item[
+                    'invoice_no'
+                ]
+            ] = true;
+        }
     }
 
     /*
@@ -1675,7 +1913,7 @@ try {
     ) {
         $blankInvoiceNo = '';
         $blankShippingNo = '';
-        $blankInvoiceDate = '';
+        $blankInvoiceDate = null;
         $zeroAmount = 0.0;
 
         $returnOnlyRemarks =
@@ -1683,12 +1921,17 @@ try {
                 ? $remarks
                 : 'Retur Customer Standalone';
 
+        $blankOpeningId = null;
+        $returnPaymentSource = 'RETURN';
+
         mysqli_stmt_bind_param(
             $stmtDetail,
-            'sssssdddddss',
+            'sssisssdddddss',
             $bayarNo,
             $blankInvoiceNo,
             $blankShippingNo,
+            $blankOpeningId,
+            $returnPaymentSource,
             $returnId,
             $blankInvoiceDate,
             $zeroAmount,
@@ -1789,11 +2032,13 @@ try {
 
     redirectWithAlert(
         'success',
-        'Pembayaran berhasil disimpan dengan No. Bayar ' .
+        ($hasNegativeOpening
+            ? 'Penyelesaian Saldo Awal (-) berhasil disimpan dengan No. Bayar '
+            : 'Pembayaran berhasil disimpan dengan No. Bayar ') .
         $bayarNo .
         ' untuk ' .
         count($validItems) .
-        ' Invoice / Shipping. Total Tagihan Rp ' .
+        ' item piutang. Total Tagihan Rp ' .
         number_format(
             $selectedTotal,
             2,

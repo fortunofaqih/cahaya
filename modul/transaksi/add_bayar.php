@@ -318,6 +318,84 @@ while ($row = mysqli_fetch_assoc($resShipping)) {
     $shippings[] = $row;
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| SALDO AWAL YANG MASIH BELUM NOL
+|--------------------------------------------------------------------------
+| opening_balance > 0 = piutang lama customer.
+| opening_balance < 0 = kredit / lebih customer yang juga dapat diselesaikan.
+|
+| Nilai transaksi pembayaran/refund selalu diinput POSITIF.
+| Sisa yang dapat diproses = ABS(opening_balance) - total settlement OPENING.
+|--------------------------------------------------------------------------
+*/
+$openingBalances = [];
+
+$sqlOpening = "
+    SELECT
+        cob.opening_id,
+        cob.opening_date,
+        cob.customer_id,
+        COALESCE(NULLIF(TRIM(mc.customer), ''), cob.customer_name, '') AS customer_name,
+        COALESCE(mc.address, '') AS customer_address,
+        COALESCE(NULLIF(TRIM(mc.city), ''), cob.customer_city, '') AS customer_city,
+        cob.opening_balance,
+
+        CASE
+            WHEN cob.opening_balance < 0 THEN 'KREDIT / LEBIH'
+            ELSE 'PIUTANG'
+        END AS opening_type,
+
+        COALESCE((
+            SELECT SUM(ABS(COALESCE(db.bayar_amount, 0)))
+            FROM detail_bayar db
+            WHERE db.payment_source = 'OPENING'
+              AND db.opening_id = cob.opening_id
+        ), 0) AS paid_amount,
+
+        GREATEST(
+            ABS(cob.opening_balance)
+            - COALESCE((
+                SELECT SUM(ABS(COALESCE(db2.bayar_amount, 0)))
+                FROM detail_bayar db2
+                WHERE db2.payment_source = 'OPENING'
+                  AND db2.opening_id = cob.opening_id
+            ), 0),
+            0
+        ) AS sisa_opening,
+
+        COALESCE((
+            SELECT SUM(ht.balance_amount)
+            FROM head_titip ht
+            WHERE ht.customer_id = cob.customer_id
+              AND ht.balance_amount > 0
+        ), 0) AS saldo_titip
+
+    FROM customer_opening_balance cob
+    LEFT JOIN m_customer mc
+        ON mc.customer_id = cob.customer_id
+
+    WHERE LOWER(COALESCE(cob.status, 'Active')) = 'active'
+      AND ABS(cob.opening_balance) > 0.01
+
+    HAVING sisa_opening > 0.01
+
+    ORDER BY
+        cob.opening_date ASC,
+        cob.opening_id ASC
+";
+
+$resOpening = mysqli_query($conn, $sqlOpening);
+
+if (!$resOpening) {
+    die('Query saldo awal pembayaran gagal: ' . mysqli_error($conn));
+}
+
+while ($row = mysqli_fetch_assoc($resOpening)) {
+    $openingBalances[] = $row;
+}
+
 /*
  * Daftar Retur aktif per customer.
  * Retur tidak lagi terikat ke invoice/shipping yang dicentang.
@@ -398,7 +476,8 @@ while ($ret = mysqli_fetch_assoc($resReturnList)) {
 |--------------------------------------------------------------------------
 | Customer muncul apabila:
 | 1. punya invoice/shipping NON CP-MCP dengan sisa efektif > 0; ATAU
-| 2. punya Retur Customer aktif yang belum pernah dipakai.
+| 2. punya saldo awal positif/negatif yang masih belum nol; ATAU
+| 3. punya Retur Customer aktif yang belum pernah dipakai.
 |
 | Jadi customer seperti SARMIN tetap muncul walaupun invoice/shipping yang
 | tersisa hanya CP-MCP, selama masih mempunyai retur standalone.
@@ -422,6 +501,35 @@ foreach ($shippings as $ship) {
             'customer_city' => (string)($ship['customer_city'] ?? ''),
             'saldo_titip' => (float)($ship['saldo_titip'] ?? 0),
         ];
+    }
+}
+
+
+/* Customer dari saldo awal positif yang masih outstanding. */
+foreach ($openingBalances as $opening) {
+    $cid = trim((string)($opening['customer_id'] ?? ''));
+
+    if ($cid === '') {
+        continue;
+    }
+
+    if (!isset($paymentCustomers[$cid])) {
+        $paymentCustomers[$cid] = [
+            'customer_id' => $cid,
+            'customer_name' => (string)($opening['customer_name'] ?? ''),
+            'customer_address' => (string)($opening['customer_address'] ?? ''),
+            'customer_city' => (string)($opening['customer_city'] ?? ''),
+            'saldo_titip' => (float)($opening['saldo_titip'] ?? 0),
+        ];
+    } else {
+        /*
+         * Bila customer juga punya invoice, pastikan saldo titip terbaru
+         * tetap terbaca.
+         */
+        $paymentCustomers[$cid]['saldo_titip'] = max(
+            (float)($paymentCustomers[$cid]['saldo_titip'] ?? 0),
+            (float)($opening['saldo_titip'] ?? 0)
+        );
     }
 }
 
@@ -711,7 +819,7 @@ uasort($paymentCustomers, function ($a, $b) {
 
     <div class="form-section">
         <div class="form-section-title">
-            2. Pilih Invoice / Shipping yang Dibayar
+            2. Pilih Piutang yang Dibayar
             <span class="summary-count" id="selected_count_label" style="float:right;">0 dipilih</span>
         </div>
         <div class="form-section-body">
@@ -720,6 +828,7 @@ uasort($paymentCustomers, function ($a, $b) {
                     <thead>
                         <tr>
                             <th style="width:42px;">Pilih</th>
+                            <th>Sumber</th>
                             <th>Invoice No.</th>
                             <th>Invoice Date</th>
                             <th>Shipping No.</th>
@@ -743,6 +852,8 @@ uasort($paymentCustomers, function ($a, $b) {
                                        name="items[<?= $i ?>][selected]"
                                        value="1">
 
+                                <input type="hidden" name="items[<?= $i ?>][source]" value="INVOICE">
+                                <input type="hidden" name="items[<?= $i ?>][opening_id]" value="">
                                 <input type="hidden" name="items[<?= $i ?>][invoice_no]" value="<?= h($ship['invoice_no']) ?>">
                                 <input type="hidden" name="items[<?= $i ?>][invoice_date]" value="<?= h($ship['invoice_date']) ?>">
                                 <input type="hidden" name="items[<?= $i ?>][shipping_no]" value="<?= h($ship['shipping_no']) ?>">
@@ -750,6 +861,7 @@ uasort($paymentCustomers, function ($a, $b) {
                                 <input type="hidden" name="items[<?= $i ?>][invoice_amount]" value="<?= h($ship['shipping_amount']) ?>">
                                 <input type="hidden" name="items[<?= $i ?>][sisa_before]" value="<?= h($ship['sisa_shipping']) ?>">
                             </td>
+                            <td><strong>INVOICE</strong></td>
                             <td><?= h($ship['invoice_no']) ?></td>
                             <td><?= h(formatDateDisplay($ship['invoice_date'])) ?></td>
                             <td><?= h($ship['shipping_no']) ?></td>
@@ -757,6 +869,51 @@ uasort($paymentCustomers, function ($a, $b) {
                             <td class="money">Rp <?= h(formatMoney($ship['shipping_amount'])) ?></td>
                             <td class="money">Rp <?= h(formatMoney($ship['paid_amount'])) ?></td>
                             <td class="money"><strong>Rp <?= h(formatMoney($ship['sisa_shipping'])) ?></strong></td>
+                        </tr>
+                    <?php endforeach; ?>
+
+                    <?php $openingIndexBase = count($shippings); ?>
+                    <?php foreach ($openingBalances as $j => $opening): ?>
+                        <?php $itemIndex = $openingIndexBase + $j; ?>
+                        <tr class="invoice-row opening-row"
+                            data-customer-id="<?= h($opening['customer_id']) ?>"
+                            data-sisa="<?= h($opening['sisa_opening']) ?>"
+                            data-opening-id="<?= h($opening['opening_id']) ?>"
+                            data-opening-sign="<?= ((float)$opening['opening_balance'] < 0) ? '-1' : '1' ?>"
+                            style="display:none;">
+                            <td class="text-center">
+                                <input type="checkbox"
+                                       class="row-checkbox js-select-invoice"
+                                       name="items[<?= $itemIndex ?>][selected]"
+                                       value="1">
+
+                                <input type="hidden" name="items[<?= $itemIndex ?>][source]" value="OPENING">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][opening_id]" value="<?= h($opening['opening_id']) ?>">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][opening_sign]" value="<?= ((float)$opening['opening_balance'] < 0) ? '-1' : '1' ?>">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][invoice_no]" value="">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][invoice_date]" value="<?= h($opening['opening_date']) ?>">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][shipping_no]" value="">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][shipping_date]" value="">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][invoice_amount]" value="<?= h($opening['opening_balance']) ?>">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][sisa_before]" value="<?= h($opening['sisa_opening']) ?>">
+                            </td>
+
+                            <td>
+                                <strong>
+                                    <?= ((float)$opening['opening_balance'] < 0)
+                                        ? 'SALDO AWAL (-) / KREDIT'
+                                        : 'SALDO AWAL (+) / PIUTANG' ?>
+                                </strong>
+                            </td>
+                            <td>-</td>
+                            <td><?= h(formatDateDisplay($opening['opening_date'])) ?></td>
+                            <td>-</td>
+                            <td>-</td>
+                            <td class="money">
+                                <?= ((float)$opening['opening_balance'] < 0) ? '- ' : '' ?>Rp <?= h(formatMoney(abs((float)$opening['opening_balance']))) ?>
+                            </td>
+                            <td class="money">Rp <?= h(formatMoney($opening['paid_amount'])) ?></td>
+                            <td class="money"><strong>Rp <?= h(formatMoney($opening['sisa_opening'])) ?></strong></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
@@ -921,6 +1078,41 @@ function formatRupiah(value) {
     });
 }
 
+function getSelectedOpeningDirection() {
+    let hasNegativeOpening = false;
+    let hasPositiveDebt = false;
+
+    $('.invoice-row:visible').each(function () {
+        const checkbox = $(this).find('.js-select-invoice');
+        if (!checkbox.is(':checked')) return;
+
+        const source = String(
+            $(this).find('input[name$="[source]"]').val() || 'INVOICE'
+        ).toUpperCase();
+
+        if (source === 'OPENING') {
+            const sign = parseInt(
+                $(this).find('input[name$="[opening_sign]"]').val() || '1',
+                10
+            );
+
+            if (sign < 0) {
+                hasNegativeOpening = true;
+            } else {
+                hasPositiveDebt = true;
+            }
+        } else {
+            hasPositiveDebt = true;
+        }
+    });
+
+    return {
+        hasNegativeOpening,
+        hasPositiveDebt,
+        invalidMix: hasNegativeOpening && hasPositiveDebt
+    };
+}
+
 function getSelectedTotal() {
     let total = 0;
     let count = 0;
@@ -939,6 +1131,19 @@ function getSelectedTotal() {
 
 function refreshPaymentCalculation(resetCash = true) {
     const selected = getSelectedTotal();
+    const direction = getSelectedOpeningDirection();
+
+    if (direction.hasNegativeOpening) {
+        $('#pakai_titip').prop('checked', false).prop('disabled', true);
+        $('#nominal_titip').prop('disabled', true).val('0,00');
+        $('#return_id').val('').prop('disabled', true);
+        $('#retur_invoice').val(0);
+        $('#retur_amount_display').val('Rp ' + formatRupiah(0));
+        $('#returnInfo').hide().html('');
+    } else {
+        $('#pakai_titip').prop('disabled', false);
+        $('#return_id').prop('disabled', false);
+    }
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
 
@@ -1022,6 +1227,18 @@ function checkNominal() {
             'warning-danger warning-info warning-ok'
         )
         .hide();
+
+    const direction = getSelectedOpeningDirection();
+
+    if (direction.invalidMix) {
+        warning
+            .addClass('warning-danger')
+            .html(
+                'Saldo Awal (-) / Kredit tidak boleh digabung dalam satu transaksi dengan Invoice atau Saldo Awal (+).'
+            )
+            .show();
+        return;
+    }
 
     if (nominalTitip > saldoTitip + 0.01) {
         warning
@@ -1198,7 +1415,7 @@ $(document).ready(function () {
         } else if (customerId) {
             $('#noInvoiceMessage')
                 .text(
-                    'Tidak ada invoice/shipping NON CP-MCP outstanding. Jika customer memiliki Retur aktif, pilih pada bagian Retur Customer.'
+                    'Tidak ada invoice/shipping atau saldo awal positif yang masih outstanding. Jika customer memiliki Retur aktif, pilih pada bagian Retur Customer.'
                 )
                 .show();
         } else {
@@ -1330,6 +1547,27 @@ $(document).ready(function () {
         const selectedReturnId =
             String($('#return_id').val() || '').trim();
 
+        const direction = getSelectedOpeningDirection();
+
+        if (direction.invalidMix) {
+            alert(
+                'Saldo Awal (-) / Kredit harus diproses tersendiri dan tidak boleh digabung dengan Invoice atau Saldo Awal (+).'
+            );
+            e.preventDefault();
+            return false;
+        }
+
+        if (
+            direction.hasNegativeOpening &&
+            ($('#pakai_titip').is(':checked') || selectedReturnId !== '')
+        ) {
+            alert(
+                'Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip atau Retur Customer.'
+            );
+            e.preventDefault();
+            return false;
+        }
+
         /*
          * Retur standalone boleh disimpan tanpa invoice/shipping.
          */
@@ -1338,7 +1576,7 @@ $(document).ready(function () {
             selectedReturnId === ''
         ) {
             alert(
-                'Minimal centang 1 invoice/shipping atau pilih 1 Retur Customer.'
+                'Minimal centang 1 piutang (Invoice/Shipping atau Saldo Awal) atau pilih 1 Retur Customer.'
             );
             e.preventDefault();
             return false;

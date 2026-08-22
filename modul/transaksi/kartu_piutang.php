@@ -244,11 +244,16 @@ $sqlSaldo = "
                         WHEN LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
                              AND COALESCE(TRIM(db.return_id), '') <> ''
                             THEN 0
+                        WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
+                             AND COALESCE(cob_pay.opening_balance, 0) < 0
+                            THEN -ABS(COALESCE(db.bayar_amount, 0))
                         ELSE COALESCE(db.bayar_amount, 0)
                     END
                 )
                 FROM detail_bayar db
                 INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
+                LEFT JOIN customer_opening_balance cob_pay
+                    ON cob_pay.opening_id = db.opening_id
                 WHERE hb.customer_id = ?
                   AND hb.bayar_date < ?
                   AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
@@ -317,6 +322,8 @@ mysqli_stmt_close($stmtSaldo);
             shipping_no,
             return_id,
             bayar_no,
+            payment_source,
+            opening_id,
             penjualan,
             retur,
             pembayaran,
@@ -331,6 +338,8 @@ mysqli_stmt_close($stmtSaldo);
                 COALESCE(di.shipping_no, '') AS shipping_no,
                 '' AS return_id,
                 '' AS bayar_no,
+                'INVOICE' AS payment_source,
+                0 AS opening_id,
                 CASE
                     WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
                     WHEN COALESCE(hi.payment_balance, 0) > 0 THEN COALESCE(hi.payment_balance, 0)
@@ -365,6 +374,8 @@ mysqli_stmt_close($stmtSaldo);
                 COALESCE(hri.shipping_no, '') AS shipping_no,
                 hri.return_id AS return_id,
                 '' AS bayar_no,
+                'RETURN' AS payment_source,
+                0 AS opening_id,
                 0 AS penjualan,
                 (
                     CASE
@@ -392,6 +403,8 @@ mysqli_stmt_close($stmtSaldo);
                 COALESCE(NULLIF(db.shipping_no, ''), di.shipping_no, '') AS shipping_no,
                 COALESCE(db.return_id, '') AS return_id,
                 hb.bayar_no AS bayar_no,
+                COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE') AS payment_source,
+                COALESCE(db.opening_id, 0) AS opening_id,
                 0 AS penjualan,
                 0 AS retur,
                 CASE
@@ -402,6 +415,9 @@ mysqli_stmt_close($stmtSaldo);
                     WHEN LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
                          AND COALESCE(TRIM(db.return_id), '') <> ''
                         THEN 0
+                    WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
+                         AND COALESCE(cob_pay.opening_balance, 0) < 0
+                        THEN -ABS(COALESCE(db.bayar_amount, 0))
                     ELSE COALESCE(db.bayar_amount, 0)
                 END AS pembayaran,
 
@@ -425,6 +441,8 @@ mysqli_stmt_close($stmtSaldo);
                 db.invoice_no AS invoice_no_sort
             FROM head_bayar hb
             INNER JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
+            LEFT JOIN customer_opening_balance cob_pay
+                ON cob_pay.opening_id = db.opening_id
             LEFT JOIN (
                 SELECT
                     invoice_no,
@@ -452,6 +470,8 @@ mysqli_stmt_close($stmtSaldo);
                 '' AS shipping_no,
                 '' AS return_id,
                 '' AS bayar_no,
+                'TITIP' AS payment_source,
+                0 AS opening_id,
                 0 AS penjualan,
                 0 AS retur,
                 0 AS pembayaran,
@@ -907,8 +927,14 @@ mysqli_stmt_close($stmtSaldo);
                             $isReturn = (float)($row['retur'] ?? 0) > 0;
                             $isTitip = abs((float)($row['titip'] ?? 0)) > 0.0001;
 
+                            $paymentSource = strtoupper(
+                                trim((string)($row['payment_source'] ?? ''))
+                            );
+
                             if ($isReturn) {
                                 $shippingDisplay = 'Retur';
+                            } elseif ($paymentSource === 'OPENING') {
+                                $shippingDisplay = 'Saldo Awal';
                             } elseif ($isTitip) {
                                 /*
                                  * Titip masuk biasanya tidak memiliki shipping_no -> tampil "Titip".
@@ -952,7 +978,13 @@ mysqli_stmt_close($stmtSaldo);
                                     <?= ((float)$row['retur'] > 0) ? '- Rp ' . h(formatMoney($row['retur'])) : '' ?>
                                 </td>
                                 <td class="money-cell">
-                                    <?= ((float)$row['pembayaran'] > 0) ? 'Rp ' . h(formatMoney($row['pembayaran'])) : '' ?>
+                                    <?php
+                                        $paymentValue = (float)($row['pembayaran'] ?? 0);
+                                        if (abs($paymentValue) > 0.0001) {
+                                            echo ($paymentValue < 0 ? '- Rp ' : 'Rp ') .
+                                                h(formatMoney(abs($paymentValue)));
+                                        }
+                                    ?>
                                 </td>
                                 <td class="money-cell text-titip">
                                     <?php

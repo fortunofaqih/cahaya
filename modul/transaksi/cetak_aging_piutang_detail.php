@@ -468,6 +468,8 @@ $customers = [];
 
 /*
  * Muat saldo awal migrasi (berlaku pada awal opening_date) lebih dulu agar customer tetap muncul
+ * payment_source=OPENING dibaca eksplisit sebagai pembayaran saldo historis.
+ * Fallback invoice_no kosong/invoice lama tetap dipertahankan untuk data legacy.
  * walaupun belum mempunyai invoice baru pada periode aplikasi.
  */
 $whereOpening = "
@@ -739,6 +741,7 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     }
 
     $openingAmount = (float)($op['opening_balance'] ?? 0);
+    $openingIsCredit = $openingAmount < 0;
 
     $legacyCashBefore = (float)($op['legacy_cash_before'] ?? 0);
     $legacyCashPeriod = (float)($op['legacy_cash_period'] ?? 0);
@@ -754,15 +757,22 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
 
     // Saldo awal pada awal bulan = saldo migrasi dikurangi mutasi historis
     // yang terjadi sejak tanggal go-live (termasuk opening_date) tetapi sebelum periode laporan.
-    $customers[$customerKey]['amounts']['saldo_awal'] +=
+    $openingAtPeriod =
         $openingAmount
-        - $legacyCashBefore
-        - $legacyTitipBefore
+        + ($openingIsCredit ? $legacyCashBefore : -$legacyCashBefore)
+        + ($openingIsCredit ? $legacyTitipBefore : -$legacyTitipBefore)
         - $legacyReturBefore;
 
-    // Mutasi periode terhadap saldo historis tetap tampil pada kolom masing-masing.
-    $customers[$customerKey]['amounts']['bayar'] += $legacyCashPeriod;
-    $customers[$customerKey]['amounts']['titip_used'] += $legacyTitipPeriod;
+    $customers[$customerKey]['amounts']['saldo_awal'] +=
+        $openingAtPeriod;
+
+    // Untuk opening negatif, pembayaran adalah mutasi kebalikan agar saldo bergerak menuju nol.
+    $customers[$customerKey]['amounts']['bayar'] +=
+        $openingIsCredit ? -$legacyCashPeriod : $legacyCashPeriod;
+
+    $customers[$customerKey]['amounts']['titip_used'] +=
+        $openingIsCredit ? -$legacyTitipPeriod : $legacyTitipPeriod;
+
     $customers[$customerKey]['amounts']['retur'] += $legacyReturPeriod;
 
     /*
@@ -772,8 +782,8 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
      */
     $openingAtEnd =
         $openingAmount
-        - $legacyCashCutoff
-        - $legacyTitipCutoff
+        + ($openingIsCredit ? $legacyCashCutoff : -$legacyCashCutoff)
+        + ($openingIsCredit ? $legacyTitipCutoff : -$legacyTitipCutoff)
         - $legacyReturCutoff;
 
     $customers[$customerKey]['amounts']['b_lebih'] +=

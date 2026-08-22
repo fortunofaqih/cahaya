@@ -440,6 +440,7 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
     }
 
     $openingAmount = (float)($op['opening_balance'] ?? 0);
+    $openingIsCredit = $openingAmount < 0;
 
     $legacyCashBefore = (float)($op['legacy_cash_before'] ?? 0);
     $legacyCashPeriod = (float)($op['legacy_cash_period'] ?? 0);
@@ -460,8 +461,8 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
      */
     $openingAtPeriod =
         $openingAmount
-        - $legacyCashBefore
-        - $legacyTitipBefore
+        + ($openingIsCredit ? $legacyCashBefore : -$legacyCashBefore)
+        + ($openingIsCredit ? $legacyTitipBefore : -$legacyTitipBefore)
         - $legacyReturBefore;
 
     /*
@@ -469,13 +470,16 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
      */
     $openingAtEnd =
         $openingAmount
-        - $legacyCashCutoff
-        - $legacyTitipCutoff
+        + ($openingIsCredit ? $legacyCashCutoff : -$legacyCashCutoff)
+        + ($openingIsCredit ? $legacyTitipCutoff : -$legacyTitipCutoff)
         - $legacyReturCutoff;
 
     $rows[$groupLabel]['saldo_awal'] += $openingAtPeriod;
-    $rows[$groupLabel]['pembayaran'] += $legacyCashPeriod;
-    $rows[$groupLabel]['titip_used'] += $legacyTitipPeriod;
+    $rows[$groupLabel]['pembayaran'] +=
+        $openingIsCredit ? -$legacyCashPeriod : $legacyCashPeriod;
+
+    $rows[$groupLabel]['titip_used'] +=
+        $openingIsCredit ? -$legacyTitipPeriod : $legacyTitipPeriod;
     $rows[$groupLabel]['retur'] += $legacyReturPeriod;
     $rows[$groupLabel]['saldo_akhir'] += $openingAtEnd;
 
@@ -1036,6 +1040,7 @@ if ($stmtSaldoTitip) {
 
     mysqli_stmt_close($stmtSaldoTitip);
 }
+
 /*
  * ============================================================
  * 4. SALDO TITIP BELUM TERPAKAI = DISPLAY SAJA

@@ -142,12 +142,17 @@ $sql = "
         hb.keterangan,
         hb.bank_name,
         COALESCE(db.shipping_no, di.shipping_no, '') AS shipping_no,
+        COALESCE(db.opening_id, 0) AS opening_id,
+        COALESCE(cob.opening_balance, 0) AS opening_balance,
+        COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE') AS payment_source,
         COALESCE(TRIM(db.return_id), '') AS return_id,
         COALESCE(db.cash_amount, 0) AS cash_amount,
         COALESCE(db.titip_amount, 0) AS titip_amount_used,
         COALESCE(db.bayar_amount, 0) AS bayar_amount
     FROM head_bayar hb
     LEFT JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
+    LEFT JOIN customer_opening_balance cob
+        ON cob.opening_id = db.opening_id
     LEFT JOIN (
         SELECT
             invoice_no,
@@ -190,6 +195,7 @@ while ($row = mysqli_fetch_assoc($res)) {
             'keterangan'     => (string)($row['keterangan'] ?? ''),
             'bank_name'      => (string)($row['bank_name'] ?? ''),
             'shipping_arr'   => [],
+            'source_arr'     => [],
             'return_id'      => '',
             'cash_amount'    => 0.0,
             'bayar_amount'   => 0.0,
@@ -197,6 +203,20 @@ while ($row = mysqli_fetch_assoc($res)) {
             'is_titip_only'  => false,
         ];
     }
+
+    $paymentSource = strtoupper(
+        trim((string)($row['payment_source'] ?? 'INVOICE'))
+    );
+    if ($paymentSource === '') $paymentSource = 'INVOICE';
+
+    if ($paymentSource === 'OPENING') {
+        $paymentSource =
+            (float)($row['opening_balance'] ?? 0) < 0
+                ? 'OPENING (-)'
+                : 'OPENING (+)';
+    }
+
+    $paymentRows[$bayarNo]['source_arr'][$paymentSource] = true;
 
     $returnId = trim((string)($row['return_id'] ?? ''));
     if (
@@ -245,7 +265,18 @@ foreach ($paymentRows as $bayarNo => $row) {
     }
 
     $row['shipping_no'] = implode(', ', array_keys($row['shipping_arr']));
-    unset($row['shipping_arr']);
+
+    $sources = array_keys($row['source_arr']);
+    $row['payment_source'] = implode(', ', $sources);
+
+    if (in_array('OPENING (+)', $sources, true) || in_array('OPENING (-)', $sources, true)) {
+        $row['shipping_no'] =
+            trim($row['shipping_no']) !== ''
+                ? $row['shipping_no'] . ', SALDO AWAL'
+                : 'SALDO AWAL';
+    }
+
+    unset($row['shipping_arr'], $row['source_arr']);
 
     // Titip yang tampil adalah SALDO YANG BELUM DIPAKAI,
     // bukan db.titip_amount (karena db.titip_amount adalah titip yang SUDAH dipakai).
@@ -316,6 +347,7 @@ foreach ($titipBalances as $cid => $titipInfo) {
         'keterangan'    => 'Saldo titip belum digunakan',
         'bank_name'     => '',
         'shipping_no'   => '-',
+        'payment_source'=> 'TITIP',
         'return_id'     => '',
         'cash_amount'   => 0.0,
         'bayar_amount'  => 0.0,
@@ -582,6 +614,7 @@ foreach ($rows as $row) {
                     <th>Tanggal</th>
                     <th>No. Bayar</th>
                     <th>No. Retur</th>
+                    
                     <th>Shipping No.</th>
                     <th>Customer ID</th>
                     <th>Nama Customer</th>
@@ -598,7 +631,7 @@ foreach ($rows as $row) {
             <tbody>
                 <?php if (empty($rows)): ?>
                     <tr>
-                        <td colspan="15" class="text-center" style="padding:15px;color:#777;">
+                        <td colspan="16" class="text-center" style="padding:15px;color:#777;">
                             Tidak ada data pembayaran / saldo titip.
                         </td>
                     </tr>
@@ -616,6 +649,7 @@ foreach ($rows as $row) {
                                         : '-'
                                 ) ?>
                             </td>
+                            
                             <td><?= h($row['shipping_no']) ?></td>
                             <td><?= h($row['customer_id']) ?></td>
                             <td><?= h($row['customer_name']) ?></td>
@@ -648,7 +682,7 @@ foreach ($rows as $row) {
             </tbody>
             <tfoot>
                 <tr>
-                    <td colspan="10" class="text-right">TOTAL</td>
+                    <td colspan="11" class="text-right">TOTAL</td>
                     <td class="money-cell">Rp <?= h(formatMoney($total_bayar)) ?></td>
                     <td class="money-cell">Rp <?= h(formatMoney($total_cash)) ?></td>
                     <td class="money-cell">Rp <?= h(formatMoney($total_titip)) ?></td>

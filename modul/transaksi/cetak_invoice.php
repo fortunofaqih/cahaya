@@ -1,9 +1,8 @@
 <?php
 // modul/transaksi/cetak_invoice.php
-// Cetak invoice memakai kertas fisik "Surat Jalan" pre-printed yang sama dengan
-// cetak_slip_shipping.php (F4 portrait, koordinat absolute mm). Setiap shipping_no
-// yang tergabung dalam 1 invoice akan dicetak sebagai 1 halaman/nota fisik terpisah,
-// ditambah kolom Harga Satuan (price) dan Jumlah (subtotal) di sebelah kanan Nama Barang.
+// REVISI: Semua konten dinaikkan 1mm ke atas agar Total tercetak sempurna
+// REVISI: Harga menggunakan price_unit (prioritas utama) atau price (prioritas kedua)
+//         Subtotal TETAP menggunakan rumus EXISTING (tidak diubah)
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -62,11 +61,15 @@ function getInvoiceItemsByShipping($conn, $shippingNo) {
             dso.price_unit AS so_price_unit,
             dso.price AS so_price,
             dso.subtotal AS so_subtotal,
+            -- REVISI: Harga menggunakan price_unit (prioritas utama) atau price (prioritas kedua)
             CASE
-                WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
-                WHEN COALESCE(dso.quantity_pack, 0) > 0 THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                WHEN COALESCE(dso.price_unit, 0) > 0
+                    THEN COALESCE(dso.price_unit, 0)
+                WHEN COALESCE(dso.price, 0) > 0
+                    THEN COALESCE(dso.price, 0)
                 ELSE 0
             END AS invoice_price,
+            -- Subtotal TETAP menggunakan rumus EXISTING (tidak diubah)
             (
                 COALESCE(ds.qty_pack_shipping, 0) *
                 CASE
@@ -137,6 +140,11 @@ while ($resDet && $row = mysqli_fetch_assoc($resDet)) {
 mysqli_stmt_close($stmtDet);
 
 $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
+
+// REVISI: Konstanta OFFSET untuk menaikkan semua konten 1mm ke atas
+// Untuk menaikkan konten, gunakan nilai NEGATIF (-1)
+// Untuk menurunkan konten, gunakan nilai POSITIF (+1)
+$verticalOffset = -1; // semua konten dinaikkan 1mm
 ?>
 <!DOCTYPE html>
 <html>
@@ -302,7 +310,7 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
 <body>
 
 <div class="no-print">
-    <a class="btn btn-secondary" href="index.php?page=invoice">Kembali</a>
+    <a class="btn btn-secondary" href="../../index.php?page=invoice">Kembali</a>
     <button class="btn btn-success" onclick="window.print()">Cetak / Print</button>
 
 </div>
@@ -312,7 +320,8 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
 ?>
 <div class="page">
     <?php
-    $startTop = 82; // dinaikkan 0,3cm dari 85mm
+    // REVISI: Semua nilai top dikurangi 1mm (offset -1)
+    $startTop = 82 + $verticalOffset; // 82 - 1 = 81mm
     $rowHeight = 5.0;
     $currentTop = $startTop;
     $usedSlots = 0;
@@ -341,7 +350,8 @@ $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
         $usedSlots += 1;
     endforeach;
 
-    $totalTop = $currentTop + 2;
+    // REVISI: Total tetap menggunakan $currentTop + 1 (sesuai keinginan user)
+    $totalTop = $currentTop + 1; // tetap +1
     $totalInvoiceText = 'Rp ' . fmtMoney($totalInvoice);
     $totalInvoiceFontSize = fitFontSize($totalInvoiceText, 30, 10, 6);
     ?>

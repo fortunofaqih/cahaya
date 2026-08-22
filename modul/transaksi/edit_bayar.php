@@ -99,6 +99,8 @@ $stmt = mysqli_prepare(
         id,
         invoice_no,
         shipping_no,
+        opening_id,
+        payment_source,
         return_id,
         invoice_date,
         invoice_amount,
@@ -117,7 +119,12 @@ $res = mysqli_stmt_get_result($stmt);
 
 while ($row = mysqli_fetch_assoc($res)) {
     $currentDetails[] = $row;
-    $key = trim((string)$row['invoice_no']) . '|' . trim((string)$row['shipping_no']);
+    $source = strtoupper(trim((string)($row['payment_source'] ?? 'INVOICE')));
+    if ($source === 'OPENING' && (int)($row['opening_id'] ?? 0) > 0) {
+        $key = 'OPENING|' . (int)$row['opening_id'];
+    } else {
+        $key = trim((string)$row['invoice_no']) . '|' . trim((string)$row['shipping_no']);
+    }
     $currentDetailMap[$key] = $row;
     $currentCash += (float)($row['cash_amount'] ?? 0);
     $currentTitip += (float)($row['titip_amount'] ?? 0);
@@ -362,6 +369,60 @@ mysqli_stmt_close($stmt);
 
 /*
 |--------------------------------------------------------------------------
+| SALDO AWAL CUSTOMER UNTUK EDIT
+|--------------------------------------------------------------------------
+| Saldo awal positif = piutang historis.
+| Pembayaran dari bayar_no ini dikeluarkan agar item existing tetap tampil.
+|--------------------------------------------------------------------------
+*/
+$openingRows = [];
+
+$stmt = mysqli_prepare(
+    $conn,
+    "SELECT
+        cob.opening_id,
+        cob.opening_date,
+        cob.customer_id,
+        cob.customer_name,
+        cob.customer_city,
+        cob.opening_balance,
+        COALESCE((
+            SELECT SUM(ABS(COALESCE(db.bayar_amount,0)))
+            FROM detail_bayar db
+            WHERE db.payment_source = 'OPENING'
+              AND db.opening_id = cob.opening_id
+              AND db.bayar_no <> ?
+        ),0) AS paid_except_current,
+        GREATEST(
+            ABS(cob.opening_balance) - COALESCE((
+                SELECT SUM(ABS(COALESCE(db2.bayar_amount,0)))
+                FROM detail_bayar db2
+                WHERE db2.payment_source = 'OPENING'
+                  AND db2.opening_id = cob.opening_id
+                  AND db2.bayar_no <> ?
+            ),0),
+            0
+        ) AS sisa_before_current
+     FROM customer_opening_balance cob
+     WHERE cob.customer_id = ?
+       AND LOWER(COALESCE(cob.status,'Active')) = 'active'
+       AND ABS(cob.opening_balance) > 0.01
+     HAVING sisa_before_current > 0.01
+     ORDER BY cob.opening_date ASC, cob.opening_id ASC"
+);
+
+if ($stmt) {
+    mysqli_stmt_bind_param($stmt,'sss',$bayarNo,$bayarNo,$customerId);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    while ($row = mysqli_fetch_assoc($res)) {
+        $openingRows[] = $row;
+    }
+    mysqli_stmt_close($stmt);
+}
+
+/*
+|--------------------------------------------------------------------------
 | RETUR AKTIF CUSTOMER
 |--------------------------------------------------------------------------
 | Retur tidak lagi terikat Invoice / Shipping yang dicentang.
@@ -545,7 +606,7 @@ $saldoTitipAvailable =
 
 <div class="form-section">
     <div class="form-section-title">
-        2. Invoice / Shipping Pembayaran
+        2. Piutang Pembayaran
         <span id="selected_count_label" style="float:right;font-weight:800;color:#0d6efd;">0 dipilih</span>
     </div>
     <div class="form-section-body">
@@ -554,6 +615,7 @@ $saldoTitipAvailable =
                 <thead>
                     <tr>
                         <th>Pilih</th>
+                        <th>Sumber</th>
                         <th>Invoice No.</th>
                         <th>Invoice Date</th>
                         <th>Shipping No.</th>
@@ -566,8 +628,8 @@ $saldoTitipAvailable =
                 <tbody>
                 <?php if (empty($rows)): ?>
                     <tr>
-                        <td colspan="8" class="text-center" style="padding:12px;color:#777;">
-                            Tidak ada invoice/shipping NON CP-MCP outstanding.
+                        <td colspan="9" class="text-center" style="padding:12px;color:#777;">
+                            Tidak ada invoice/shipping NON CP-MCP atau saldo awal positif outstanding.
                             Transaksi tetap dapat diedit sebagai Retur Customer standalone.
                         </td>
                     </tr>
@@ -587,6 +649,8 @@ $saldoTitipAvailable =
                                    value="1"
                                    <?= $checked ? 'checked' : '' ?>>
 
+                            <input type="hidden" name="items[<?= $i ?>][source]" value="INVOICE">
+                            <input type="hidden" name="items[<?= $i ?>][opening_id]" value="">
                             <input type="hidden"
                                    name="items[<?= $i ?>][invoice_no]"
                                    value="<?= h($row['invoice_no']) ?>">
@@ -594,6 +658,7 @@ $saldoTitipAvailable =
                                    name="items[<?= $i ?>][shipping_no]"
                                    value="<?= h($row['shipping_no']) ?>">
                         </td>
+                        <td><strong>INVOICE</strong></td>
                         <td><?= h($row['invoice_no']) ?></td>
                         <td><?= h(formatDateDisplay($row['invoice_date'])) ?></td>
                         <td><?= h($row['shipping_no']) ?></td>
@@ -601,6 +666,46 @@ $saldoTitipAvailable =
                         <td class="money">Rp <?= h(formatMoney($row['shipping_amount'])) ?></td>
                         <td class="money">Rp <?= h(formatMoney($row['paid_except_current'])) ?></td>
                         <td class="money"><strong>Rp <?= h(formatMoney($row['sisa_before_current'])) ?></strong></td>
+                    </tr>
+                <?php endforeach; ?>
+
+                <?php $openingIndexBase = count($rows); ?>
+                <?php foreach ($openingRows as $j => $opening): ?>
+                    <?php
+                        $itemIndex = $openingIndexBase + $j;
+                        $openingKey = 'OPENING|' . (int)$opening['opening_id'];
+                        $currentOpening = $currentDetailMap[$openingKey] ?? null;
+                        $openingChecked = $currentOpening !== null;
+                    ?>
+                    <tr class="invoice-row opening-row <?= $openingChecked ? 'selected-row' : '' ?>"
+                        data-sisa="<?= h($opening['sisa_before_current']) ?>"
+                        data-opening-sign="<?= ((float)$opening['opening_balance'] < 0) ? '-1' : '1' ?>">
+                        <td class="text-center">
+                            <input type="checkbox" class="row-checkbox js-select-invoice"
+                                   name="items[<?= $itemIndex ?>][selected]" value="1"
+                                   <?= $openingChecked ? 'checked' : '' ?>>
+                            <input type="hidden" name="items[<?= $itemIndex ?>][source]" value="OPENING">
+                            <input type="hidden" name="items[<?= $itemIndex ?>][opening_id]" value="<?= h($opening['opening_id']) ?>">
+                            <input type="hidden" name="items[<?= $itemIndex ?>][opening_sign]" value="<?= ((float)$opening['opening_balance'] < 0) ? '-1' : '1' ?>">
+                            <input type="hidden" name="items[<?= $itemIndex ?>][invoice_no]" value="">
+                            <input type="hidden" name="items[<?= $itemIndex ?>][shipping_no]" value="">
+                        </td>
+                        <td>
+                            <strong>
+                                <?= ((float)$opening['opening_balance'] < 0)
+                                    ? 'SALDO AWAL (-) / KREDIT'
+                                    : 'SALDO AWAL (+) / PIUTANG' ?>
+                            </strong>
+                        </td>
+                        <td>-</td>
+                        <td><?= h(formatDateDisplay($opening['opening_date'])) ?></td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td class="money">
+                            <?= ((float)$opening['opening_balance'] < 0) ? '- ' : '' ?>Rp <?= h(formatMoney(abs((float)$opening['opening_balance']))) ?>
+                        </td>
+                        <td class="money">Rp <?= h(formatMoney($opening['paid_except_current'])) ?></td>
+                        <td class="money"><strong>Rp <?= h(formatMoney($opening['sisa_before_current'])) ?></strong></td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
@@ -778,6 +883,40 @@ function formatRupiah(value) {
     });
 }
 
+function selectedOpeningDirection() {
+    let hasNegativeOpening = false;
+    let hasPositiveDebt = false;
+
+    $('.invoice-row').each(function () {
+        const checkbox = $(this).find('.js-select-invoice');
+        if (!checkbox.is(':checked')) return;
+
+        const source = String(
+            $(this).find('input[name$="[source]"]').val() || 'INVOICE'
+        ).toUpperCase();
+
+        if (source === 'OPENING') {
+            const sign = parseInt(
+                $(this).find('input[name$="[opening_sign]"]').val() || '1',
+                10
+            );
+            if (sign < 0) {
+                hasNegativeOpening = true;
+            } else {
+                hasPositiveDebt = true;
+            }
+        } else {
+            hasPositiveDebt = true;
+        }
+    });
+
+    return {
+        hasNegativeOpening,
+        hasPositiveDebt,
+        invalidMix: hasNegativeOpening && hasPositiveDebt
+    };
+}
+
 function selectedSummary() {
     let total = 0;
     let count = 0;
@@ -833,6 +972,16 @@ function checkNominal() {
             'warning-danger warning-info warning-ok'
         )
         .hide();
+
+    const direction = selectedOpeningDirection();
+
+    if (direction.invalidMix) {
+        warning
+            .addClass('warning-danger')
+            .html('Saldo Awal (-) / Kredit harus diproses tersendiri.')
+            .show();
+        return;
+    }
 
     if (titip > saldoTitip + 0.01) {
         warning

@@ -1,11 +1,10 @@
 <?php
 // modul/transaksi/cetak_invoice_full.php
 // REVISI:
-// - Perhitungan harga disamakan dengan cetak_invoice.php
-// - Tidak lagi menggunakan det_shipping.price_unit sebagai prioritas harga
-// - Tidak lagi menggunakan det_shipping.subtotal sebagai subtotal invoice
-// - Subtotal item = qty_pack_shipping x harga dari detail_sales_order
-// - Total halaman = jumlah invoice_subtotal item pada shipping tersebut
+// - Perhitungan harga disamakan dengan cetak_sales_order.php
+// - Harga menggunakan price_unit (prioritas utama) atau price (prioritas kedua)
+// - Subtotal tetap menggunakan detail_sales_order.subtotal (seperti existing)
+// - Total halaman = jumlah subtotal item pada shipping tersebut
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
@@ -114,14 +113,10 @@ mysqli_stmt_close($stmt);
 |--------------------------------------------------------------------------
 | DETAIL ITEM PER SHIPPING
 |--------------------------------------------------------------------------
-| Logika ini DISAMAKAN dengan cetak_invoice.php.
-|
-| Harga:
-| 1. detail_sales_order.price
-| 2. fallback detail_sales_order.subtotal / quantity_pack
-|
-| Subtotal:
-| qty_pack_shipping x invoice_price
+| REVISI: 
+| - Harga DISAMAKAN dengan cetak_sales_order.php
+|   (price_unit prioritas utama, price prioritas kedua)
+| - Subtotal TETAP menggunakan detail_sales_order.subtotal (seperti existing)
 |--------------------------------------------------------------------------
 */
 function getItems($conn, $shippingNo) {
@@ -134,30 +129,14 @@ function getItems($conn, $shippingNo) {
             dso.subtotal AS so_subtotal,
 
             CASE
+                WHEN COALESCE(dso.price_unit, 0) > 0
+                    THEN COALESCE(dso.price_unit, 0)
                 WHEN COALESCE(dso.price, 0) > 0
                     THEN COALESCE(dso.price, 0)
-
-                WHEN COALESCE(dso.quantity_pack, 0) > 0
-                    THEN COALESCE(dso.subtotal, 0)
-                         / NULLIF(dso.quantity_pack, 0)
-
                 ELSE 0
             END AS invoice_price,
 
-            (
-                COALESCE(ds.qty_pack_shipping, 0)
-                *
-                CASE
-                    WHEN COALESCE(dso.price, 0) > 0
-                        THEN COALESCE(dso.price, 0)
-
-                    WHEN COALESCE(dso.quantity_pack, 0) > 0
-                        THEN COALESCE(dso.subtotal, 0)
-                             / NULLIF(dso.quantity_pack, 0)
-
-                    ELSE 0
-                END
-            ) AS invoice_subtotal
+            COALESCE(dso.subtotal, 0) AS invoice_subtotal
 
         FROM det_shipping ds
 
@@ -448,8 +427,7 @@ body {
     |--------------------------------------------------------------------------
     | TOTAL SHIPPING
     |--------------------------------------------------------------------------
-    | Sama seperti cetak_invoice.php:
-    | jumlah seluruh invoice_subtotal dari barang dalam shipping ini.
+    | Total menggunakan detail_sales_order.subtotal (seperti existing)
     |--------------------------------------------------------------------------
     */
     $shippingSubtotal = 0;
@@ -462,18 +440,6 @@ body {
 <div class="page">
 
     <div class="header">
-
-        <!--
-        <div>
-            <div class="company">
-                PT MUTIARACAHAYA PLASTINDO
-            </div>
-
-            <div style="font-size:11px;margin-top:4px">
-                Invoice berdasarkan Shipping
-            </div>
-        </div>
-        -->
 
         <div class="title">
             <h1>INVOICE</h1>
@@ -727,11 +693,7 @@ body {
     |--------------------------------------------------------------------------
     | SUMMARY
     |--------------------------------------------------------------------------
-    | Total menggunakan hasil penjumlahan item shipping yang sama dengan
-    | cetak_invoice.php.
-    |
-    | head_invoice.subtotal, down_payment, dan grand_total TIDAK digunakan
-    | sebagai Total pada halaman ini agar tidak berbeda dengan cetak_invoice.php.
+    | Total menggunakan detail_sales_order.subtotal (seperti existing)
     |--------------------------------------------------------------------------
     -->
     <table class="summary">
