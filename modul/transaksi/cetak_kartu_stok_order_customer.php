@@ -94,13 +94,6 @@ function appendUnit(&$bucket, $qty, $unit) {
 $order_no = trim((string)($_GET['order_no'] ?? ''));
 $inventory_id = trim((string)($_GET['inventory_id'] ?? ''));
 
-$todaySql = date('Y-m-d');
-$start_date = normalizeDate($_GET['start_date'] ?? '', $todaySql);
-$end_date   = normalizeDate($_GET['end_date'] ?? '', $todaySql);
-if ($start_date > $end_date) {
-    [$start_date, $end_date] = [$end_date, $start_date];
-}
-
 if ($order_no === '' || $inventory_id === '') {
     die('Parameter order_no dan inventory_id wajib diisi.');
 }
@@ -195,7 +188,6 @@ $sqlShip = "
     INNER JOIN det_shipping ds ON ds.shipping_no = hs.shipping_no
     WHERE hs.order_no = ?
       AND ds.inventory_id = ?
-      AND hs.shipping_date BETWEEN ? AND ?
       AND COALESCE(hs.status, 'Open') <> 'Cancel'
     ORDER BY hs.shipping_date ASC, hs.shipping_no ASC, ds.id ASC
 ";
@@ -203,7 +195,7 @@ $stmtShip = mysqli_prepare($conn, $sqlShip);
 if (!$stmtShip) {
     die('Prepare shipping error: ' . mysqli_error($conn));
 }
-mysqli_stmt_bind_param($stmtShip, 'ssss', $order_no, $inventory_id, $start_date, $end_date);
+mysqli_stmt_bind_param($stmtShip, 'ss', $order_no, $inventory_id);
 mysqli_stmt_execute($stmtShip);
 $shippingRows = mysqli_stmt_get_result($stmtShip);
 
@@ -247,14 +239,27 @@ while ($ship = mysqli_fetch_assoc($shippingRows)) {
     $totalShip['OTHER'] += $bucket['OTHER'];
     $totalShip['KG'] += $bucket['KG'];
 
-    $shipments[] = [
-        'shipping_no' => $ship['shipping_no'],
-        'shipping_date' => $ship['shipping_date'],
-        'BAL' => $bucket['BAL'],
-        'OTHER' => $bucket['OTHER'],
-        'KG' => $bucket['KG'],
-    ];
+    // Satu Shipping No bisa mempunyai lebih dari satu det_shipping
+    // untuk inventory yang sama. Gabungkan agar cetak hanya 1 baris per SJ.
+    $shipKey = (string)$ship['shipping_no'];
+
+    if (!isset($shipments[$shipKey])) {
+        $shipments[$shipKey] = [
+            'shipping_no'   => $ship['shipping_no'],
+            'shipping_date' => $ship['shipping_date'],
+            'BAL'           => 0.0,
+            'OTHER'         => 0.0,
+            'KG'            => 0.0,
+        ];
+    }
+
+    $shipments[$shipKey]['BAL']   += $bucket['BAL'];
+    $shipments[$shipKey]['OTHER'] += $bucket['OTHER'];
+    $shipments[$shipKey]['KG']    += $bucket['KG'];
 }
+
+// Kembalikan menjadi indexed array untuk proses cetak.
+$shipments = array_values($shipments);
 
 $orderBucket = ['BAL' => 0.0, 'OTHER' => 0.0, 'KG' => 0.0];
 appendUnit($orderBucket, $order['quantity_detail'], $order['uom_detail']);
@@ -350,117 +355,211 @@ if ($keterangan === '') {
     <title>Cetak Kartu Stok Order Customer - <?= e($order_no) ?></title>
     <style>
         @page {
-            size: landscape;
-            margin: 5mm 6mm;
+            size: A4 landscape;
+            margin: 0;
         }
 
-        * { box-sizing: border-box; }
+        * {
+            box-sizing: border-box;
+        }
 
-        html, body {
+        html,
+        body {
             margin: 0;
             padding: 0;
             font-family: Arial, Helvetica, sans-serif;
-            font-size: 11px;
             color: #000;
             background: #fff;
         }
 
-        body {
-            width: 100%;
-        }
-
-        body * { visibility: hidden !important; }
-        .print-page, .print-page * { visibility: visible !important; }
-
+        /*
+         * Kertas printer: A4 landscape = 297 x 210 mm.
+         * Kartu dibuat 148 mm (setengah lebar A4) sehingga hasil
+         * berada di sisi kiri seperti contoh fisik.
+         */
         .print-page {
-            position: absolute;
-            left: 0;
-            top: 0;
+            width: 148mm;
+            padding: 5mm 4mm 4mm 5mm;
+            font-size: 8pt;
+            line-height: 1.15;
+            background: #fff;
+        }
+
+        .top-table {
             width: 100%;
-            border: 1px dotted #000;
-            padding: 5px 6px;
+            border-collapse: collapse;
+            table-layout: fixed;
         }
 
-        .top-table { width: 100%; border-collapse: collapse; }
+        .top-table td {
+            vertical-align: middle;
+        }
+
         .doc-code {
-            border: 1px solid #000;
-            font-weight: bold;
-            padding: 4px 6px;
-            width: 130px;
-            font-size: 12px;
-        }
-        .title {
+            width: 32mm;
+            border: 0.3mm solid #000;
+            font-weight: 700;
+            padding: 1.4mm 1mm;
+            white-space: nowrap;
             text-align: center;
-            font-size: 16px;
-            font-weight: bold;
-            text-decoration: underline;
-            letter-spacing: .3px;
+            font-size: 7.4pt;
         }
-        .rev { text-align: right; width: 210px; font-size: 11px; }
 
-        .info { margin-top: 5px; width: 100%; border-collapse: collapse; }
-        .info td { padding: 2px 4px; vertical-align: top; }
-        .label { width: 105px; }
-        .colon { width: 8px; }
-        .right-label { width: 60px; }
+        .title {
+            width: 68mm;
+            text-align: center;
+            font-size: 9.2pt;
+            font-weight: 700;
+            white-space: nowrap;
+            padding: 0 1mm;
+        }
+
+        .rev {
+            width: 39mm;
+            text-align: right;
+            white-space: nowrap;
+            font-size: 6.8pt;
+        }
+
+        .info {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1.5mm;
+            table-layout: fixed;
+        }
+
+        .info td {
+            padding: 0.55mm 0.6mm;
+            vertical-align: top;
+            font-size: 7.4pt;
+            line-height: 1.15;
+        }
+
+        .info .label {
+            width: 24mm;
+            white-space: nowrap;
+        }
+
+        .info .colon {
+            width: 3mm;
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        .info .right-label {
+            width: 16mm;
+            white-space: nowrap;
+        }
 
         .ship-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 10px;
-            font-size: 10.5px;
+            table-layout: fixed;
+            margin-top: 3mm;
+            font-size: 7.3pt;
         }
+
         .ship-table th,
         .ship-table td {
-            border: 1px solid #000;
-            padding: 4px;
-            height: 23px;
+            border: 0.25mm solid #000;
+            padding: 1.1mm 1mm;
+            height: 6.4mm;
+            vertical-align: middle;
         }
-        .ship-table th { text-align: center; font-weight: normal; }
-        .ship-table .section-title { text-align: center; font-weight: normal; height: 24px; }
-        .text-right { text-align: right; }
-        .text-center { text-align: center; }
-        .bold { font-weight: bold; }
+
+        .ship-table th {
+            text-align: center;
+            font-weight: 400;
+        }
+
+        .ship-table .section-title {
+            text-align: center;
+            font-weight: 400;
+            height: 5.8mm;
+            padding: 1mm;
+        }
+
+        .text-right {
+            text-align: right;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .bold {
+            font-weight: 700;
+        }
 
         .sign-wrap {
-            margin-top: 12px;
+            margin-top: 2.5mm;
+            width: 100%;
             display: flex;
             justify-content: space-around;
             text-align: center;
-            font-size: 11px;
+            font-size: 7.2pt;
         }
-        .sign-space { height: 35px; }
+
+        .sign-wrap > div {
+            width: 45%;
+        }
+
+        .sign-space {
+            height: 10mm;
+        }
 
         .print-button {
             position: fixed;
             right: 10px;
             top: 10px;
-            z-index: 99;
-            visibility: visible !important;
+            z-index: 999;
             padding: 8px 12px;
             border: 0;
             border-radius: 4px;
             background: #0d6efd;
             color: #fff;
             cursor: pointer;
+            font-size: 12px;
         }
+
+        @media screen {
+            body {
+                background: #ececec;
+                padding: 10px;
+            }
+
+            .print-page {
+                min-height: 200mm;
+                box-shadow: 0 0 6px rgba(0,0,0,.25);
+            }
+        }
+
         @media print {
+            html,
+            body {
+                width: 297mm;
+                height: 210mm;
+                overflow: hidden;
+                background: #fff;
+            }
+
+            body {
+                padding: 0;
+            }
+
             .print-button {
                 display: none !important;
             }
 
-            html, body {
-                padding: 0;
-                margin: 0;
-            }
-
-            body {
-                width: 32cm;
-            }
-
             .print-page {
-                width: 100%;
-                border: 1px dotted #000;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 148mm;
+                margin: 0;
+                box-shadow: none;
+                page-break-inside: avoid;
+                break-inside: avoid;
             }
         }
     </style>
@@ -471,7 +570,7 @@ if ($keterangan === '') {
     <div class="print-page">
         <table class="top-table">
             <tr>
-                <td class="doc-code">MCP/FM/MRRT/01</td>
+                <td class="doc-code">MCP/FM/MRKT/01</td>
                 <td class="title">KARTU STOK ORDER CUSTOMER</td>
                 <td class="rev">Rev : 00&nbsp;&nbsp;Tgl : 01/06/2010</td>
             </tr>
@@ -522,14 +621,14 @@ if ($keterangan === '') {
                 <th colspan="5" class="section-title">DATA PENGIRIMAN BARANG</th>
             </tr>
             <tr>
-                <th rowspan="2" style="width: 15%;">TGL.<br>KIRIM</th>
-                <th rowspan="2" style="width: 20%;">NO. SJ</th>
+                <th rowspan="2" style="width: 18%;">TGL.<br>KIRIM</th>
+                <th rowspan="2" style="width: 22%;">NO. SJ</th>
                 <th colspan="3">JUMLAH</th>
             </tr>
             <tr>
-                <th style="width: 22%;">BAL</th>
-                <th style="width: 22%;">Other</th>
-                <th style="width: 21%;">KG</th>
+                <th style="width: 20%;">BAL</th>
+                <th style="width: 20%;">Other</th>
+                <th style="width: 20%;">KG</th>
             </tr>
 
             <?php

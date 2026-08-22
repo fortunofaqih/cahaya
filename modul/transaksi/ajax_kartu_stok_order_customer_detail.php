@@ -7,8 +7,8 @@
 // KG = Kilogram
 //
 // Alur:
-// - Baris ORDER masuk ke kolom Roll / Ptg / Lain
-// - Baris SHIPPING masuk ke kolom SJ
+// - Baris ORDER menambah Saldo (tanpa kolom Roll/Ptg/Lain terpisah)
+// - Baris SHIPPING masuk ke kolom SJ dan mengurangi Saldo
 // - Saldo = Order - Shipping kumulatif
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -63,7 +63,8 @@ function fmtDate($date)
 }
 
 /**
- * Tentukan grup inventory:
+ * Tentukan grup inventory (dipakai hanya untuk keterangan "Jenis" di info box,
+ * tidak lagi memecah kolom tabel).
  * ROLL
  * PTG
  * LAIN
@@ -326,7 +327,7 @@ if (!$so) {
 
 
 // ============================================================
-// TENTUKAN INVENTORY TERMASUK ROLL / PTG / LAIN
+// JENIS INVENTORY (hanya untuk keterangan info box)
 // ============================================================
 
 $inventoryGroup = getInventoryGroup(
@@ -423,8 +424,8 @@ $rsShip = mysqli_stmt_get_result($stmtShip);
 // BENTUK TRANSAKSI
 // ============================================================
 //
-// Baris pertama = ORDER
-// Berikutnya = SHIPPING
+// Baris pertama = ORDER (mengisi bucket 'order', SJ kosong)
+// Berikutnya    = SHIPPING (mengisi bucket 'sj', order kosong)
 //
 
 $transactions = [];
@@ -434,26 +435,14 @@ $transactions = [];
 // ORDER
 // ------------------------------------------------------------
 
-$orderTransaction = [
+$transactions[] = [
     'date'        => $so['order_date'],
     'sort_type'   => 0,
     'shipping_no' => '',
 
-    'roll' => newBucket(),
-    'ptg'  => newBucket(),
-    'lain' => newBucket(),
-    'sj'   => newBucket()
+    'order' => $orderBucket,
+    'sj'    => newBucket()
 ];
-
-if ($inventoryGroup === 'ROLL') {
-    $orderTransaction['roll'] = $orderBucket;
-} elseif ($inventoryGroup === 'PTG') {
-    $orderTransaction['ptg'] = $orderBucket;
-} else {
-    $orderTransaction['lain'] = $orderBucket;
-}
-
-$transactions[] = $orderTransaction;
 
 
 // ------------------------------------------------------------
@@ -482,10 +471,8 @@ while ($ship = mysqli_fetch_assoc($rsShip)) {
         'sort_type'   => 1,
         'shipping_no' => $ship['shipping_no'],
 
-        'roll' => newBucket(),
-        'ptg'  => newBucket(),
-        'lain' => newBucket(),
-        'sj'   => $sjBucket
+        'order' => newBucket(),
+        'sj'    => $sjBucket
     ];
 }
 
@@ -525,10 +512,7 @@ usort($transactions, function ($a, $b) {
 // TOTAL
 // ============================================================
 
-$totalRoll = newBucket();
-$totalPtg  = newBucket();
-$totalLain = newBucket();
-$totalSj   = newBucket();
+$totalSj = newBucket();
 
 $runningSaldo = newBucket();
 
@@ -561,7 +545,7 @@ ob_start();
     }
 
     .kso-ledger {
-        min-width: 1350px;
+        min-width: 550px;
         width: 100%;
         border-collapse: collapse;
         font-size: 11px;
@@ -690,18 +674,6 @@ ob_start();
                 </th>
 
                 <th colspan="3">
-                    Roll
-                </th>
-
-                <th colspan="3">
-                    Ptg
-                </th>
-
-                <th colspan="3">
-                    Lain
-                </th>
-
-                <th colspan="3">
                     SJ
                 </th>
 
@@ -712,18 +684,6 @@ ob_start();
             </tr>
 
             <tr>
-
-                <th>B</th>
-                <th>Ot</th>
-                <th>KG</th>
-
-                <th>B</th>
-                <th>Ot</th>
-                <th>KG</th>
-
-                <th>BAL</th>
-                <th>Other</th>
-                <th>KG</th>
 
                 <th>BAL</th>
                 <th>Ot</th>
@@ -744,57 +704,25 @@ ob_start();
             <?php
 
             // ==================================================
-            // TOTAL TRANSAKSI ORDER
+            // TAMBAH ORDER KE SALDO (baris Order saja yang isi)
             // ==================================================
 
-            $totalRoll['b']  += $trx['roll']['b'];
-            $totalRoll['ot'] += $trx['roll']['ot'];
-            $totalRoll['kg'] += $trx['roll']['kg'];
-
-            $totalPtg['b']  += $trx['ptg']['b'];
-            $totalPtg['ot'] += $trx['ptg']['ot'];
-            $totalPtg['kg'] += $trx['ptg']['kg'];
-
-            $totalLain['b']  += $trx['lain']['b'];
-            $totalLain['ot'] += $trx['lain']['ot'];
-            $totalLain['kg'] += $trx['lain']['kg'];
-
-
-            // ==================================================
-            // TAMBAH ORDER KE SALDO
-            // ==================================================
-
-            $orderB =
-                $trx['roll']['b'] +
-                $trx['ptg']['b'] +
-                $trx['lain']['b'];
-
-            $orderOt =
-                $trx['roll']['ot'] +
-                $trx['ptg']['ot'] +
-                $trx['lain']['ot'];
-
-            $orderKg =
-                $trx['roll']['kg'] +
-                $trx['ptg']['kg'] +
-                $trx['lain']['kg'];
-
-            $runningSaldo['b'] += $orderB;
-            $runningSaldo['ot'] += $orderOt;
-            $runningSaldo['kg'] += $orderKg;
+            $runningSaldo['b']  += $trx['order']['b'];
+            $runningSaldo['ot'] += $trx['order']['ot'];
+            $runningSaldo['kg'] += $trx['order']['kg'];
 
 
             // ==================================================
             // SHIPPING
             // ==================================================
 
-            $totalSj['b'] += $trx['sj']['b'];
+            $totalSj['b']  += $trx['sj']['b'];
             $totalSj['ot'] += $trx['sj']['ot'];
             $totalSj['kg'] += $trx['sj']['kg'];
 
 
             // Shipping mengurangi saldo
-            $runningSaldo['b'] -= $trx['sj']['b'];
+            $runningSaldo['b']  -= $trx['sj']['b'];
             $runningSaldo['ot'] -= $trx['sj']['ot'];
             $runningSaldo['kg'] -= $trx['sj']['kg'];
 
@@ -845,24 +773,6 @@ ob_start();
                 </td>
 
 
-                <!-- ROLL -->
-                <td><?= e(displayQty($trx['roll']['b'])) ?></td>
-                <td><?= e(displayQty($trx['roll']['ot'])) ?></td>
-                <td><?= e(displayQty($trx['roll']['kg'])) ?></td>
-
-
-                <!-- PTG -->
-                <td><?= e(displayQty($trx['ptg']['b'])) ?></td>
-                <td><?= e(displayQty($trx['ptg']['ot'])) ?></td>
-                <td><?= e(displayQty($trx['ptg']['kg'])) ?></td>
-
-
-                <!-- LAIN -->
-                <td><?= e(displayQty($trx['lain']['b'])) ?></td>
-                <td><?= e(displayQty($trx['lain']['ot'])) ?></td>
-                <td><?= e(displayQty($trx['lain']['kg'])) ?></td>
-
-
                 <!-- SJ -->
                 <td><?= e(displayQty($trx['sj']['b'])) ?></td>
                 <td><?= e(displayQty($trx['sj']['ot'])) ?></td>
@@ -898,21 +808,6 @@ ob_start();
         <td>
             TOTAL
         </td>
-
-        <!-- ROLL -->
-        <td><?= e(displayQty($totalRoll['b'])) ?></td>
-        <td><?= e(displayQty($totalRoll['ot'])) ?></td>
-        <td><?= e(displayQty($totalRoll['kg'])) ?></td>
-
-        <!-- PTG -->
-        <td><?= e(displayQty($totalPtg['b'])) ?></td>
-        <td><?= e(displayQty($totalPtg['ot'])) ?></td>
-        <td><?= e(displayQty($totalPtg['kg'])) ?></td>
-
-        <!-- LAIN -->
-        <td><?= e(displayQty($totalLain['b'])) ?></td>
-        <td><?= e(displayQty($totalLain['ot'])) ?></td>
-        <td><?= e(displayQty($totalLain['kg'])) ?></td>
 
         <!-- SJ -->
         <td><?= e(displayQty($totalSj['b'])) ?></td>

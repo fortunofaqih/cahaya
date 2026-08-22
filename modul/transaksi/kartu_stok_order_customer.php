@@ -1,6 +1,7 @@
 <?php
 // modul/transaksi/kartu_stok_order_customer.php
-// Revisi: filter master customer/marketing + status All/Complete/Outstanding
+// Revisi: filter master customer/marketing (searchable/typeable) + status All/Complete/Outstanding
+// Revisi tambahan: kolom tabel dipecah -> Customer | Order | Uom Pack | Outstanding Pack | Ukuran
 // Data hanya muncul jika SO + inventory pernah mempunyai shipping non-cancel.
 
 if (!isset($_SESSION['username'])) {
@@ -9,6 +10,22 @@ if (!isset($_SESSION['username'])) {
 }
 
 include __DIR__ . '/../../koneksi.php';
+
+// Pastikan tabel penampung status "Complete Manual" tersedia.
+// Aman dipanggil berulang kali karena pakai IF NOT EXISTS.
+// (Tabel yang sama juga dipakai/dibuat oleh ajax_kartu_stok_order_customer_complete.php)
+mysqli_query($conn, "
+    CREATE TABLE IF NOT EXISTS `kso_manual_complete` (
+        `id` INT NOT NULL AUTO_INCREMENT,
+        `order_no` VARCHAR(30) NOT NULL,
+        `inventory_id` VARCHAR(50) NOT NULL,
+        `remarks` TEXT NULL,
+        `create_user` VARCHAR(100) NULL,
+        `date_created` DATETIME NULL,
+        PRIMARY KEY (`id`),
+        UNIQUE KEY `uq_kso_manual_complete` (`order_no`, `inventory_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+");
 
 function e($value) {
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
@@ -92,6 +109,16 @@ $qMarketing = mysqli_query($conn, "
 ");
 while ($r = mysqli_fetch_assoc($qMarketing)) $marketingOptions[] = $r;
 
+// Nilai terpilih saat ini (dipakai untuk menampilkan label default di dropdown searchable)
+$selectedCustomerLabel  = '';
+foreach ($customerOptions as $c) {
+    if ($c['customer_id'] === $customer_id) { $selectedCustomerLabel = $c['customer']; break; }
+}
+$selectedMarketingLabel = '';
+foreach ($marketingOptions as $m) {
+    if ($m['marketing_id'] === $marketing_id) { $selectedMarketingLabel = $m['marketing_name']; break; }
+}
+
 // =========================
 // QUERY UTAMA
 // =========================
@@ -156,9 +183,9 @@ $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : 'WHERE 1=1';
 
 $statusHaving = '';
 if ($status_filter === 'complete') {
-    $statusHaving = "HAVING outstanding_base <= 0";
+    $statusHaving = "HAVING (outstanding_base <= 0 OR manual_complete_id IS NOT NULL)";
 } elseif ($status_filter === 'outstanding') {
-    $statusHaving = "HAVING outstanding_base > 0";
+    $statusHaving = "HAVING (outstanding_base > 0 AND manual_complete_id IS NULL)";
 }
 
 $sql = "
@@ -188,7 +215,10 @@ $sql = "
             WHEN COALESCE(d.quantity, 0) > 0
                 THEN (COALESCE(d.quantity, 0) - COALESCE(sa.shipped_qty, 0))
             ELSE (COALESCE(d.quantity_pack, 0) - COALESCE(sa.shipped_qty_pack, 0))
-        END AS outstanding_base
+        END AS outstanding_base,
+        kmc.id AS manual_complete_id,
+        kmc.remarks AS manual_complete_remarks,
+        kmc.date_created AS manual_complete_date
     FROM head_sales_order h
     INNER JOIN detail_sales_order d
         ON d.order_no = h.order_no
@@ -215,6 +245,9 @@ $sql = "
         ON mm.marketing_id = COALESCE(NULLIF(h.marketing_id, ''), h.sales_id)
     LEFT JOIN m_inventory mi
         ON mi.inventory_id = d.inventory_id
+    LEFT JOIN kso_manual_complete kmc
+        ON kmc.order_no = h.order_no
+       AND kmc.inventory_id = d.inventory_id
     $whereSql
     $dateExistsSql
     $statusHaving
@@ -244,9 +277,22 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
 .badge-complete{background:#d4edda;color:#155724}
 .badge-outstanding{background:#fff3cd;color:#856404}
 .text-small{font-size:11px;color:#666}
+.text-nowrap-num{white-space:nowrap}
 .detail-row>td{background:#f7f9fc!important;padding:12px!important}
 .detail-box{border:1px solid #dbe3ef;border-radius:5px;background:#fff;padding:10px}
 .detail-box .table thead th{background:#5b6f8f}
+/* select2 custom agar konsisten dengan tinggi form-select lain & tetap bisa diketik */
+.select2-customer-kso + .select2-container .select2-selection--single,
+.select2-marketing-kso + .select2-container .select2-selection--single{height:32px;font-size:12px;display:flex;align-items:center}
+.select2-customer-kso + .select2-container .select2-selection__rendered,
+.select2-marketing-kso + .select2-container .select2-selection__rendered{line-height:normal}
+.select2-customer-kso + .select2-container .select2-selection__arrow,
+.select2-marketing-kso + .select2-container .select2-selection__arrow{height:30px}
+.btn-complete-manual{background:#6f42c1;border-color:#6f42c1;color:#fff}
+.btn-complete-manual:hover{background:#5a349e;border-color:#5a349e;color:#fff}
+.btn-undo-complete{background:#adb5bd;border-color:#adb5bd;color:#212529}
+.btn-undo-complete:hover{background:#8f979e;border-color:#8f979e;color:#212529}
+.badge-complete-manual{background:#e2d9f3;color:#4a2f8c}
 </style>
 
 <div class="container-fluid">
@@ -272,8 +318,8 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                 </div>
                 <div class="col-md-2">
                     <label>Customer</label>
-                    <select name="customer_id" class="form-select select2-kso">
-                        <option value="">All Customer</option>
+                    <select name="customer_id" class="form-select select2-customer-kso" data-placeholder="-- Ketik / Pilih Customer --">
+                        <option value=""></option>
                         <?php foreach ($customerOptions as $c): ?>
                             <option value="<?= e($c['customer_id']) ?>" <?= $customer_id === $c['customer_id'] ? 'selected' : '' ?>>
                                 <?= e($c['customer']) ?>
@@ -283,8 +329,8 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                 </div>
                 <div class="col-md-2">
                     <label>Marketing</label>
-                    <select name="marketing_id" class="form-select select2-kso">
-                        <option value="">All Marketing</option>
+                    <select name="marketing_id" class="form-select select2-marketing-kso" data-placeholder="-- Ketik / Pilih Marketing --">
+                        <option value=""></option>
                         <?php foreach ($marketingOptions as $m): ?>
                             <option value="<?= e($m['marketing_id']) ?>" <?= $marketing_id === $m['marketing_id'] ? 'selected' : '' ?>>
                                 <?= e($m['marketing_name']) ?>
@@ -317,20 +363,37 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                     <th style="width:105px">Order Date</th>
                     <th style="width:140px">PO No.</th>
                     <th style="min-width:190px">Customer</th>
-                    <th style="min-width:280px">Ukuran</th>
+                    <th style="width:120px">Order</th>
+                    <th style="width:120px">Uom Pack</th>
+                    <th style="width:130px">Outstanding Pack</th>
+                    <th style="min-width:220px">Ukuran</th>
                 </tr>
             </thead>
             <tbody>
             <?php if (mysqli_num_rows($query) > 0): ?>
                 <?php $no = 1; while ($row = mysqli_fetch_assoc($query)): ?>
                     <?php
-                    $isComplete = ((float)$row['outstanding_base'] <= 0);
+                    $isManualComplete = !empty($row['manual_complete_id']);
+                    $isCompleteByQty  = ((float)$row['outstanding_base'] <= 0);
+                    $isComplete       = $isCompleteByQty || $isManualComplete;
                     $detailId = 'detail-kso-' . (int)$row['so_detail_id'];
+                    $outstandingPackDisplay = max(0, (float)$row['outstanding_pack']);
 
                     // Print URL sementara disiapkan; file cetak dapat dibuat setelah format print disepakati.
                     $printUrl = 'index.php?page=cetak_kartu_stok_order_customer'
                               . '&order_no=' . urlencode($row['order_no'])
                               . '&inventory_id=' . urlencode($row['inventory_id']);
+
+                    if ($isManualComplete) {
+                        $badgeClass = 'badge-complete-manual';
+                        $badgeLabel = 'COMPLETE (MANUAL)';
+                    } elseif ($isCompleteByQty) {
+                        $badgeClass = 'badge-complete';
+                        $badgeLabel = 'COMPLETE';
+                    } else {
+                        $badgeClass = 'badge-outstanding';
+                        $badgeLabel = 'OUTSTANDING';
+                    }
                     ?>
                     <tr>
                         <td class="text-center"><?= $no++ ?></td>
@@ -346,11 +409,30 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                             <a href="<?= e($printUrl) ?>" target="_blank" class="btn btn-success btn-action" title="Print">
                                 <i class="fa fa-print"></i>
                             </a>
+                            <?php if ($isManualComplete): ?>
+                                <button type="button"
+                                        class="btn btn-undo-complete btn-action btn-toggle-complete-kso"
+                                        data-order-no="<?= e($row['order_no']) ?>"
+                                        data-inventory-id="<?= e($row['inventory_id']) ?>"
+                                        data-action="unset"
+                                        title="Batalkan Complete Manual">
+                                    <i class="fa fa-rotate-left"></i>
+                                </button>
+                            <?php elseif (!$isCompleteByQty): ?>
+                                <button type="button"
+                                        class="btn btn-complete-manual btn-action btn-toggle-complete-kso"
+                                        data-order-no="<?= e($row['order_no']) ?>"
+                                        data-inventory-id="<?= e($row['inventory_id']) ?>"
+                                        data-action="set"
+                                        title="Tandai Complete Manual (sisa tidak akan dikirim lagi)">
+                                    <i class="fa fa-check-double"></i>
+                                </button>
+                            <?php endif; ?>
                         </td>
                         <td>
                             <strong><?= e($row['order_no']) ?></strong><br>
-                            <span class="badge-soft <?= $isComplete ? 'badge-complete' : 'badge-outstanding' ?>">
-                                <?= $isComplete ? 'COMPLETE' : 'OUTSTANDING' ?>
+                            <span class="badge-soft <?= e($badgeClass) ?>">
+                                <?= e($badgeLabel) ?>
                             </span>
                         </td>
                         <td class="text-center"><?= e(fmtDate($row['order_date'])) ?></td>
@@ -359,17 +441,19 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                             <strong><?= e($row['customer']) ?></strong><br>
                             <span class="text-small">Marketing: <?= e($row['marketing_name']) ?></span>
                         </td>
-                        <td>
-                            <?= e($row['internal_name']) ?><br>
-                            <span class="text-small">
-                                Order <?= e(fmtNum($row['order_qty'])) ?> <?= e(strtoupper((string)$row['uom'])) ?> |
-                                Terkirim <?= e(fmtNum($row['shipped_qty'])) ?> <?= e(strtoupper((string)$row['uom'])) ?> |
-                                Outstanding <?= e(fmtNum(max(0, (float)$row['outstanding_qty']))) ?> <?= e(strtoupper((string)$row['uom'])) ?>
-                            </span>
+                        <td class="text-end text-nowrap-num">
+                            <?= e(fmtNum($row['order_qty_pack'])) ?>
                         </td>
+                        <td class="text-center text-nowrap-num">
+                            <?= e(strtoupper((string)$row['uom_pack'])) ?>
+                        </td>
+                        <td class="text-end text-nowrap-num">
+                            <?= e(fmtNum($outstandingPackDisplay)) ?>
+                        </td>
+                        <td><?= e($row['internal_name']) ?></td>
                     </tr>
                     <tr id="<?= e($detailId) ?>" class="detail-row d-none">
-                        <td colspan="7">
+                        <td colspan="10">
                             <div class="detail-box detail-content-kso">
                                 <div class="text-center text-muted py-2">
                                     <i class="fa fa-spinner fa-spin"></i> Memuat detail...
@@ -379,7 +463,7 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                     </tr>
                 <?php endwhile; ?>
             <?php else: ?>
-                <tr><td colspan="7" class="text-center text-muted py-4">Data tidak ditemukan.</td></tr>
+                <tr><td colspan="10" class="text-center text-muted py-4">Data tidak ditemukan.</td></tr>
             <?php endif; ?>
             </tbody>
         </table>
@@ -387,10 +471,75 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
 </div>
 
 <script>
-(function(){
-    if (window.jQuery && jQuery.fn.select2) {
-        jQuery('.select2-kso').select2({ width: '100%' });
+$(document).ready(function () {
+    if (typeof $.fn.select2 === 'undefined') {
+        console.warn('Select2 belum ter-load di halaman ini (cek urutan <script> library select2.js).');
+        return;
     }
+
+    $('.select2-customer-kso').select2({
+        placeholder: '-- Ketik / Pilih Customer --',
+        allowClear: true,
+        width: '100%'
+    });
+
+    $('.select2-marketing-kso').select2({
+        placeholder: '-- Ketik / Pilih Marketing --',
+        allowClear: true,
+        width: '100%'
+    });
+});
+
+(function(){
+
+    document.querySelectorAll('.btn-toggle-complete-kso').forEach(function(btn){
+        btn.addEventListener('click', function(){
+            var orderNo     = btn.getAttribute('data-order-no') || '';
+            var inventoryId = btn.getAttribute('data-inventory-id') || '';
+            var action      = btn.getAttribute('data-action') || '';
+
+            var confirmMsg = action === 'set'
+                ? 'Tandai SO ' + orderNo + ' sebagai COMPLETE secara manual?\nSisa outstanding akan dianggap tidak akan dikirim lagi.'
+                : 'Batalkan status Complete Manual untuk SO ' + orderNo + '?';
+
+            if (!window.confirm(confirmMsg)) return;
+
+            var remarks = '';
+            if (action === 'set') {
+                remarks = window.prompt('Catatan (opsional), misal alasan sisa tidak dikirim:', '') || '';
+            }
+
+            btn.disabled = true;
+
+            var qs = new URLSearchParams();
+            qs.set('order_no', orderNo);
+            qs.set('inventory_id', inventoryId);
+            qs.set('action', action);
+            qs.set('remarks', remarks);
+
+            var url = 'modul/transaksi/ajax_kartu_stok_order_customer_complete.php?' + qs.toString();
+
+            fetch(url, {
+                method: 'GET',
+                credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            })
+                .then(function(res){ return res.text(); })
+                .then(function(text){
+                    var data;
+                    try { data = JSON.parse(text); }
+                    catch(e) { throw new Error('Response AJAX bukan JSON: ' + text.substring(0,120)); }
+                    if (!data.success) throw new Error(data.message || 'Gagal mengubah status.');
+
+                    // Reload halaman supaya badge, filter status, dan tombol Aksi ter-update.
+                    window.location.reload();
+                })
+                .catch(function(err){
+                    btn.disabled = false;
+                    alert(String(err.message || err));
+                });
+        });
+    });
 
     document.querySelectorAll('.btn-expand-kso').forEach(function(btn){
         btn.addEventListener('click', function(){
