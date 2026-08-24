@@ -852,11 +852,22 @@ foreach ($postedItems as $item) {
             );
         }
 
+        $payNow = parseNumber($item['pay_now'] ?? 0);
+
+        if ($payNow < 0) {
+            redirectWithAlert(
+                'error',
+                'Nilai Bayar Sekarang saldo awal tidak boleh negatif.',
+                'edit_bayar&bayar_no=' . urlencode($bayarNo)
+            );
+        }
+
         $selectedPosted[$key] = [
             'source' => 'OPENING',
             'opening_id' => $openingId,
             'invoice_no' => '',
-            'shipping_no' => ''
+            'shipping_no' => '',
+            'pay_now' => $payNow
         ];
         continue;
     }
@@ -893,11 +904,22 @@ foreach ($postedItems as $item) {
         );
     }
 
+    $payNow = parseNumber($item['pay_now'] ?? 0);
+
+    if ($payNow < 0) {
+        redirectWithAlert(
+            'error',
+            'Nilai Bayar Sekarang invoice tidak boleh negatif.',
+            'edit_bayar&bayar_no=' . urlencode($bayarNo)
+        );
+    }
+
     $selectedPosted[$key] = [
         'source' => 'INVOICE',
         'opening_id' => 0,
         'invoice_no' => $invoiceNo,
-        'shipping_no' => $shippingNo
+        'shipping_no' => $shippingNo,
+        'pay_now' => $payNow
     ];
 }
 
@@ -987,6 +1009,7 @@ try {
     */
     $validItems = [];
     $selectedTotal = 0.0;
+    $requestedPaymentTotal = 0.0;
     $selectedReturnAmount = 0.0;
 
     foreach ($selectedPosted as $posted) {
@@ -1006,7 +1029,17 @@ try {
                 );
             }
 
+            $payNow = round((float)($posted['pay_now'] ?? 0), 2);
+
+            if ($payNow > $sisa + 0.01) {
+                throw new Exception(
+                    'Bayar Sekarang untuk Saldo Awal melebihi sisa sebelum transaksi ini. Sisa: Rp ' .
+                    number_format($sisa, 2, ',', '.')
+                );
+            }
+
             $selectedTotal += $sisa;
+            $requestedPaymentTotal += $payNow;
 
             $validItems[] = [
                 'source' => 'OPENING',
@@ -1016,7 +1049,8 @@ try {
                 'invoice_date' => (string)$opening['opening_date'],
                 'shipping_no' => '',
                 'shipping_amount' => abs((float)$opening['opening_balance']),
-                'sisa_before' => $sisa
+                'sisa_before' => $sisa,
+                'pay_now' => $payNow
             ];
 
             continue;
@@ -1044,7 +1078,18 @@ try {
             );
         }
 
+        $payNow = round((float)($posted['pay_now'] ?? 0), 2);
+
+        if ($payNow > $sisa + 0.01) {
+            throw new Exception(
+                'Bayar Sekarang untuk Shipping ' . $posted['shipping_no'] .
+                ' melebihi sisa sebelum transaksi ini. Sisa: Rp ' .
+                number_format($sisa, 2, ',', '.')
+            );
+        }
+
         $selectedTotal += $sisa;
+        $requestedPaymentTotal += $payNow;
 
         $invoiceDateValue =
             !empty($shipping['invoice_date']) &&
@@ -1060,7 +1105,8 @@ try {
             'invoice_date' => $invoiceDateValue,
             'shipping_no' => (string)$shipping['shipping_no'],
             'shipping_amount' => (float)$shipping['shipping_amount'],
-            'sisa_before' => $sisa
+            'sisa_before' => $sisa,
+            'pay_now' => $payNow
         ];
 
         $affectedInvoices[(string)$shipping['invoice_no']] = true;
@@ -1131,17 +1177,36 @@ try {
 
     $netPayable = round($netPayable, 2);
     $totalBayar = round($totalBayar, 2);
+    $requestedPaymentTotal = round($requestedPaymentTotal, 2);
 
-    if (abs($totalBayar - $netPayable) > 0.01) {
+    /*
+     * Cash/Transfer + Titip harus sama persis dengan total Bayar Sekarang
+     * yang diinput per item. Update tidak lagi mengalokasikan nominal
+     * berdasarkan urutan item.
+     */
+    if (abs($totalBayar - $requestedPaymentTotal) > 0.01) {
         throw new Exception(
-            'Total bayar harus sama dengan total tagihan setelah dikurangi Retur. ' .
-            'Total Tagihan: Rp ' .
-            number_format($selectedTotal, 2, ',', '.') .
-            ' | Retur: Rp ' .
-            number_format($selectedReturnAmount, 2, ',', '.') .
-            ' | Target Bayar: Rp ' .
-            number_format($netPayable, 2, ',', '.')
+            'Total Cash/Transfer + Titip harus sama dengan total Bayar Sekarang per item. ' .
+            'Bayar Sekarang: Rp ' . number_format($requestedPaymentTotal, 2, ',', '.') .
+            ' | Cash/Titip: Rp ' . number_format($totalBayar, 2, ',', '.')
         );
+    }
+
+    if ($requestedPaymentTotal > $netPayable + 0.01) {
+        throw new Exception(
+            'Total Bayar Sekarang tidak boleh melebihi total tagihan setelah dikurangi Retur. ' .
+            'Total Tagihan: Rp ' . number_format($selectedTotal, 2, ',', '.') .
+            ' | Retur: Rp ' . number_format($selectedReturnAmount, 2, ',', '.') .
+            ' | Maksimal Bayar: Rp ' . number_format($netPayable, 2, ',', '.')
+        );
+    }
+
+    if (
+        $requestedPaymentTotal <= 0.0001 &&
+        $netPayable > 0.0001 &&
+        $returnId === ''
+    ) {
+        throw new Exception('Isi Bayar Sekarang minimal pada satu item.');
     }
 
     if ($netPayable <= 0.0001 && $returnId === '') {
@@ -1272,7 +1337,6 @@ try {
     */
     $remainingTitip = $nominalTitip;
     $remainingCash = $nominalCash;
-    $remainingPaymentToAllocate = $netPayable;
 
     /*
      * return_id standalone disimpan hanya sekali pada detail pertama.
@@ -1309,23 +1373,13 @@ try {
         );
 
         /*
-         * Pembayaran dialokasikan berurutan hanya sampai net payable.
-         * Retur standalone mengurangi total pembayaran customer.
+         * Nominal pembayaran detail berasal langsung dari kolom Bayar Sekarang.
+         * Tidak lagi bergantung pada urutan invoice / saldo awal.
          */
-        $detailAmount = min(
-            $sisaBefore,
-            $remainingPaymentToAllocate
-        );
+        $detailAmount = round((float)($item['pay_now'] ?? 0), 2);
 
-        $detailAmount = round(
-            $detailAmount,
-            2
-        );
-
-        $remainingPaymentToAllocate -= $detailAmount;
-
-        if (abs($remainingPaymentToAllocate) < 0.0001) {
-            $remainingPaymentToAllocate = 0;
+        if ($detailAmount < -0.01 || $detailAmount > $sisaBefore + 0.01) {
+            throw new Exception('Nilai Bayar Sekarang per item tidak valid.');
         }
 
         $detailTitip = min(
@@ -1455,8 +1509,7 @@ try {
 
     if (
         abs($remainingTitip) > 0.01 ||
-        abs($remainingCash) > 0.01 ||
-        abs($remainingPaymentToAllocate) > 0.01
+        abs($remainingCash) > 0.01
     ) {
         throw new Exception(
             'Alokasi pembayaran tidak seimbang.'
@@ -1508,6 +1561,8 @@ try {
             : '') .
         ' | Total Bayar Rp ' .
         number_format($totalBayar, 2, ',', '.') .
+        ' | Sisa Setelah Pembayaran Rp ' .
+        number_format(max($netPayable - $requestedPaymentTotal, 0), 2, ',', '.') .
         '.',
         'pembayaran'
     );

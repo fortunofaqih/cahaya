@@ -289,7 +289,14 @@ $sqlShipping = "
         SELECT
             used.invoice_no,
             used.shipping_no,
-            SUM(COALESCE(hri.return_amount, 0)) AS return_amount
+            SUM(
+                CASE
+                    WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                      OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total, 0)
+                    ELSE COALESCE(hri.return_amount, 0)
+                END
+            ) AS return_amount
         FROM
         (
             SELECT DISTINCT
@@ -313,7 +320,14 @@ $sqlShipping = "
     (
         SELECT
             used.invoice_no,
-            SUM(COALESCE(hri.return_amount, 0)) AS return_amount
+            SUM(
+                CASE
+                    WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                      OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total, 0)
+                    ELSE COALESCE(hri.return_amount, 0)
+                END
+            ) AS return_amount
         FROM
         (
             SELECT DISTINCT
@@ -472,7 +486,7 @@ while ($ret = mysqli_fetch_assoc($res)) {
     $returnOptions[] = $ret;
 
     if ((string)$ret['return_id'] === $currentReturnId) {
-        $currentReturnAmount = (float)($ret['return_amount'] ?? 0);
+        $currentReturnAmount = (float)($ret['effective_return_amount'] ?? 0);
     }
 }
 
@@ -535,7 +549,7 @@ $saldoTitipAvailable =
 .invoice-pay-table th{position:sticky;top:0;background:#e9ecef;color:#2b4c7e;border:1px solid #c0cddb;padding:6px 5px;white-space:nowrap;text-align:center;z-index:2}
 .invoice-pay-table td{border:1px solid #d3d3d3;padding:5px;white-space:nowrap}
 .invoice-pay-table tr.selected-row td{background:#eaf7ef}
-.money{text-align:right}.text-center{text-align:center}.row-checkbox{width:16px;height:16px}
+.money{text-align:right}.pay-now-input{width:125px!important;text-align:right;font-weight:700;border:1px solid #8fb6e8!important;background:#fffdf2!important}.pay-now-input:disabled{background:#f1f3f5!important;color:#999}.text-center{text-align:center}.row-checkbox{width:16px;height:16px}
 .return-select{min-width:210px}
 .warning-box{display:none;margin-top:6px;padding:7px;border-radius:3px;font-size:11px;font-weight:bold}
 .warning-danger{display:block;background:#f8d7da;color:#842029;border:1px solid #f5c2c7}
@@ -623,12 +637,13 @@ $saldoTitipAvailable =
                         <th>Nilai Shipping</th>
                         <th>Dibayar Selain Transaksi Ini</th>
                         <th>Sisa Sebelum Transaksi Ini</th>
+                        <th>Bayar Sekarang</th>
                     </tr>
                 </thead>
                 <tbody>
                 <?php if (empty($rows)): ?>
                     <tr>
-                        <td colspan="9" class="text-center" style="padding:12px;color:#777;">
+                        <td colspan="10" class="text-center" style="padding:12px;color:#777;">
                             Tidak ada invoice/shipping NON CP-MCP atau saldo awal positif outstanding.
                             Transaksi tetap dapat diedit sebagai Retur Customer standalone.
                         </td>
@@ -666,6 +681,14 @@ $saldoTitipAvailable =
                         <td class="money">Rp <?= h(formatMoney($row['shipping_amount'])) ?></td>
                         <td class="money">Rp <?= h(formatMoney($row['paid_except_current'])) ?></td>
                         <td class="money"><strong>Rp <?= h(formatMoney($row['sisa_before_current'])) ?></strong></td>
+                        <td class="money">
+                            <input type="text"
+                                   class="pay-now-input js-pay-now"
+                                   name="items[<?= $i ?>][pay_now]"
+                                   value="<?= h(formatMoney($checked ? (float)($current['bayar_amount'] ?? 0) : 0)) ?>"
+                                   autocomplete="off"
+                                   <?= $checked ? '' : 'disabled' ?>>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
 
@@ -706,6 +729,14 @@ $saldoTitipAvailable =
                         </td>
                         <td class="money">Rp <?= h(formatMoney($opening['paid_except_current'])) ?></td>
                         <td class="money"><strong>Rp <?= h(formatMoney($opening['sisa_before_current'])) ?></strong></td>
+                        <td class="money">
+                            <input type="text"
+                                   class="pay-now-input js-pay-now"
+                                   name="items[<?= $itemIndex ?>][pay_now]"
+                                   value="<?= h(formatMoney($openingChecked ? (float)($currentOpening['bayar_amount'] ?? 0) : 0)) ?>"
+                                   autocomplete="off"
+                                   <?= $openingChecked ? '' : 'disabled' ?>>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
@@ -734,7 +765,7 @@ $saldoTitipAvailable =
                                 ' | ' .
                                 formatDateDisplay($ret['return_date']) .
                                 ' | Rp ' .
-                                formatMoney($ret['return_amount']) .
+                                formatMoney($ret['effective_return_amount']) .
                                 ((string)($ret['reason_return'] ?? '') !== ''
                                     ? ' | ' . $ret['reason_return']
                                     : '')
@@ -919,117 +950,117 @@ function selectedOpeningDirection() {
 
 function selectedSummary() {
     let total = 0;
+    let payNowTotal = 0;
     let count = 0;
+    let invalidPayNow = false;
 
     $('.invoice-row').each(function () {
-        if ($(this).find('.js-select-invoice').is(':checked')) {
-            total += parseFloat($(this).data('sisa')) || 0;
-            count++;
+        const $row = $(this);
+        const checked = $row.find('.js-select-invoice').is(':checked');
+        if (!checked) return;
+
+        const sisa = parseFloat($row.data('sisa')) || 0;
+        const payNow = parseNumber($row.find('.js-pay-now').val());
+
+        total += sisa;
+        payNowTotal += payNow;
+        count++;
+
+        if (payNow < -0.01 || payNow > sisa + 0.01) {
+            invalidPayNow = true;
         }
     });
 
-    return {total, count};
+    return { total, payNowTotal, count, invalidPayNow };
+}
+
+function syncCashFromPayNow() {
+    const selected = selectedSummary();
+    const saldo = parseFloat($('#saldo_titip').val()) || 0;
+
+    if ($('#pakai_titip').is(':checked')) {
+        const currentTitip = Math.min(parseNumber($('#nominal_titip').val()), saldo, selected.payNowTotal);
+        $('#nominal_titip').prop('disabled', false).val(formatRupiah(currentTitip));
+        $('#nominal_bayar').val(formatRupiah(Math.max(selected.payNowTotal - currentTitip, 0)));
+    } else {
+        $('#nominal_titip').prop('disabled', true).val('0,00');
+        $('#nominal_bayar').val(formatRupiah(selected.payNowTotal));
+    }
 }
 
 function checkNominal() {
     const selected = selectedSummary();
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-    const target = Math.max(
-        selected.total - returAmount,
-        0
-    );
+    const target = Math.max(selected.total - returAmount, 0);
 
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const cash = parseNumber($('#nominal_bayar').val());
     const titip = $('#pakai_titip').is(':checked')
         ? parseNumber($('#nominal_titip').val())
         : 0;
-
     const total = cash + titip;
 
     $('#selected_total').val(selected.total);
-    $('#selected_total_display').val(
-        'Rp ' + formatRupiah(selected.total)
-    );
-
+    $('#selected_total_display').val('Rp ' + formatRupiah(selected.total));
     $('#net_payable').val(target);
-    $('#net_payable_display').val(
-        'Rp ' + formatRupiah(target)
-    );
-
-    $('#selected_count_label').text(
-        selected.count + ' dipilih'
-    );
-
-    $('#total_bayar_display').val(
-        'Rp ' + formatRupiah(total)
-    );
+    $('#net_payable_display').val('Rp ' + formatRupiah(target));
+    $('#selected_count_label').text(selected.count + ' dipilih');
+    $('#total_bayar_display').val('Rp ' + formatRupiah(total));
 
     const warning = $('#warningNominal');
-
-    warning
-        .removeClass(
-            'warning-danger warning-info warning-ok'
-        )
-        .hide();
+    warning.removeClass('warning-danger warning-info warning-ok').hide();
 
     const direction = selectedOpeningDirection();
 
     if (direction.invalidMix) {
-        warning
-            .addClass('warning-danger')
+        warning.addClass('warning-danger')
             .html('Saldo Awal (-) / Kredit harus diproses tersendiri.')
             .show();
         return;
     }
 
+    if (selected.invalidPayNow) {
+        warning.addClass('warning-danger')
+            .html('Nilai Bayar Sekarang tidak boleh negatif atau melebihi Sisa Sebelum Transaksi Ini.')
+            .show();
+        return;
+    }
+
     if (titip > saldoTitip + 0.01) {
-        warning
-            .addClass('warning-danger')
+        warning.addClass('warning-danger')
             .html('Nominal titip melebihi saldo titip tersedia.')
             .show();
         return;
     }
 
-    if (selected.count < 1) {
+    if (selected.payNowTotal > target + 0.01) {
+        warning.addClass('warning-danger')
+            .html('Total Bayar Sekarang melebihi tagihan setelah Retur. Maksimal: Rp ' + formatRupiah(target))
+            .show();
         return;
     }
 
-    if (returAmount > selected.total + 0.01) {
-        warning
-            .addClass('warning-info')
+    if (Math.abs(total - selected.payNowTotal) > 0.01) {
+        warning.addClass('warning-danger')
             .html(
-                'Nilai Retur lebih besar dari total tagihan. ' +
-                'Total yang harus dibayar menjadi Rp 0,00. ' +
-                'Sisa Retur tidak otomatis menjadi titip uang.'
+                'Total Cash/Transfer + Titip harus sama dengan total Bayar Sekarang. ' +
+                'Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal) +
+                ' | Cash/Titip: Rp ' + formatRupiah(total)
             )
             .show();
+        return;
     }
 
-    const diff = total - target;
+    if (selected.count < 1) return;
 
-    if (Math.abs(diff) <= 0.01) {
-        warning
-            .addClass('warning-ok')
-            .html('Total bayar sudah sesuai setelah dikurangi Retur.')
-            .show();
-    } else if (diff < 0) {
-        warning
-            .addClass('warning-info')
-            .html(
-                'Total bayar kurang Rp ' +
-                formatRupiah(Math.abs(diff)) +
-                '.'
-            )
+    const sisaSetelah = Math.max(target - selected.payNowTotal, 0);
+    if (sisaSetelah <= 0.01) {
+        warning.addClass('warning-ok')
+            .html('Pembayaran sesuai. Seluruh tagihan terpilih setelah Retur terselesaikan.')
             .show();
     } else {
-        warning
-            .addClass('warning-danger')
-            .html(
-                'Total bayar melebihi total setelah Retur Rp ' +
-                formatRupiah(diff) +
-                '.'
-            )
+        warning.addClass('warning-info')
+            .html('Pembayaran parsial. Masih tersisa Rp ' + formatRupiah(sisaSetelah) + ' dari tagihan terpilih setelah Retur.')
             .show();
     }
 }
@@ -1044,28 +1075,33 @@ $(document).ready(function () {
     }
 
     $('.js-select-invoice').on('change', function () {
-        const row = $(this).closest('.invoice-row');
+        const $row = $(this).closest('.invoice-row');
+        const $payNow = $row.find('.js-pay-now');
+        const sisa = parseFloat($row.data('sisa')) || 0;
 
         if ($(this).is(':checked')) {
-            row.addClass('selected-row');
+            $row.addClass('selected-row');
+            $payNow.prop('disabled', false);
+            if (parseNumber($payNow.val()) <= 0.01) {
+                $payNow.val(formatRupiah(sisa));
+            }
         } else {
-            row.removeClass('selected-row');
+            $row.removeClass('selected-row');
+            $payNow.val('0,00').prop('disabled', true);
         }
 
-        const selected = selectedSummary();
-        const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-        const target = Math.max(selected.total - returAmount, 0);
-        const saldo = parseFloat($('#saldo_titip').val()) || 0;
+        syncCashFromPayNow();
+        checkNominal();
+    });
 
-        if ($('#pakai_titip').is(':checked')) {
-            const useTitip = Math.min(saldo, target);
-            $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
-            $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
-        } else {
-            $('#nominal_titip').prop('disabled', true).val('0,00');
-            $('#nominal_bayar').val(formatRupiah(target));
-        }
+    $(document).on('input keyup', '.js-pay-now', function () {
+        syncCashFromPayNow();
+        checkNominal();
+    });
 
+    $(document).on('blur', '.js-pay-now', function () {
+        $(this).val(formatRupiah(parseNumber($(this).val())));
+        syncCashFromPayNow();
         checkNominal();
     });
 
@@ -1079,57 +1115,12 @@ $(document).ready(function () {
         $('#retur_amount_display').val('Rp ' + formatRupiah(amount));
 
         const info = $('#returnInfo');
-
         if (!returnId) {
             info.hide().html('');
-
-            const selected = selectedSummary();
-            const target = selected.total;
-            const saldo = parseFloat($('#saldo_titip').val()) || 0;
-
-            if ($('#pakai_titip').is(':checked')) {
-                const useTitip = Math.min(saldo, target);
-                $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
-                $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
-            } else {
-                $('#nominal_titip').prop('disabled', true).val('0,00');
-                $('#nominal_bayar').val(formatRupiah(target));
-            }
-
-            checkNominal();
-            return;
-        }
-
-        let html =
-            'Retur terpilih: <strong>' +
-            returnId +
-            '</strong> | Rp ' +
-            formatRupiah(amount);
-
-        if (reason) {
-            html += ' | ' + reason;
-        }
-
-        info
-            .removeClass('warning-danger warning-ok')
-            .addClass('warning-info')
-            .html(html)
-            .show();
-
-        const selected = selectedSummary();
-        const target = Math.max(
-            selected.total - amount,
-            0
-        );
-        const saldo = parseFloat($('#saldo_titip').val()) || 0;
-
-        if ($('#pakai_titip').is(':checked')) {
-            const useTitip = Math.min(saldo, target);
-            $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
-            $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
         } else {
-            $('#nominal_titip').prop('disabled', true).val('0,00');
-            $('#nominal_bayar').val(formatRupiah(target));
+            let html = 'Retur terpilih: <strong>' + returnId + '</strong> | Rp ' + formatRupiah(amount);
+            if (reason) html += ' | ' + reason;
+            info.removeClass('warning-danger warning-ok').addClass('warning-info').html(html).show();
         }
 
         checkNominal();
@@ -1137,19 +1128,15 @@ $(document).ready(function () {
 
     $('#pakai_titip').on('change', function () {
         const selected = selectedSummary();
-        const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-        const target = Math.max(selected.total - returAmount, 0);
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
-
         if ($(this).is(':checked')) {
-            const useTitip = Math.min(saldo, target);
+            const useTitip = Math.min(saldo, selected.payNowTotal);
             $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
-            $('#nominal_bayar').val(formatRupiah(Math.max(target - useTitip, 0)));
+            $('#nominal_bayar').val(formatRupiah(Math.max(selected.payNowTotal - useTitip, 0)));
         } else {
             $('#nominal_titip').prop('disabled', true).val('0,00');
-            $('#nominal_bayar').val(formatRupiah(target));
+            $('#nominal_bayar').val(formatRupiah(selected.payNowTotal));
         }
-
         checkNominal();
     });
 
@@ -1160,9 +1147,7 @@ $(document).ready(function () {
     });
 
     $('#keterangan').on('change', function () {
-        if ($(this).val() === 'Cash') {
-            $('#bank_name').val('');
-        }
+        if ($(this).val() === 'Cash') $('#bank_name').val('');
     });
 
     $('#formBayar').on('submit', function (e) {
@@ -1170,53 +1155,90 @@ $(document).ready(function () {
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
         const target = Math.max(selected.total - returAmount, 0);
-
         const cash = parseNumber($('#nominal_bayar').val());
-        const titip = $('#pakai_titip').is(':checked')
-            ? parseNumber($('#nominal_titip').val())
-            : 0;
+        const titip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
         const total = cash + titip;
+        const selectedReturnId = String($('#return_id').val() || '').trim();
+        const direction = selectedOpeningDirection();
 
-        const selectedReturnId =
-            String($('#return_id').val() || '').trim();
+        if (direction.invalidMix) {
+            alert('Saldo Awal (-) / Kredit harus diproses tersendiri dan tidak boleh digabung dengan Invoice atau Saldo Awal (+).');
+            e.preventDefault(); return false;
+        }
 
-        if (
-            selected.count < 1 &&
-            selectedReturnId === ''
-        ) {
-            alert(
-                'Minimal pilih 1 Invoice / Shipping atau pilih 1 Retur Customer.'
-            );
-            e.preventDefault();
-            return false;
+        if (direction.hasNegativeOpening && (titip > 0.01 || selectedReturnId !== '')) {
+            alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip atau Retur Customer.');
+            e.preventDefault(); return false;
+        }
+
+        if (selected.count < 1 && selectedReturnId === '') {
+            alert('Minimal pilih 1 Invoice / Shipping atau Saldo Awal, atau pilih 1 Retur Customer.');
+            e.preventDefault(); return false;
+        }
+
+        if (selected.invalidPayNow) {
+            alert('Ada nilai Bayar Sekarang yang tidak valid atau melebihi sisa.');
+            e.preventDefault(); return false;
+        }
+
+        if (selected.count > 0 && selected.payNowTotal <= 0.01 && selectedReturnId === '') {
+            alert('Isi Bayar Sekarang minimal pada satu item.');
+            e.preventDefault(); return false;
+        }
+
+        if (selected.payNowTotal > target + 0.01) {
+            alert('Total Bayar Sekarang tidak boleh melebihi total tagihan setelah Retur. Maksimal: Rp ' + formatRupiah(target));
+            e.preventDefault(); return false;
         }
 
         if (titip > saldo + 0.01) {
             alert('Nominal titip melebihi saldo titip tersedia.');
-            e.preventDefault();
-            return false;
+            e.preventDefault(); return false;
         }
 
-        if (Math.abs(total - target) > 0.01) {
-            alert(
-                'Total Bayar harus sama dengan total tagihan setelah dikurangi Retur. Target: Rp ' +
-                formatRupiah(target)
-            );
-            e.preventDefault();
-            return false;
+        if (Math.abs(total - selected.payNowTotal) > 0.01) {
+            alert('Total Cash/Transfer + Titip harus sama dengan total Bayar Sekarang. Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal));
+            e.preventDefault(); return false;
         }
 
         $('#nominal_bayar').val(cash);
         $('#nominal_titip').prop('disabled', false).val(titip);
-
-        /*
-         * Retur berdiri sendiri pada level pembayaran/customer.
-         */
         $('#return_id').prop('disabled', false);
+
+        /* Hindari max_input_vars: hanya item terpilih yang dikirim. */
+        $('.invoice-row').each(function () {
+            const $row = $(this);
+            if (!$row.find('.js-select-invoice').is(':checked')) {
+                $row.find('input[name^="items["]').prop('disabled', true);
+            } else {
+                $row.find('.js-pay-now').prop('disabled', false);
+            }
+        });
+        $('.js-pay-now').each(function () {
+            $(this).val(
+                String($(this).val() || '').replace(/\./g, '')
+            );
+        });
 
         return true;
     });
 
     checkNominal();
+});
+$(document).on('input', '.js-pay-now', function () {
+    let value = String($(this).val() || '');
+
+    // Ambil angka saja
+    value = value.replace(/\D/g, '');
+
+    if (value === '') {
+        $(this).val('');
+        return;
+    }
+
+    // Format ribuan dengan titik
+    $(this).val(
+        parseInt(value, 10).toLocaleString('id-ID')
+    );
 });
 </script>
