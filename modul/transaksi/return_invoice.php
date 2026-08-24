@@ -139,7 +139,24 @@ $sql = "
         END AS is_mcp
     FROM head_retur_invoice h
     $where_sql
-    ORDER BY h.return_date DESC, h.return_id DESC
+    ORDER BY
+    CAST(RIGHT(TRIM(h.return_id), 2) AS UNSIGNED) DESC,
+    CASE SUBSTRING(UPPER(TRIM(h.return_id)), 4, 3)
+        WHEN 'JAN' THEN 1
+        WHEN 'FEB' THEN 2
+        WHEN 'MAR' THEN 3
+        WHEN 'APR' THEN 4
+        WHEN 'MEI' THEN 5
+        WHEN 'JUN' THEN 6
+        WHEN 'JUL' THEN 7
+        WHEN 'AGT' THEN 8
+        WHEN 'SEP' THEN 9
+        WHEN 'OKT' THEN 10
+        WHEN 'NOV' THEN 11
+        WHEN 'DES' THEN 12
+        ELSE 0
+    END DESC,
+    CAST(SUBSTRING(TRIM(h.return_id), 2, 2) AS UNSIGNED) DESC
 ";
 
 $stmt = mysqli_prepare($conn, $sql);

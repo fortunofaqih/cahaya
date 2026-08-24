@@ -70,17 +70,52 @@ if (strtotime($startDate) > strtotime($endDate)) {
  * Sorting mengikuti Register Penjualan Global:
  * hanya Shipping No. dan Invoice No.
  */
-$sort = strtolower(trim((string)($_GET['sort'] ?? 'shipping_no')));
-$dir  = strtolower(trim((string)($_GET['dir'] ?? 'asc')));
+$sort = strtolower(trim((string)($_GET['sort'] ?? 'return_id')));
+$dir  = strtolower(trim((string)($_GET['dir'] ?? 'desc')));
 
-$allowedSort = ['shipping_no','invoice_no'];
+$allowedSort = ['return_id','shipping_no','invoice_no'];
 $allowedDir  = ['asc','desc'];
 
-if (!in_array($sort,$allowedSort,true)) $sort = 'shipping_no';
-if (!in_array($dir,$allowedDir,true)) $dir = 'asc';
+if (!in_array($sort,$allowedSort,true)) $sort = 'return_id';
+if (!in_array($dir,$allowedDir,true)) $dir = 'desc';
 
-$orderColumn = $sort === 'invoice_no' ? 'hri.invoice_no' : 'hri.shipping_no';
 $orderDirection = strtoupper($dir);
+
+if ($sort === 'return_id') {
+
+    $orderColumn = "
+        CAST(RIGHT(TRIM(hri.return_id), 2) AS UNSIGNED) {$orderDirection},
+
+        CASE SUBSTRING(UPPER(TRIM(hri.return_id)), 4, 3)
+            WHEN 'JAN' THEN 1
+            WHEN 'FEB' THEN 2
+            WHEN 'MAR' THEN 3
+            WHEN 'APR' THEN 4
+            WHEN 'MEI' THEN 5
+            WHEN 'JUN' THEN 6
+            WHEN 'JUL' THEN 7
+            WHEN 'AGT' THEN 8
+            WHEN 'SEP' THEN 9
+            WHEN 'OKT' THEN 10
+            WHEN 'NOV' THEN 11
+            WHEN 'DES' THEN 12
+            ELSE 0
+        END {$orderDirection},
+
+        CAST(
+            SUBSTRING(TRIM(hri.return_id), 2, 2)
+            AS UNSIGNED
+        ) {$orderDirection}
+    ";
+
+} elseif ($sort === 'invoice_no') {
+
+    $orderColumn = "hri.invoice_no {$orderDirection}";
+
+} else {
+
+    $orderColumn = "hri.shipping_no {$orderDirection}";
+}
 
 function sortUrlR($column,$currentSort,$currentDir,$startDate,$endDate){
     $nextDir = ($currentSort === $column && $currentDir === 'asc') ? 'desc' : 'asc';
@@ -228,9 +263,8 @@ GROUP BY
     category_group
 
 ORDER BY
-    {$orderColumn} {$orderDirection},
-    hri.return_date ASC,
-    hri.return_id ASC,
+    {$orderColumn},
+    hri.return_date DESC,
     category_group ASC
 ";
 
@@ -378,10 +412,11 @@ body {
     white-space: nowrap;
 }
 
-.shipping-col { width: 150px; }
-.invoice-col  { width: 150px; }
-.customer-col { width: 180px; }
-.total-col    { width: 95px; }
+.return-col   { width: 105px; }
+.shipping-col { width: 135px; }
+.invoice-col  { width: 135px; }
+.customer-col { width: 170px; }
+.total-col    { width: 90px; }
 
 .customer-cell {
     white-space: normal !important;
@@ -471,9 +506,11 @@ tfoot td {
         font-size: 6.2px !important;
     }
 
-    .shipping-col { width: 82px !important; }    .invoice-col  { width: 82px !important; }
-    .customer-col { width: 86px !important; }
-    .total-col    { width: 49px !important; }
+    .return-col   { width: 62px !important; }
+    .shipping-col { width: 76px !important; }
+    .invoice-col  { width: 76px !important; }
+    .customer-col { width: 82px !important; }
+    .total-col    { width: 46px !important; }
 
     thead {
         display: table-header-group;
@@ -529,6 +566,7 @@ tfoot td {
 <table class="report-table">
     <thead>
         <tr>
+            <th rowspan="2" class="return-col">RETURN ID</th>
             <th rowspan="2" class="shipping-col">SHIPPING NO.</th>
             <th rowspan="2" class="invoice-col">INVOICE NO.</th>
             <th rowspan="2" class="customer-col">NAMA CUST.</th>
@@ -552,13 +590,14 @@ tfoot td {
     <tbody>
     <?php if (empty($rows)): ?>
         <tr>
-            <td colspan="20" class="no-data">
+            <td colspan="21" class="no-data">
                 Tidak ada data return penjualan pada periode ini.
             </td>
         </tr>
     <?php else: ?>
         <?php foreach ($rows as $row): ?>
             <tr>
+                <td><?=h($row['return_id'])?></td>
                 <td><?=h($row['shipping_no'])?></td>
                 <td><?=h($row['invoice_no'])?></td>
                 <td class="customer-cell"><?=h($row['customer_name'])?></td>
@@ -577,7 +616,7 @@ tfoot td {
 
     <tfoot>
         <tr>
-            <td colspan="3" style="text-align:right">TOTAL RETURN</td>
+            <td colspan="4" style="text-align:right">TOTAL RETURN</td>
             <td class="money-cell"><?=h(fmtMoneyR($grand['total']))?></td>
             <td class="money-cell"><?=h(fmtMoneyR($grand['penjualan']))?></td>
 

@@ -282,12 +282,9 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
 .detail-box{border:1px solid #dbe3ef;border-radius:5px;background:#fff;padding:10px}
 .detail-box .table thead th{background:#5b6f8f}
 /* select2 custom agar konsisten dengan tinggi form-select lain & tetap bisa diketik */
-.select2-customer-kso + .select2-container .select2-selection--single,
-.select2-marketing-kso + .select2-container .select2-selection--single{height:32px;font-size:12px;display:flex;align-items:center}
-.select2-customer-kso + .select2-container .select2-selection__rendered,
-.select2-marketing-kso + .select2-container .select2-selection__rendered{line-height:normal}
-.select2-customer-kso + .select2-container .select2-selection__arrow,
-.select2-marketing-kso + .select2-container .select2-selection__arrow{height:30px}
+.select2-container .select2-selection--single{height:32px;font-size:12px;display:flex;align-items:center}
+.select2-container .select2-selection__rendered{line-height:normal}
+.select2-container .select2-selection__arrow{height:30px}
 .btn-complete-manual{background:#6f42c1;border-color:#6f42c1;color:#fff}
 .btn-complete-manual:hover{background:#5a349e;border-color:#5a349e;color:#fff}
 .btn-undo-complete{background:#adb5bd;border-color:#adb5bd;color:#212529}
@@ -318,7 +315,7 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                 </div>
                 <div class="col-md-2">
                     <label>Customer</label>
-                    <select name="customer_id" class="form-select select2-customer-kso" data-placeholder="-- Ketik / Pilih Customer --">
+                    <select name="customer_id" class="form-select select2-searchable" data-placeholder="-- Ketik / Pilih Customer --">
                         <option value=""></option>
                         <?php foreach ($customerOptions as $c): ?>
                             <option value="<?= e($c['customer_id']) ?>" <?= $customer_id === $c['customer_id'] ? 'selected' : '' ?>>
@@ -329,7 +326,7 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
                 </div>
                 <div class="col-md-2">
                     <label>Marketing</label>
-                    <select name="marketing_id" class="form-select select2-marketing-kso" data-placeholder="-- Ketik / Pilih Marketing --">
+                    <select name="marketing_id" class="form-select select2-searchable" data-placeholder="-- Ketik / Pilih Marketing --">
                         <option value=""></option>
                         <?php foreach ($marketingOptions as $m): ?>
                             <option value="<?= e($m['marketing_id']) ?>" <?= $marketing_id === $m['marketing_id'] ? 'selected' : '' ?>>
@@ -470,28 +467,83 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
     </div>
 </div>
 
+<!-- PASTIKAN SELECT2 LIBRARY DI-LOAD -->
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+
 <script>
 $(document).ready(function () {
+    // ============================================================
+    // CEK APAKAH SELECT2 SUDAH TER-LOAD
+    // ============================================================
     if (typeof $.fn.select2 === 'undefined') {
-        console.warn('Select2 belum ter-load di halaman ini (cek urutan <script> library select2.js).');
+        alert('ERROR: Select2 library tidak ter-load! Pastikan file select2.min.js sudah di-include.');
+        console.error('Select2 tidak ditemukan!');
         return;
     }
 
-    $('.select2-customer-kso').select2({
-        placeholder: '-- Ketik / Pilih Customer --',
-        allowClear: true,
-        width: '100%'
+    console.log('Select2 version:', $.fn.select2.version || 'unknown');
+
+    // ============================================================
+    // INISIALISASI SELECT2 DENGAN 3 CARA (untuk memastikan berfungsi)
+    // ============================================================
+    
+    // CARA 1: Inisialisasi standar dengan matcher
+    $('.select2-searchable').each(function() {
+        var placeholder = $(this).data('placeholder') || '-- Pilih --';
+        
+        $(this).select2({
+            placeholder: placeholder,
+            allowClear: true,
+            width: '100%',
+            // MATCHER UNTUK PENCARIAN SUBSTRING
+            matcher: function(params, data) {
+                // Jika tidak ada pencarian, tampilkan semua
+                if ($.trim(params.term) === '') {
+                    return data;
+                }
+                
+                // Pencarian case-insensitive di seluruh teks
+                var term = params.term.toLowerCase();
+                var text = data.text.toLowerCase();
+                
+                // Cek apakah term ada di dalam text (bukan hanya di awal)
+                if (text.indexOf(term) > -1) {
+                    return data;
+                }
+                
+                // Jika tidak cocok, sembunyikan
+                return null;
+            },
+            // CARA 2: Gunakan opsi search untuk memastikan
+            search: function(params) {
+                var term = params.term.toLowerCase();
+                return this.find('option').filter(function() {
+                    var text = $(this).text().toLowerCase();
+                    return text.indexOf(term) > -1;
+                });
+            }
+        });
     });
 
-    $('.select2-marketing-kso').select2({
-        placeholder: '-- Ketik / Pilih Marketing --',
-        allowClear: true,
-        width: '100%'
+    // CARA 3: Override manual untuk memastikan input search muncul
+    $('.select2-searchable').on('select2:open', function() {
+        // Pastikan search box selalu muncul
+        var $search = $(this).data('select2').dropdown.$search;
+        if ($search) {
+            $search.attr('placeholder', 'Ketik untuk mencari...');
+            $search.focus();
+        }
     });
-});
 
-(function(){
+    // ============================================================
+    // DEBUG: Cek apakah Select2 berhasil diinisialisasi
+    // ============================================================
+    console.log('Select2 initialized for:', $('.select2-searchable').length, 'elements');
 
+    // ============================================================
+    // FUNGSI UNTUK TOGGLE COMPLETE MANUAL
+    // ============================================================
     document.querySelectorAll('.btn-toggle-complete-kso').forEach(function(btn){
         btn.addEventListener('click', function(){
             var orderNo     = btn.getAttribute('data-order-no') || '';
@@ -511,18 +563,20 @@ $(document).ready(function () {
 
             btn.disabled = true;
 
-            var qs = new URLSearchParams();
-            qs.set('order_no', orderNo);
-            qs.set('inventory_id', inventoryId);
-            qs.set('action', action);
-            qs.set('remarks', remarks);
+            var formData = new URLSearchParams();
+            formData.set('order_no', orderNo);
+            formData.set('inventory_id', inventoryId);
+            formData.set('action', action);
+            formData.set('remarks', remarks);
 
-            var url = 'modul/transaksi/ajax_kartu_stok_order_customer_complete.php?' + qs.toString();
-
-            fetch(url, {
-                method: 'GET',
+            fetch('modul/transaksi/ajax_kartu_stok_order_customer_complete.php', {
+                method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: formData.toString()
             })
                 .then(function(res){ return res.text(); })
                 .then(function(text){
@@ -541,6 +595,9 @@ $(document).ready(function () {
         });
     });
 
+    // ============================================================
+    // FUNGSI UNTUK EXPAND DETAIL
+    // ============================================================
     document.querySelectorAll('.btn-expand-kso').forEach(function(btn){
         btn.addEventListener('click', function(){
             var targetId = btn.getAttribute('data-target');
@@ -580,5 +637,5 @@ $(document).ready(function () {
                 });
         });
     });
-})();
+});
 </script>
