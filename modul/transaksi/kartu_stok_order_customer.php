@@ -3,6 +3,7 @@
 // Revisi: filter master customer/marketing (searchable/typeable) + status All/Complete/Outstanding
 // Revisi tambahan: kolom tabel dipecah -> Customer | Order | Uom Pack | Outstanding Pack | Ukuran
 // Data hanya muncul jika SO + inventory pernah mempunyai shipping non-cancel.
+// Revisi: Fixed header tabel dengan CSS sticky
 
 if (!isset($_SESSION['username'])) {
     header('Location: ../../login.php');
@@ -268,28 +269,78 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
 .filter-box{background:#f8f9fa;padding:12px;border-radius:5px;margin-bottom:15px;border:1px solid #dee2e6}
 .filter-box label{margin-bottom:4px;color:#333;font-size:12px;font-weight:600}
 .filter-box .form-control,.filter-box .form-select{font-size:12px;min-height:32px}
-.table-responsive{border:1px solid #dee2e6;border-radius:5px;background:#fff}
-.table{margin-bottom:0;font-size:12px}
-.table thead th{background:#2a5298;color:#fff;vertical-align:middle;white-space:nowrap;text-align:center;font-size:11px;padding:7px 6px}
-.table tbody td{vertical-align:middle;padding:6px}
+
+/* MODIFIKASI: Container tabel dengan scroll dan fixed header */
+.table-scroll-wrapper {
+    position: relative;
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    background: #fff;
+    max-height: 500px; /* Atur sesuai kebutuhan, atau bisa diatur via JS/dinamis */
+    overflow: auto;
+}
+
+.table-scroll-wrapper table {
+    margin-bottom: 0;
+    font-size: 12px;
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.table-scroll-wrapper table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #2a5298;
+    color: #fff;
+    vertical-align: middle;
+    white-space: nowrap;
+    text-align: center;
+    font-size: 11px;
+    padding: 7px 6px;
+    border-bottom: 2px solid #1a3a6a;
+}
+
+.table-scroll-wrapper table tbody td {
+    vertical-align: middle;
+    padding: 6px;
+}
+
+/* Header pertama (No) tetap di kiri - optional */
+/* Jika ingin kolom No tetap di kiri saat scroll horizontal, tambahkan: */
+/*
+.table-scroll-wrapper table thead th:first-child,
+.table-scroll-wrapper table tbody td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 11;
+    background: #fff;
+}
+.table-scroll-wrapper table thead th:first-child {
+    z-index: 12;
+    background: #2a5298;
+}
+*/
+
+/* Select2, Badge, dan tombol lainnya */
+.select2-container .select2-selection--single{height:32px;font-size:12px;display:flex;align-items:center}
+.select2-container .select2-selection__rendered{line-height:normal}
+.select2-container .select2-selection__arrow{height:30px}
 .btn-action{padding:3px 7px;font-size:11px;border-radius:3px;margin:1px}
 .badge-soft{display:inline-block;padding:3px 8px;border-radius:12px;font-size:10px;font-weight:700}
 .badge-complete{background:#d4edda;color:#155724}
 .badge-outstanding{background:#fff3cd;color:#856404}
+.badge-complete-manual{background:#e2d9f3;color:#4a2f8c}
 .text-small{font-size:11px;color:#666}
 .text-nowrap-num{white-space:nowrap}
 .detail-row>td{background:#f7f9fc!important;padding:12px!important}
 .detail-box{border:1px solid #dbe3ef;border-radius:5px;background:#fff;padding:10px}
 .detail-box .table thead th{background:#5b6f8f}
-/* select2 custom agar konsisten dengan tinggi form-select lain & tetap bisa diketik */
-.select2-container .select2-selection--single{height:32px;font-size:12px;display:flex;align-items:center}
-.select2-container .select2-selection__rendered{line-height:normal}
-.select2-container .select2-selection__arrow{height:30px}
 .btn-complete-manual{background:#6f42c1;border-color:#6f42c1;color:#fff}
 .btn-complete-manual:hover{background:#5a349e;border-color:#5a349e;color:#fff}
 .btn-undo-complete{background:#adb5bd;border-color:#adb5bd;color:#212529}
 .btn-undo-complete:hover{background:#8f979e;border-color:#8f979e;color:#212529}
-.badge-complete-manual{background:#e2d9f3;color:#4a2f8c}
 </style>
 
 <div class="container-fluid">
@@ -350,7 +401,8 @@ if (!$query) die('Query error: ' . mysqli_error($conn));
         </form>
     </div>
 
-    <div class="table-responsive">
+    <!-- WRAPPER TABEL DENGAN SCROLL -->
+    <div class="table-scroll-wrapper">
         <table class="table table-bordered table-hover">
             <thead>
                 <tr>
