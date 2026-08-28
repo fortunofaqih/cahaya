@@ -188,6 +188,17 @@ LEFT JOIN detail_sales_order dso
           AND dso2.inventory_id=ds.inventory_id
     )
 WHERE hi.invoice_date BETWEEN ? AND ?
+
+  /*
+   * Exclude transaksi return CP-MCP.
+   * Return sudah dicatat terpisah di Register Penjualan Global Return,
+   * sehingga tidak boleh dihitung kembali di Register Penjualan Global.
+   *
+   * Invoice penjualan normal tetap dipertahankan walaupun pernah diretur.
+   */
+  AND UPPER(COALESCE(di.invoice_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(di.shipping_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(hs.order_no,'')) NOT LIKE '%CP-MCP%'
 GROUP BY
     di.invoice_no,di.shipping_no,hi.invoice_date,hi.customer_name,category_group
 ORDER BY
