@@ -114,42 +114,21 @@ if (strtotime($startDate) > strtotime($endDate)) {
 |--------------------------------------------------------------------------
 | SORTING
 |--------------------------------------------------------------------------
-| Default:
+| Default dan satu-satunya sorting:
 | - Return ID terbaru ke lama.
-|
-| Support format:
-| - CP-MCP : R02AGT/26
-| - CP     : 15/CP/VII/2026
-|
-| User juga tetap dapat melakukan sorting:
-| - Return ID
-| - Shipping No.
-| - Invoice No.
 |--------------------------------------------------------------------------
 */
 
-$sort = strtolower(
-    trim((string)($_GET['sort'] ?? 'return_id'))
-);
+$sort = 'return_id';
 
 $dir = strtolower(
     trim((string)($_GET['dir'] ?? 'desc'))
 );
 
-$allowedSort = [
-    'return_id',
-    'shipping_no',
-    'invoice_no'
-];
-
 $allowedDir = [
     'asc',
     'desc'
 ];
-
-if (!in_array($sort, $allowedSort, true)) {
-    $sort = 'return_id';
-}
 
 if (!in_array($dir, $allowedDir, true)) {
     $dir = 'desc';
@@ -738,12 +717,7 @@ while ($item = mysqli_fetch_assoc($res)) {
      * Invoice / Shipping yang sama boleh memiliki
      * beberapa Return ID berbeda.
      */
-    $key =
-        (string)$item['return_id'] .
-        '|' .
-        (string)$item['invoice_no'] .
-        '|' .
-        (string)$item['shipping_no'];
+    $key = (string)$item['return_id'];
 
     if (!isset($rows[$key])) {
 
@@ -752,10 +726,6 @@ while ($item = mysqli_fetch_assoc($res)) {
             'return_id' => $item['return_id'],
 
             'return_date' => $item['return_date'],
-
-            'shipping_no' => $item['shipping_no'],
-
-            'invoice_no' => $item['invoice_no'],
 
             'customer_name' => $item['customer_name'],
 
@@ -918,7 +888,7 @@ mysqli_stmt_close($stmt);
 
 .report-table {
     width: 100%;
-    min-width: 1950px;
+    min-width: 1700px;
     border-collapse: collapse;
     font-size: 9px;
 }
@@ -1164,70 +1134,6 @@ mysqli_stmt_close($stmt);
                     </th>
 
                     <th rowspan="2">
-
-                        <a
-                            class="sort-link"
-                            href="<?= h(
-                                sortUrlR(
-                                    'shipping_no',
-                                    $sort,
-                                    $dir,
-                                    $startDate,
-                                    $endDate
-                                )
-                            ) ?>"
-                            title="Urutkan Shipping No."
-                        >
-
-                            SHIPPING NO.
-
-                            <span class="sort-icon">
-                                <?= h(
-                                    sortIconR(
-                                        'shipping_no',
-                                        $sort,
-                                        $dir
-                                    )
-                                ) ?>
-                            </span>
-
-                        </a>
-
-                    </th>
-
-                    <th rowspan="2">
-
-                        <a
-                            class="sort-link"
-                            href="<?= h(
-                                sortUrlR(
-                                    'invoice_no',
-                                    $sort,
-                                    $dir,
-                                    $startDate,
-                                    $endDate
-                                )
-                            ) ?>"
-                            title="Urutkan Invoice No."
-                        >
-
-                            INVOICE NO.
-
-                            <span class="sort-icon">
-                                <?= h(
-                                    sortIconR(
-                                        'invoice_no',
-                                        $sort,
-                                        $dir
-                                    )
-                                ) ?>
-                            </span>
-
-                        </a>
-
-                    </th>
-
-                    <th rowspan="2">
                         NAMA CUST.
                     </th>
 
@@ -1279,7 +1185,7 @@ mysqli_stmt_close($stmt);
                 <tr>
 
                     <td
-                        colspan="21"
+                        colspan="19"
                         class="text-center"
                         style="padding:18px;color:#777"
                     >
@@ -1300,16 +1206,6 @@ mysqli_stmt_close($stmt);
                         <!-- RETURN ID -->
                         <td class="return-id-cell">
                             <?= h($row['return_id']) ?>
-                        </td>
-
-                        <!-- SHIPPING -->
-                        <td>
-                            <?= h($row['shipping_no']) ?>
-                        </td>
-
-                        <!-- INVOICE -->
-                        <td>
-                            <?= h($row['invoice_no']) ?>
                         </td>
 
                         <!-- CUSTOMER -->
@@ -1381,7 +1277,7 @@ mysqli_stmt_close($stmt);
                 <tr>
 
                     <td
-                        colspan="4"
+                        colspan="2"
                         style="text-align:right"
                     >
                         TOTAL RETURN

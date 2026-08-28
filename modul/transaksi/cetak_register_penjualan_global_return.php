@@ -67,21 +67,18 @@ if (strtotime($startDate) > strtotime($endDate)) {
 }
 
 /*
- * Sorting mengikuti Register Penjualan Global:
- * hanya Shipping No. dan Invoice No.
+ * Sorting cetak mengikuti Return ID.
  */
-$sort = strtolower(trim((string)($_GET['sort'] ?? 'return_id')));
+$sort = 'return_id';
 $dir  = strtolower(trim((string)($_GET['dir'] ?? 'desc')));
 
-$allowedSort = ['return_id','shipping_no','invoice_no'];
-$allowedDir  = ['asc','desc'];
+$allowedDir = ['asc','desc'];
 
-if (!in_array($sort,$allowedSort,true)) $sort = 'return_id';
 if (!in_array($dir,$allowedDir,true)) $dir = 'desc';
 
 $orderDirection = strtoupper($dir);
 
-if ($sort === 'return_id') {
+{
 
     $orderColumn = "
         CAST(RIGHT(TRIM(hri.return_id), 2) AS UNSIGNED) {$orderDirection},
@@ -108,13 +105,6 @@ if ($sort === 'return_id') {
         ) {$orderDirection}
     ";
 
-} elseif ($sort === 'invoice_no') {
-
-    $orderColumn = "hri.invoice_no {$orderDirection}";
-
-} else {
-
-    $orderColumn = "hri.shipping_no {$orderDirection}";
 }
 
 function sortUrlR($column,$currentSort,$currentDir,$startDate,$endDate){
@@ -288,17 +278,12 @@ while ($item = mysqli_fetch_assoc($res)) {
      * Satu return_id dibuat satu baris.
      * Invoice/shipping yang sama boleh mempunyai beberapa retur berbeda.
      */
-    $key =
-        (string)$item['return_id'] . '|' .
-        (string)$item['invoice_no'] . '|' .
-        (string)$item['shipping_no'];
+    $key = (string)$item['return_id'];
 
     if (!isset($rows[$key])) {
         $rows[$key] = [
             'return_id' => $item['return_id'],
             'return_date' => $item['return_date'],
-            'shipping_no' => $item['shipping_no'],
-            'invoice_no' => $item['invoice_no'],
             'customer_name' => $item['customer_name'],
             'total' => (float)$item['total_return'],
             'penjualan' => (float)$item['penjualan_return'],
@@ -413,8 +398,6 @@ body {
 }
 
 .return-col   { width: 105px; }
-.shipping-col { width: 135px; }
-.invoice-col  { width: 135px; }
 .customer-col { width: 170px; }
 .total-col    { width: 90px; }
 
@@ -460,7 +443,7 @@ tfoot td {
     }
 
     .report-table {
-        min-width: 1850px;
+        min-width: 1650px;
     }
 
     .report-table th {
@@ -499,16 +482,12 @@ tfoot td {
 
 
     .report-table th:nth-child(1),
-    .report-table td:nth-child(1),
-    .report-table th:nth-child(2),
-    .report-table td:nth-child(2) {
+    .report-table td:nth-child(1) {
         white-space: nowrap !important;
         font-size: 6.2px !important;
     }
 
     .return-col   { width: 62px !important; }
-    .shipping-col { width: 76px !important; }
-    .invoice-col  { width: 76px !important; }
     .customer-col { width: 82px !important; }
     .total-col    { width: 46px !important; }
 
@@ -567,8 +546,6 @@ tfoot td {
     <thead>
         <tr>
             <th rowspan="2" class="return-col">RETURN ID</th>
-            <th rowspan="2" class="shipping-col">SHIPPING NO.</th>
-            <th rowspan="2" class="invoice-col">INVOICE NO.</th>
             <th rowspan="2" class="customer-col">NAMA CUST.</th>
             <th rowspan="2" class="total-col">TOTAL</th>
             <th rowspan="2" class="total-col">PENJUALAN</th>
@@ -590,7 +567,7 @@ tfoot td {
     <tbody>
     <?php if (empty($rows)): ?>
         <tr>
-            <td colspan="21" class="no-data">
+            <td colspan="19" class="no-data">
                 Tidak ada data return penjualan pada periode ini.
             </td>
         </tr>
@@ -598,8 +575,6 @@ tfoot td {
         <?php foreach ($rows as $row): ?>
             <tr>
                 <td><?=h($row['return_id'])?></td>
-                <td><?=h($row['shipping_no'])?></td>
-                <td><?=h($row['invoice_no'])?></td>
                 <td class="customer-cell"><?=h($row['customer_name'])?></td>
                 <td class="money-cell"><?=h(fmtMoneyR($row['total']))?></td>
                 <td class="money-cell"><?=h(fmtMoneyR($row['penjualan']))?></td>
@@ -616,7 +591,7 @@ tfoot td {
 
     <tfoot>
         <tr>
-            <td colspan="4" style="text-align:right">TOTAL RETURN</td>
+            <td colspan="2" style="text-align:right">TOTAL RETURN</td>
             <td class="money-cell"><?=h(fmtMoneyR($grand['total']))?></td>
             <td class="money-cell"><?=h(fmtMoneyR($grand['penjualan']))?></td>
 
