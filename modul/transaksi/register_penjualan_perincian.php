@@ -77,7 +77,7 @@ if (strtotime($startDate) > strtotime($endDate)) {
  *
  * Perincian Lain Lain:
  * HD | HD WARNA | HD KRESEK | HD SABLON |
- * TALI KG | TALI LOS | BAHAN | TERPAL | BOX
+ * TALI KG | TALI LOS | BAHAN | TERPAL | BOX | SEDOTAN
  */
 $mainCategories = [
     'PP',
@@ -95,7 +95,8 @@ $detailCategories = [
     'TALI LOS',
     'BAHAN',
     'TERPAL',
-    'BOX'
+    'BOX',
+    'SEDOTAN'
 ];
 
 $allCategories = array_merge($mainCategories, $detailCategories);
@@ -147,6 +148,9 @@ SELECT
 
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])BAHAN([^A-Z]|$)'
         THEN 'BAHAN'
+
+    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SEDOTAN%'
+        THEN 'SEDOTAN'
 
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%TERPAL%'
         THEN 'TERPAL'
@@ -212,6 +216,17 @@ LEFT JOIN detail_sales_order dso
     )
 
 WHERE hi.invoice_date BETWEEN ? AND ?
+
+  /*
+   * Exclude transaksi return CP-MCP.
+   * Return sudah dicatat di Register Penjualan Global Return,
+   * sehingga tidak boleh dihitung kembali pada Register Perincian.
+   *
+   * Invoice penjualan normal tetap dipertahankan meskipun pernah diretur.
+   */
+  AND UPPER(COALESCE(di.invoice_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(di.shipping_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(hs.order_no,'')) NOT LIKE '%CP-MCP%'
 
 GROUP BY category_group
 
