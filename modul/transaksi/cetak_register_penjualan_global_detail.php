@@ -59,7 +59,8 @@ function emptyGrandR(){
         'TALI LOS'=>emptyCatR(),
         'BAHAN'=>emptyCatR(),
         'TERPAL'=>emptyCatR(),
-        'BOX'=>emptyCatR()
+        'BOX'=>emptyCatR(),
+        'SEDOTAN'=>emptyCatR()
     ];
 }
 
@@ -132,6 +133,9 @@ SELECT
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])BAHAN([^A-Z]|$)'
         THEN 'BAHAN'
 
+    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SEDOTAN%'
+        THEN 'SEDOTAN'
+
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%TERPAL%'
         THEN 'TERPAL'
 
@@ -192,6 +196,15 @@ LEFT JOIN detail_sales_order dso
           AND dso2.inventory_id = ds.inventory_id
     )
 WHERE hi.invoice_date BETWEEN ? AND ?
+
+  /*
+   * Transaksi CP-MCP adalah transaksi khusus return.
+   * Return sudah dicatat di Register Penjualan Global Return,
+   * sehingga tidak dimasukkan lagi ke register ini.
+   */
+  AND UPPER(COALESCE(di.invoice_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(di.shipping_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(hs.order_no,'')) NOT LIKE '%CP-MCP%'
 GROUP BY
     di.invoice_no,
     di.shipping_no,
@@ -200,7 +213,7 @@ GROUP BY
     category_group
 HAVING category_group IN (
     'HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON',
-    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX'
+    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN'
 )
 ORDER BY
     {$orderColumn} {$orderDirection},
@@ -230,7 +243,8 @@ $cats = [
     'TALI LOS',
     'BAHAN',
     'TERPAL',
-    'BOX'
+    'BOX',
+    'SEDOTAN'
 ];
 
 $rows = [];
@@ -482,8 +496,12 @@ $registerGroups = [
         'cats' => ['HD SABLON', 'PP SABLON'],
     ],
     [
-        'title' => 'REGISTER 3 - TALI / BAHAN / TERPAL / BOX',
-        'cats' => ['TALI KG', 'TALI LOS', 'BAHAN', 'TERPAL', 'BOX'],
+        'title' => 'REGISTER 3 - TALI / BAHAN',
+        'cats' => ['TALI KG', 'TALI LOS', 'BAHAN'],
+    ],
+    [
+        'title' => 'REGISTER 4 - TERPAL / BOX / SEDOTAN',
+        'cats' => ['TERPAL', 'BOX', 'SEDOTAN'],
     ],
 ];
 

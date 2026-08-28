@@ -34,7 +34,7 @@ function emptyGrandR(){
         
         'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
         'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
-        'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR()
+        'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR(),'SEDOTAN'=>emptyCatR()
     ];
 }
 
@@ -125,6 +125,9 @@ SELECT
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])BAHAN([^A-Z]|$)'
         THEN 'BAHAN'
 
+    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SEDOTAN%'
+        THEN 'SEDOTAN'
+
     WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%TERPAL%'
         THEN 'TERPAL'
 
@@ -184,11 +187,20 @@ LEFT JOIN detail_sales_order dso
           AND dso2.inventory_id=ds.inventory_id
     )
 WHERE hi.invoice_date BETWEEN ? AND ?
+
+  /*
+   * Transaksi CP-MCP adalah transaksi khusus return.
+   * Return sudah dicatat di Register Penjualan Global Return,
+   * sehingga tidak dimasukkan lagi ke register ini.
+   */
+  AND UPPER(COALESCE(di.invoice_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(di.shipping_no,'')) NOT LIKE '%CP-MCP%'
+  AND UPPER(COALESCE(hs.order_no,'')) NOT LIKE '%CP-MCP%'
 GROUP BY
     di.invoice_no,di.shipping_no,hi.invoice_date,hi.customer_name,category_group
 HAVING category_group IN (
     'HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON',
-    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX'
+    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN'
 )
 ORDER BY
     {$orderColumn} {$orderDirection},
@@ -204,7 +216,7 @@ mysqli_stmt_bind_param($stmt,'ss',$startDate,$endDate);
 mysqli_stmt_execute($stmt);
 $res=mysqli_stmt_get_result($stmt);
 
-$cats=['HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX'];
+$cats=['HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN'];
 $rows=[];
 $grand=emptyGrandR();
 
@@ -228,7 +240,7 @@ while($item=mysqli_fetch_assoc($res)){
             
             'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
             'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
-            'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR()
+            'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR(),'SEDOTAN'=>emptyCatR()
         ];
         $grand['total']+=(float)$item['total_invoice_shipping'];
         $grand['penjualan']+=(float)$item['penjualan_shipping'];
@@ -264,7 +276,7 @@ mysqli_stmt_close($stmt);
 .btn-vs{display:inline-flex;align-items:center;justify-content:center;min-height:30px;padding:6px 12px;border:0;border-radius:3px;color:#fff;font-size:11px;font-weight:bold;text-decoration:none;cursor:pointer}
 .btn-dark{background:#212529}.btn-secondary{background:#6c757d}.btn-success{background:#198754}
 .table-wrap{max-height:610px;overflow:auto;border:1px solid #bac7d5;background:#fff}
-.report-table{width:100%;min-width:2850px;border-collapse:collapse;font-size:9px}
+.report-table{width:100%;min-width:3120px;border-collapse:collapse;font-size:9px}
 .report-table th{position:sticky;z-index:3;padding:5px 3px;border:1px solid #9faebd;background:#e9ecef;color:#253c5c;text-align:center;white-space:nowrap}
 .report-table thead tr:first-child th{top:0}
 .report-table thead tr:nth-child(2) th{top:27px}
@@ -337,7 +349,7 @@ mysqli_stmt_close($stmt);
             </thead>
             <tbody>
             <?php if(empty($rows)): ?>
-                <tr><td colspan="35" class="text-center" style="padding:18px;color:#777">Tidak ada data untuk kategori HD, HD WARNA, HD KRESEK, HD SABLON, PP SABLON, TALI KG, TALI LOS, BAHAN, TERPAL, atau BOX pada periode ini.</td></tr>
+                <tr><td colspan="38" class="text-center" style="padding:18px;color:#777">Tidak ada data untuk kategori HD, HD WARNA, HD KRESEK, HD SABLON, PP SABLON, TALI KG, TALI LOS, BAHAN, TERPAL, BOX, atau SEDOTAN pada periode ini.</td></tr>
             <?php else: foreach($rows as $row): ?>
                 <tr>
                     <td><?=h($row['shipping_no'])?></td>
