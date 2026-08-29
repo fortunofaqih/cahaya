@@ -20,6 +20,7 @@ if (!isset($_SESSION['username'])) {
 include __DIR__ . '/../../koneksi.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+mysqli_set_charset($conn, 'utf8mb4');
 
 function cleanInput($data)
 {
@@ -195,6 +196,82 @@ function shippingUsedByOtherInvoice(
     return $exists;
 }
 
+
+/**
+ * Jika Customer ID invoice berubah, jangan pindahkan invoice yang sudah
+ * mempunyai pembayaran/retur/deposit karena akan menyebabkan ledger customer
+ * lama dan baru menjadi tidak konsisten.
+ */
+function assertCustomerChangeSafe(
+    mysqli $conn,
+    string $invoiceNo,
+    string $oldCustomerId,
+    string $newCustomerId
+): void {
+    if ($oldCustomerId === $newCustomerId) {
+        return;
+    }
+
+    $checks = [
+        [
+            'sql' => "SELECT 1 FROM detail_bayar WHERE invoice_no = ? LIMIT 1",
+            'message' => 'Invoice sudah memiliki transaksi pembayaran.'
+        ],
+        [
+            'sql' => "SELECT 1 FROM head_retur_invoice WHERE invoice_no = ? LIMIT 1",
+            'message' => 'Invoice sudah memiliki transaksi retur.'
+        ],
+        [
+            'sql' => "SELECT 1 FROM invoice_deposit_application WHERE invoice_no = ? LIMIT 1",
+            'message' => 'Invoice sudah memiliki aplikasi deposit/titip.'
+        ],
+    ];
+
+    foreach ($checks as $check) {
+        $stmt = mysqli_prepare($conn, $check['sql']);
+        mysqli_stmt_bind_param($stmt, 's', $invoiceNo);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_store_result($stmt);
+        $exists = mysqli_stmt_num_rows($stmt) > 0;
+        mysqli_stmt_close($stmt);
+
+        if ($exists) {
+            throw new RuntimeException(
+                "Customer invoice tidak dapat dipindahkan dari $oldCustomerId ke $newCustomerId. " .
+                $check['message'] .
+                ' Koreksi transaksi terkait terlebih dahulu agar Kartu Piutang/Aging tidak berpindah customer secara sepihak.'
+            );
+        }
+    }
+}
+
+/**
+ * Memastikan customer sumber masih ada di master aktif.
+ */
+function assertActiveCustomer(mysqli $conn, string $customerId): void
+{
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT 1
+         FROM m_customer
+         WHERE customer_id = ?
+           AND COALESCE(is_active, 'Checked') = 'Checked'
+         LIMIT 1"
+    );
+
+    mysqli_stmt_bind_param($stmt, 's', $customerId);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_store_result($stmt);
+    $exists = mysqli_stmt_num_rows($stmt) > 0;
+    mysqli_stmt_close($stmt);
+
+    if (!$exists) {
+        throw new RuntimeException(
+            "Customer sumber $customerId tidak ditemukan atau tidak aktif di master customer."
+        );
+    }
+}
+
 /**
  * Mengambil subtotal satu shipping dengan rule yang sama seperti add_invoice:
  *
@@ -215,6 +292,10 @@ function calculateShippingInvoice(
             hs.shipping_no,
             hs.shipping_date,
             hs.order_no,
+            hs.customer_id,
+            hs.customer_name,
+            hs.customer_address,
+            hs.customer_city,
             COALESCE(hs.remarks_shipping, '') AS remarks_shipping
          FROM hed_shipping hs
          WHERE hs.shipping_no = ?
@@ -319,6 +400,10 @@ function calculateShippingInvoice(
         'shipping_no' => (string)$shipping['shipping_no'],
         'shipping_date' => (string)$shipping['shipping_date'],
         'order_no' => (string)$shipping['order_no'],
+        'customer_id' => trim((string)($shipping['customer_id'] ?? '')),
+        'customer_name' => trim((string)($shipping['customer_name'] ?? '')),
+        'customer_address' => trim((string)($shipping['customer_address'] ?? '')),
+        'customer_city' => trim((string)($shipping['customer_city'] ?? '')),
         'subtotal' => $shippingSubtotal,
         'total' => $shippingSubtotal,
         'remarks_shipping' =>
@@ -421,6 +506,12 @@ try {
     $validShippingRows = [];
     $calculatedSubtotal = 0.0;
 
+    /*
+     * Customer invoice selalu mengikuti Shipping/Sales Order yang dipilih.
+     * Semua shipping dalam satu invoice wajib mempunyai Customer ID yang sama.
+     */
+    $sourceCustomer = null;
+
     foreach ($shippingNos as $shippingNo) {
         if (
             shippingUsedByOtherInvoice(
@@ -452,6 +543,29 @@ try {
             );
         }
 
+        $shipCustomerId = trim((string)($shippingRow['customer_id'] ?? ''));
+        $shipCustomerName = trim((string)($shippingRow['customer_name'] ?? ''));
+
+        if ($shipCustomerId === '' || $shipCustomerName === '') {
+            throw new RuntimeException(
+                "Customer pada Shipping $shippingNo kosong. Perbaiki Shipping terlebih dahulu."
+            );
+        }
+
+        if ($sourceCustomer === null) {
+            $sourceCustomer = [
+                'customer_id' => $shipCustomerId,
+                'customer_name' => $shipCustomerName,
+                'customer_address' => trim((string)($shippingRow['customer_address'] ?? '')),
+                'customer_city' => trim((string)($shippingRow['customer_city'] ?? '')),
+            ];
+        } elseif ($sourceCustomer['customer_id'] !== $shipCustomerId) {
+            throw new RuntimeException(
+                "Shipping yang dipilih tidak konsisten. " .
+                "Customer {$sourceCustomer['customer_id']} dan $shipCustomerId ditemukan dalam satu invoice."
+            );
+        }
+
         $validShippingRows[] = $shippingRow;
         $calculatedSubtotal += (float)$shippingRow['subtotal'];
     }
@@ -461,6 +575,33 @@ try {
             'Tidak ada Shipping valid untuk disimpan.'
         );
     }
+
+    if ($sourceCustomer === null) {
+        throw new RuntimeException(
+            'Customer sumber dari Shipping tidak ditemukan.'
+        );
+    }
+
+    $sourceCustomerId = (string)$sourceCustomer['customer_id'];
+    $sourceCustomerName = (string)$sourceCustomer['customer_name'];
+    $sourceCustomerAddress = (string)$sourceCustomer['customer_address'];
+    $sourceCustomerCity = (string)$sourceCustomer['customer_city'];
+
+    assertActiveCustomer($conn, $sourceCustomerId);
+
+    $oldCustomerId = trim((string)($oldInvoice['customer_id'] ?? ''));
+
+    /*
+     * Jika ID customer benar-benar berpindah, lakukan safety check.
+     * Jika hanya nama/alamat/city yang berbeda tetapi ID sama, snapshot header
+     * boleh disinkronkan tanpa mengganggu ledger.
+     */
+    assertCustomerChangeSafe(
+        $conn,
+        $invoiceNo,
+        $oldCustomerId,
+        $sourceCustomerId
+    );
 
     $subtotal = round($calculatedSubtotal, 2);
     $grandTotal = $subtotal;
@@ -503,6 +644,10 @@ try {
             days = ?,
             currency = ?,
             remarks_invoice = ?,
+            customer_id = ?,
+            customer_name = ?,
+            customer_address = ?,
+            customer_city = ?,
             subtotal = ?,
             grand_total = ?,
             down_payment = ?,
@@ -515,12 +660,12 @@ try {
     );
 
     /*
-     * 4 string + 1 integer + 2 string +
-     * 6 decimal + 2 string = 15 parameter.
+     * Customer header tidak berasal dari POST.
+     * Selalu menggunakan snapshot customer dari Shipping yang dipilih.
      */
     mysqli_stmt_bind_param(
         $stmtHead,
-        'ssssissddddddss',
+        'ssssissssssddddddss',
         $invoiceDate,
         $station,
         $paymentType,
@@ -528,6 +673,10 @@ try {
         $days,
         $currency,
         $remarksInvoice,
+        $sourceCustomerId,
+        $sourceCustomerName,
+        $sourceCustomerAddress,
+        $sourceCustomerCity,
         $subtotal,
         $grandTotal,
         $downPayment,
@@ -601,7 +750,7 @@ try {
 
     redirectWithAlert(
         'success',
-        "Invoice $invoiceNo berhasil diperbarui.",
+        "Invoice $invoiceNo berhasil diperbarui. Customer mengikuti Shipping: $sourceCustomerId - $sourceCustomerName.",
         '../../index.php?page=invoice'
     );
 } catch (Throwable $e) {

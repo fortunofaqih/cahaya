@@ -14,6 +14,9 @@ if (!isset($_SESSION['username'])) {
 
 include __DIR__ . '/../../koneksi.php';
 
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+mysqli_set_charset($conn, 'utf8mb4');
+
 function h($value) {
     return htmlspecialchars((string)($value ?? ''), ENT_QUOTES, 'UTF-8');
 }
@@ -152,106 +155,6 @@ if ($invoiceNo === '') {
     exit;
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_invoice'])) {
-    $invoice_date = esc($conn, $_POST['invoice_date'] ?? '');
-    $station = esc($conn, $_POST['station'] ?? 'Factory');
-    $payment_type = esc($conn, $_POST['payment_type'] ?? '');
-    $payment_term = esc($conn, $_POST['payment_term'] ?? '');
-    $days = (int)($_POST['days'] ?? 30);
-    $currency = esc($conn, $_POST['currency'] ?? 'IDR');
-    $remarks_invoice = esc($conn, $_POST['remarks_invoice'] ?? '');
-    $down_payment = moneyToFloat($_POST['down_payment'] ?? 0);
-    $titip_applied = moneyToFloat($_POST['titip_applied'] ?? 0);
-    $shipping_nos = $_POST['shipping_no'] ?? [];
-    $username = $_SESSION['username'];
-
-    mysqli_begin_transaction($conn);
-    try {
-        $stmtOld = mysqli_prepare($conn, "SELECT * FROM head_invoice WHERE invoice_no = ? LIMIT 1");
-        if (!$stmtOld) throw new Exception('Gagal prepare invoice: ' . mysqli_error($conn));
-        mysqli_stmt_bind_param($stmtOld, 's', $invoiceNo);
-        mysqli_stmt_execute($stmtOld);
-        $resOld = mysqli_stmt_get_result($stmtOld);
-        $old = $resOld ? mysqli_fetch_assoc($resOld) : null;
-        mysqli_stmt_close($stmtOld);
-
-        if (!$old) throw new Exception('Invoice tidak ditemukan.');
-        if (!is_array($shipping_nos) || count($shipping_nos) === 0) throw new Exception('Minimal pilih 1 shipping/surat jalan.');
-
-        $validShippingRows = [];
-        $calcSubtotal = 0;
-        foreach ($shipping_nos as $shipNoRaw) {
-            $shipNo = cleanInput($shipNoRaw);
-            if ($shipNo === '') continue;
-            $rowShip = getShippingInvoiceSubtotal($conn, $shipNo, $old['order_no'], $invoiceNo);
-            if (!$rowShip) throw new Exception('Shipping ' . $shipNo . ' tidak valid, bukan milik order ini, atau sudah dipakai invoice lain.');
-            if ((float)$rowShip['subtotal'] <= 0) throw new Exception('Subtotal invoice untuk shipping ' . $shipNo . ' bernilai 0.');
-            $validShippingRows[] = $rowShip;
-            $calcSubtotal += (float)$rowShip['subtotal'];
-        }
-
-        if (!$validShippingRows) throw new Exception('Tidak ada shipping valid untuk disimpan.');
-
-        $subtotal = $calcSubtotal;
-        $grand_total = $calcSubtotal;
-        $down_payment = min($down_payment, $grand_total);
-        $payment_balance = max($grand_total - $down_payment - $titip_applied, 0);
-        $piutang = $payment_balance;
-
-        $stmtHead = mysqli_prepare($conn, "
-            UPDATE head_invoice SET
-                invoice_date = ?, station = ?, payment_type = ?, payment_term = ?, days = ?, currency = ?,
-                remarks_invoice = ?, subtotal = ?, grand_total = ?, down_payment = ?, titip_applied = ?,
-                payment_balance = ?, piutang = ?, user_modified = ?, date_modified = NOW()
-            WHERE invoice_no = ?
-        ");
-        if (!$stmtHead) throw new Exception('Gagal prepare update header: ' . mysqli_error($conn));
-        mysqli_stmt_bind_param(
-            $stmtHead,
-            'ssssisddddddsss',
-            $invoice_date, $station, $payment_type, $payment_term, $days, $currency,
-            $remarks_invoice, $subtotal, $grand_total, $down_payment, $titip_applied,
-            $payment_balance, $piutang, $username, $invoiceNo
-        );
-        if (!mysqli_stmt_execute($stmtHead)) throw new Exception('Gagal update header: ' . mysqli_stmt_error($stmtHead));
-        mysqli_stmt_close($stmtHead);
-
-        $stmtDel = mysqli_prepare($conn, "DELETE FROM det_invoice WHERE invoice_no = ?");
-        if (!$stmtDel) throw new Exception('Gagal prepare reset detail: ' . mysqli_error($conn));
-        mysqli_stmt_bind_param($stmtDel, 's', $invoiceNo);
-        if (!mysqli_stmt_execute($stmtDel)) throw new Exception('Gagal reset detail: ' . mysqli_stmt_error($stmtDel));
-        mysqli_stmt_close($stmtDel);
-
-        $stmtDet = mysqli_prepare($conn, "
-            INSERT INTO det_invoice (
-                invoice_no, shipping_no, shipping_date, order_no, subtotal, total,
-                remarks_shipping, create_user, date_created
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-        ");
-        if (!$stmtDet) throw new Exception('Gagal prepare insert detail: ' . mysqli_error($conn));
-
-        foreach ($validShippingRows as $row) {
-            $shipNo = $row['shipping_no'];
-            $shipDate = $row['shipping_date'];
-            $shipOrderNo = $row['order_no'];
-            $rowSubtotal = (float)$row['subtotal'];
-            $rowTotal = (float)$row['total'];
-            $remarksShipping = $row['remarks_shipping'];
-            mysqli_stmt_bind_param($stmtDet, 'ssssddss', $invoiceNo, $shipNo, $shipDate, $shipOrderNo, $rowSubtotal, $rowTotal, $remarksShipping, $username);
-            if (!mysqli_stmt_execute($stmtDet)) throw new Exception('Gagal simpan detail invoice shipping ' . $shipNo . ': ' . mysqli_stmt_error($stmtDet));
-        }
-        mysqli_stmt_close($stmtDet);
-
-        mysqli_commit($conn);
-        $_SESSION['alert'] = '<div class="alert alert-success">Invoice ' . h($invoiceNo) . ' berhasil diupdate.</div>';
-        echo "<script>alert('Invoice " . addslashes($invoiceNo) . " berhasil diupdate.'); window.location.href='index.php?page=invoice';</script>";
-        exit;
-    } catch (Exception $e) {
-        mysqli_rollback($conn);
-        $_SESSION['alert'] = '<div class="alert alert-danger">Error: ' . h($e->getMessage()) . '</div>';
-    }
-}
-
 $stmtHead = mysqli_prepare($conn, "SELECT * FROM head_invoice WHERE invoice_no = ? LIMIT 1");
 if (!$stmtHead) die('Gagal prepare invoice: ' . mysqli_error($conn));
 mysqli_stmt_bind_param($stmtHead, 's', $invoiceNo);
@@ -267,6 +170,10 @@ $stmtShip = mysqli_prepare($conn, "
         hs.shipping_no,
         hs.shipping_date,
         hs.order_no,
+        hs.customer_id,
+        hs.customer_name,
+        hs.customer_address,
+        hs.customer_city,
         hs.gudang_id,
         COALESCE(mg.name, 'GUDANG BARANG JADI 1') AS warehouse_name,
         hs.remarks_shipping,
@@ -290,6 +197,62 @@ while ($resShip && $row = mysqli_fetch_assoc($resShip)) {
     $shippings[] = $row;
 }
 mysqli_stmt_close($stmtShip);
+
+/*
+ * CUSTOMER SUMBER:
+ * - Invoice tidak boleh memilih customer bebas.
+ * - Customer mengikuti Shipping/Sales Order yang dipilih.
+ * - Untuk tampilan edit, prioritas customer dari shipping yang saat ini
+ *   sudah terhubung ke invoice. Jika belum ada, pakai shipping pertama.
+ */
+$sourceCustomer = null;
+$sourceCustomerConflict = false;
+$sourceCustomerIds = [];
+
+foreach ($shippings as $ship) {
+    $shipCustomerId = trim((string)($ship['customer_id'] ?? ''));
+
+    if ($shipCustomerId !== '') {
+        $sourceCustomerIds[$shipCustomerId] = true;
+    }
+
+    if (
+        $sourceCustomer === null &&
+        (int)($ship['is_selected'] ?? 0) === 1
+    ) {
+        $sourceCustomer = [
+            'customer_id' => $shipCustomerId,
+            'customer_name' => trim((string)($ship['customer_name'] ?? '')),
+            'customer_address' => trim((string)($ship['customer_address'] ?? '')),
+            'customer_city' => trim((string)($ship['customer_city'] ?? '')),
+        ];
+    }
+}
+
+if ($sourceCustomer === null && !empty($shippings)) {
+    $firstShip = $shippings[0];
+    $sourceCustomer = [
+        'customer_id' => trim((string)($firstShip['customer_id'] ?? '')),
+        'customer_name' => trim((string)($firstShip['customer_name'] ?? '')),
+        'customer_address' => trim((string)($firstShip['customer_address'] ?? '')),
+        'customer_city' => trim((string)($firstShip['customer_city'] ?? '')),
+    ];
+}
+
+$sourceCustomerConflict = count($sourceCustomerIds) > 1;
+
+$invoiceCustomerId = trim((string)($head['customer_id'] ?? ''));
+$invoiceCustomerName = trim((string)($head['customer_name'] ?? ''));
+
+$sourceCustomerId = trim((string)($sourceCustomer['customer_id'] ?? ''));
+$sourceCustomerName = trim((string)($sourceCustomer['customer_name'] ?? ''));
+
+$customerMismatch =
+    $sourceCustomer !== null &&
+    (
+        $invoiceCustomerId !== $sourceCustomerId ||
+        strcasecmp($invoiceCustomerName, $sourceCustomerName) !== 0
+    );
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -305,6 +268,74 @@ mysqli_stmt_close($stmtShip);
         .item-table th { background:#eef4ff; }
         .item-name { white-space:normal; word-break:break-word; min-width:230px; }
         .text-end input { text-align:right; }
+        .customer-box { border:1px solid #d9e2ec; border-radius:6px; padding:10px; background:#f8fafc; height:100%; }
+        .customer-box.source { border-color:#86b7fe; background:#eef6ff; }
+        .customer-box.current-mismatch { border-color:#f1aeb5; background:#fff5f5; }
+        .customer-meta { font-size:11px; color:#5f6b76; line-height:1.55; }
+		.customer-compare-wrap {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 32px minmax(0, 1fr);
+			gap: 8px;
+			align-items: center;
+			margin-top: 8px;
+		}
+
+		.customer-mini-card {
+			border: 1px solid #d9dee5;
+			border-radius: 6px;
+			padding: 8px 10px;
+			background: #fff;
+			min-height: auto;
+		}
+
+		.customer-mini-card.current {
+			background: #fff8f8;
+			border-color: #f1c7c7;
+		}
+
+		.customer-mini-card.source {
+			background: #f4fbf6;
+			border-color: #b8dfc3;
+		}
+
+		.customer-mini-title {
+			font-size: 9px;
+			font-weight: 700;
+			text-transform: uppercase;
+			color: #6c757d;
+			margin-bottom: 3px;
+			letter-spacing: .2px;
+		}
+
+		.customer-mini-main {
+			font-size: 12px;
+			font-weight: 700;
+			color: #212529;
+			line-height: 1.25;
+		}
+
+		.customer-mini-sub {
+			margin-top: 2px;
+			font-size: 10px;
+			color: #6c757d;
+		}
+
+		.customer-arrow {
+			text-align: center;
+			font-size: 18px;
+			font-weight: 700;
+			color: #6c757d;
+		}
+
+		@media (max-width: 768px) {
+			.customer-compare-wrap {
+				grid-template-columns: 1fr;
+			}
+
+			.customer-arrow {
+				transform: rotate(90deg);
+			}
+		}
     </style>
 </head>
 <body>
@@ -317,11 +348,51 @@ mysqli_stmt_close($stmtShip);
         <div class="card shadow-sm mb-3">
             <div class="card-header bg-primary text-white">Edit Invoice</div>
             <div class="card-body">
+                <?php if ($sourceCustomerConflict): ?>
+                    <div class="alert alert-danger py-2">
+                        <strong>Peringatan:</strong> ditemukan lebih dari satu Customer ID pada shipping untuk Sales Order ini.
+                        Update akan ditolak sampai data Shipping konsisten.
+                    </div>
+                <?php elseif ($customerMismatch): ?>
+                    <div class="alert alert-warning py-2">
+                        <strong>Customer invoice berbeda dengan SO / Shipping.</strong>
+                        Saat Update Invoice, customer header invoice akan otomatis dikoreksi mengikuti customer dari shipping yang dipilih.
+                    </div>
+                <?php elseif ($sourceCustomer): ?>
+                    <div class="alert alert-success py-2">
+                        Customer invoice sudah sesuai dengan SO / Shipping.
+                    </div>
+                <?php endif; ?>
+
                 <div class="row g-2">
                     <div class="col-md-3"><label class="form-label fw-bold">Invoice No</label><input class="form-control form-control-sm" value="<?= h($head['invoice_no']) ?>" readonly></div>
                     <div class="col-md-3"><label class="form-label fw-bold">Invoice Date</label><input type="date" name="invoice_date" class="form-control form-control-sm" value="<?= h($head['invoice_date']) ?>" required></div>
                     <div class="col-md-3"><label class="form-label fw-bold">Sales Order</label><input class="form-control form-control-sm" value="<?= h($head['order_no']) ?>" readonly></div>
-                    <div class="col-md-3"><label class="form-label fw-bold">Customer</label><input class="form-control form-control-sm" value="<?= h($head['customer_name']) ?>" readonly></div>
+					<div class="customer-compare-wrap">
+						<div class="customer-mini-card current">
+							<div class="customer-mini-title">Customer Invoice Saat Ini</div>
+							<div class="customer-mini-main">
+								<?= h(($head['customer_id'] ?? '') . ' - ' . ($head['customer_name'] ?? '')) ?>
+							</div>
+							<div class="customer-mini-sub">
+								<?= h($head['customer_city'] ?? '') ?>
+							</div>
+						</div>
+
+						<div class="customer-arrow">
+							→
+						</div>
+
+						<div class="customer-mini-card source">
+							<div class="customer-mini-title">Customer Sumber (SO / Shipping)</div>
+							<div class="customer-mini-main">
+								<?= h(($sourceCustomer['customer_id'] ?? '') . ' - ' . ($sourceCustomer['customer_name'] ?? '')) ?>
+							</div>
+							<div class="customer-mini-sub">
+								<?= h($sourceCustomer['customer_city'] ?? '') ?>
+							</div>
+						</div>
+					</div>
                     <div class="col-md-2"><label class="form-label fw-bold">Station</label><input name="station" class="form-control form-control-sm" value="<?= h($head['station']) ?>"></div>
                     <div class="col-md-2"><label class="form-label fw-bold">Payment Type</label><input name="payment_type" class="form-control form-control-sm" value="<?= h($head['payment_type']) ?>"></div>
                     <div class="col-md-2"><label class="form-label fw-bold">Payment Term</label><input name="payment_term" class="form-control form-control-sm" value="<?= h($head['payment_term']) ?>"></div>
@@ -344,6 +415,7 @@ mysqli_stmt_close($stmtShip);
                                 <th style="width:40px;">Pilih</th>
                                 <th>Shipping No</th>
                                 <th>Date</th>
+                                <th>Customer</th>
                                 <th>Warehouse</th>
                                 <th>Subtotal Invoice</th>
                                 <th>Item Detail</th>
@@ -351,13 +423,16 @@ mysqli_stmt_close($stmtShip);
                         </thead>
                         <tbody>
                         <?php if (!$shippings): ?>
-                            <tr><td colspan="6" class="text-center text-danger py-3">Tidak ada shipping tersedia untuk order ini.</td></tr>
+                            <tr><td colspan="7" class="text-center text-danger py-3">Tidak ada shipping tersedia untuk order ini.</td></tr>
                         <?php endif; ?>
                         <?php foreach ($shippings as $ship): ?>
                             <tr>
                                 <td class="text-center"><input type="checkbox" name="shipping_no[]" value="<?= h($ship['shipping_no']) ?>" <?= (int)$ship['is_selected'] === 1 ? 'checked' : '' ?>></td>
                                 <td><strong><?= h($ship['shipping_no']) ?></strong></td>
                                 <td><?= h($ship['shipping_date']) ?></td>
+                                <td>
+                                    <strong><?= h(($ship['customer_id'] ?? '') . ' - ' . ($ship['customer_name'] ?? '')) ?></strong>
+                                </td>
                                 <td><?= h($ship['warehouse_name']) ?></td>
                                 <td class="text-end fw-bold"><?= fmtMoney($ship['subtotal_calc']) ?></td>
                                 <td>
