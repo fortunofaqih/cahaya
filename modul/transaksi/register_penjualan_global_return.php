@@ -55,8 +55,12 @@ function fmtDateR($d) {
         : '';
 }
 
-function fmtMoneyR($v) {
-    return number_format((float)$v, 2, ',', '.');
+function fmtMoneyR($v){
+    // Buang pecahan desimal tanpa pembulatan.
+    // Contoh: 400.412.886,50 -> 400.412.886,00
+    $v = (float)$v;
+    $whole = $v < 0 ? ceil($v) : floor($v);
+    return number_format($whole, 2, ',', '.');
 }
 
 function fmtQtyR($v) {
@@ -337,446 +341,241 @@ function sortIconR(
 |--------------------------------------------------------------------------
 */
 
+/*
+|--------------------------------------------------------------------------
+| DATA RETUR - NILAI KEUANGAN
+|--------------------------------------------------------------------------
+| Nilai resmi return:
+| - CP-MCP     : head_retur_invoice.grand_total
+| - Retur normal: head_retur_invoice.return_amount
+|
+| Detail return tetap dipakai untuk kategori dan quantity.
+| Rp kategori dialokasikan dari nilai resmi return di header menggunakan
+| return_subtotal sebagai dasar pembobotan. Dengan demikian jumlah seluruh
+| Rp kategori per Return ID selalu sama dengan nilai return resmi.
+|--------------------------------------------------------------------------
+*/
 $sql = "
 SELECT
-
     hri.return_id,
     hri.return_date,
     hri.invoice_no,
     hri.shipping_no,
     hri.customer_name,
 
-    MAX(
-        COALESCE(
-            hri.grand_total,
-            0
-        )
-    ) AS total_return,
+    COALESCE(hri.grand_total,0) AS total_return,
 
-    MAX(
-        CASE
-
-            WHEN
-                UPPER(
-                    COALESCE(
-                        hri.invoice_no,
-                        ''
-                    )
-                ) LIKE '%CP-MCP%'
-
-                OR
-
-                UPPER(
-                    COALESCE(
-                        hri.shipping_no,
-                        ''
-                    )
-                ) LIKE '%CP-MCP%'
-
-            THEN COALESCE(
-                hri.grand_total,
-                0
-            )
-
-            ELSE COALESCE(
-                hri.return_amount,
-                0
-            )
-
-        END
-    ) AS penjualan_return,
-
-    /*
-    |--------------------------------------------------------------------------
-    | CATEGORY
-    |--------------------------------------------------------------------------
-    */
     CASE
+        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+            THEN COALESCE(hri.grand_total,0)
+        ELSE COALESCE(hri.return_amount,0)
+    END AS penjualan_return,
 
-        /*
-         * PE WARNA harus dicek sebelum PE.
-         */
-        WHEN
+    dri.id AS return_detail_id,
 
-            UPPER(
-                COALESCE(
-                    NULLIF(
-                        TRIM(dri.inventory_name),
-                        ''
-                    ),
-                    NULLIF(
-                        TRIM(mi.inventory_name),
-                        ''
-                    ),
-                    ''
-                )
+    CASE
+        WHEN UPPER(
+            COALESCE(
+                NULLIF(TRIM(dri.inventory_name),''),
+                NULLIF(TRIM(mi.inventory_name),''),
+                ''
             )
-            REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
-
-            AND
-
-            UPPER(
-                COALESCE(
-                    NULLIF(
-                        TRIM(dri.inventory_name),
-                        ''
-                    ),
-                    NULLIF(
-                        TRIM(mi.inventory_name),
-                        ''
-                    ),
-                    ''
-                )
+        ) REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
+        AND UPPER(
+            COALESCE(
+                NULLIF(TRIM(dri.inventory_name),''),
+                NULLIF(TRIM(mi.inventory_name),''),
+                ''
             )
-            LIKE '%WARNA%'
+        ) LIKE '%WARNA%'
+            THEN 'PE WARNA'
 
-        THEN 'PE WARNA'
-
-        WHEN
-
-            UPPER(
-                COALESCE(
-                    NULLIF(
-                        TRIM(dri.inventory_name),
-                        ''
-                    ),
-                    NULLIF(
-                        TRIM(mi.inventory_name),
-                        ''
-                    ),
-                    ''
-                )
+        WHEN UPPER(
+            COALESCE(
+                NULLIF(TRIM(dri.inventory_name),''),
+                NULLIF(TRIM(mi.inventory_name),''),
+                ''
             )
-            LIKE '%KERTAS%'
+        ) LIKE '%KERTAS%'
+            THEN 'KERTAS'
 
-        THEN 'KERTAS'
-
-        WHEN
-
-            UPPER(
-                COALESCE(
-                    NULLIF(
-                        TRIM(dri.inventory_name),
-                        ''
-                    ),
-                    NULLIF(
-                        TRIM(mi.inventory_name),
-                        ''
-                    ),
-                    ''
-                )
+        WHEN UPPER(
+            COALESCE(
+                NULLIF(TRIM(dri.inventory_name),''),
+                NULLIF(TRIM(mi.inventory_name),''),
+                ''
             )
-            REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
+        ) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
+            THEN 'PP'
 
-        THEN 'PP'
-
-        WHEN
-
-            UPPER(
-                COALESCE(
-                    NULLIF(
-                        TRIM(dri.inventory_name),
-                        ''
-                    ),
-                    NULLIF(
-                        TRIM(mi.inventory_name),
-                        ''
-                    ),
-                    ''
-                )
+        WHEN UPPER(
+            COALESCE(
+                NULLIF(TRIM(dri.inventory_name),''),
+                NULLIF(TRIM(mi.inventory_name),''),
+                ''
             )
-            REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
-
-        THEN 'PE'
+        ) REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
+            THEN 'PE'
 
         ELSE 'LAIN LAIN'
-
     END AS category_group,
 
-    /*
-    |--------------------------------------------------------------------------
-    | QTY UTAMA
-    |--------------------------------------------------------------------------
-    */
-    SUM(
-        CASE
+    CASE
+        WHEN UPPER(TRIM(COALESCE(dri.uom_pack,''))) <> ''
+         AND UPPER(TRIM(COALESCE(dri.uom_pack,''))) <> 'KG'
+            THEN COALESCE(dri.return_quantity_pack,0)
 
-            WHEN
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom_pack,
-                            ''
-                        )
-                    )
-                ) <> ''
+        WHEN UPPER(TRIM(COALESCE(dri.uom_detail,''))) <> ''
+         AND UPPER(TRIM(COALESCE(dri.uom_detail,''))) <> 'KG'
+            THEN COALESCE(dri.return_quantity_detail,0)
 
-                AND
+        ELSE COALESCE(dri.return_quantity,0)
+    END AS category_qty,
 
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom_pack,
-                            ''
-                        )
-                    )
-                ) <> 'KG'
+    CASE
+        WHEN UPPER(TRIM(COALESCE(dri.uom,''))) = 'KG'
+            THEN COALESCE(dri.return_quantity,0)
 
-            THEN COALESCE(
-                dri.return_quantity_pack,
-                0
-            )
+        WHEN UPPER(TRIM(COALESCE(dri.uom_pack,''))) = 'KG'
+            THEN COALESCE(dri.return_quantity_pack,0)
 
-            WHEN
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom_detail,
-                            ''
-                        )
-                    )
-                ) <> ''
+        WHEN UPPER(TRIM(COALESCE(dri.uom_detail,''))) = 'KG'
+            THEN COALESCE(dri.return_quantity_detail,0)
 
-                AND
+        ELSE 0
+    END AS category_qty_kg,
 
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom_detail,
-                            ''
-                        )
-                    )
-                ) <> 'KG'
-
-            THEN COALESCE(
-                dri.return_quantity_detail,
-                0
-            )
-
-            ELSE COALESCE(
-                dri.return_quantity,
-                0
-            )
-
-        END
-    ) AS category_qty,
-
-    /*
-    |--------------------------------------------------------------------------
-    | QTY KG
-    |--------------------------------------------------------------------------
-    */
-    SUM(
-        CASE
-
-            WHEN
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom,
-                            ''
-                        )
-                    )
-                ) = 'KG'
-
-            THEN COALESCE(
-                dri.return_quantity,
-                0
-            )
-
-            WHEN
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom_pack,
-                            ''
-                        )
-                    )
-                ) = 'KG'
-
-            THEN COALESCE(
-                dri.return_quantity_pack,
-                0
-            )
-
-            WHEN
-                UPPER(
-                    TRIM(
-                        COALESCE(
-                            dri.uom_detail,
-                            ''
-                        )
-                    )
-                ) = 'KG'
-
-            THEN COALESCE(
-                dri.return_quantity_detail,
-                0
-            )
-
-            ELSE 0
-
-        END
-    ) AS category_qty_kg,
-
-    /*
-    |--------------------------------------------------------------------------
-    | NILAI CATEGORY
-    |--------------------------------------------------------------------------
-    */
-    SUM(
-        COALESCE(
-            dri.return_subtotal,
-            0
-        )
-    ) AS category_rp
+    ABS(COALESCE(dri.return_subtotal,0)) AS allocation_basis
 
 FROM head_retur_invoice hri
-
 INNER JOIN detail_retur_invoice dri
     ON TRIM(dri.return_id) = TRIM(hri.return_id)
-
 LEFT JOIN m_inventory mi
-    ON mi.inventory_id = dri.inventory_id
+    ON TRIM(mi.inventory_id) = TRIM(dri.inventory_id)
 
-WHERE
-    hri.return_date BETWEEN ? AND ?
-
-    AND LOWER(
-        COALESCE(
-            hri.status,
-            'Open'
-        )
-    ) <> 'cancelled'
-
-GROUP BY
-    hri.return_id,
-    hri.return_date,
-    hri.invoice_no,
-    hri.shipping_no,
-    hri.customer_name,
-    category_group
+WHERE hri.return_date BETWEEN ? AND ?
+  AND LOWER(COALESCE(hri.status,'Open')) <> 'cancelled'
 
 ORDER BY
     {$orderColumn},
     hri.return_date DESC,
-    category_group ASC
+    hri.return_id DESC,
+    dri.id ASC
 ";
 
-$stmt = mysqli_prepare(
-    $conn,
-    $sql
-);
+$stmt = mysqli_prepare($conn,$sql);
 
 if (!$stmt) {
-    die(
-        'SQL Register Penjualan Global Return Error: ' .
-        h(mysqli_error($conn))
-    );
+    die('SQL Register Penjualan Global Return Error: ' . h(mysqli_error($conn)));
 }
 
-mysqli_stmt_bind_param(
-    $stmt,
-    'ss',
-    $startDate,
-    $endDate
-);
-
+mysqli_stmt_bind_param($stmt,'ss',$startDate,$endDate);
 mysqli_stmt_execute($stmt);
-
 $res = mysqli_stmt_get_result($stmt);
 
-/*
-|--------------------------------------------------------------------------
-| CATEGORY
-|--------------------------------------------------------------------------
-*/
-
-$cats = [
-    'PP',
-    'KERTAS',
-    'PE',
-    'PE WARNA',
-    'LAIN LAIN'
-];
-
-/*
-|--------------------------------------------------------------------------
-| BUILD ROW
-|--------------------------------------------------------------------------
-*/
+$cats = ['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
 
 $rows = [];
 $grand = emptyGrandR();
+$returnGroups = [];
 
 while ($item = mysqli_fetch_assoc($res)) {
-
-    /*
-     * Satu Return ID = satu baris register.
-     *
-     * Invoice / Shipping yang sama boleh memiliki
-     * beberapa Return ID berbeda.
-     */
     $key = (string)$item['return_id'];
 
-    if (!isset($rows[$key])) {
-
-        $rows[$key] = [
-
+    if (!isset($returnGroups[$key])) {
+        $returnGroups[$key] = [
             'return_id' => $item['return_id'],
-
             'return_date' => $item['return_date'],
-
             'customer_name' => $item['customer_name'],
-
             'total' => (float)$item['total_return'],
-
             'penjualan' => (float)$item['penjualan_return'],
-
-            'PP' => emptyCatR(),
-
-            'KERTAS' => emptyCatR(),
-
-            'PE' => emptyCatR(),
-
-            'PE WARNA' => emptyCatR(),
-
-            'LAIN LAIN' => emptyCatR()
+            'items' => []
         ];
-
-        $grand['total'] +=
-            (float)$item['total_return'];
-
-        $grand['penjualan'] +=
-            (float)$item['penjualan_return'];
     }
 
     $g = $item['category_group'];
-
-    if (!isset($rows[$key][$g])) {
+    if (!in_array($g,$cats,true)) {
         $g = 'LAIN LAIN';
     }
 
-    $rows[$key][$g]['qty'] +=
-        (float)$item['category_qty'];
-
-    $rows[$key][$g]['qty_kg'] +=
-        (float)$item['category_qty_kg'];
-
-    $rows[$key][$g]['rp'] +=
-        (float)$item['category_rp'];
-
-    $grand[$g]['qty'] +=
-        (float)$item['category_qty'];
-
-    $grand[$g]['qty_kg'] +=
-        (float)$item['category_qty_kg'];
-
-    $grand[$g]['rp'] +=
-        (float)$item['category_rp'];
+    $returnGroups[$key]['items'][] = [
+        'category' => $g,
+        'qty' => (float)$item['category_qty'],
+        'qty_kg' => (float)$item['category_qty_kg'],
+        'basis' => (float)$item['allocation_basis']
+    ];
 }
 
 mysqli_stmt_close($stmt);
+
+foreach ($returnGroups as $key => $ret) {
+    $rows[$key] = [
+        'return_id' => $ret['return_id'],
+        'return_date' => $ret['return_date'],
+        'customer_name' => $ret['customer_name'],
+        'total' => $ret['total'],
+        'penjualan' => $ret['penjualan'],
+        'PP'=>emptyCatR(),
+        'KERTAS'=>emptyCatR(),
+        'PE'=>emptyCatR(),
+        'PE WARNA'=>emptyCatR(),
+        'LAIN LAIN'=>emptyCatR()
+    ];
+
+    $grand['total'] += $ret['total'];
+    $grand['penjualan'] += $ret['penjualan'];
+
+    $basisByCat = [];
+    $totalBasis = 0.0;
+
+    foreach ($ret['items'] as $it) {
+        $g = $it['category'];
+
+        $rows[$key][$g]['qty'] += $it['qty'];
+        $rows[$key][$g]['qty_kg'] += $it['qty_kg'];
+
+        if (!isset($basisByCat[$g])) {
+            $basisByCat[$g] = 0.0;
+        }
+
+        $basisByCat[$g] += abs($it['basis']);
+        $totalBasis += abs($it['basis']);
+    }
+
+    $catsInReturn = array_keys($basisByCat);
+
+    if (count($catsInReturn) === 1) {
+        // Satu kategori: seluruh nilai return resmi masuk ke kategori tersebut.
+        $rows[$key][$catsInReturn[0]]['rp'] += $ret['penjualan'];
+
+    } elseif ($totalBasis > 0) {
+        // Multi kategori: alokasi proporsional berdasarkan return_subtotal detail.
+        $allocated = 0.0;
+        $last = count($catsInReturn) - 1;
+
+        foreach ($catsInReturn as $i => $g) {
+            if ($i === $last) {
+                $amount = $ret['penjualan'] - $allocated;
+            } else {
+                $amount = $ret['penjualan'] * ($basisByCat[$g] / $totalBasis);
+                $allocated += $amount;
+            }
+
+            $rows[$key][$g]['rp'] += $amount;
+        }
+
+    } elseif (!empty($catsInReturn)) {
+        // Safety fallback agar nilai return header tidak hilang.
+        $rows[$key][$catsInReturn[0]]['rp'] += $ret['penjualan'];
+    }
+
+    foreach ($cats as $g) {
+        $grand[$g]['qty'] += $rows[$key][$g]['qty'];
+        $grand[$g]['qty_kg'] += $rows[$key][$g]['qty_kg'];
+        $grand[$g]['rp'] += $rows[$key][$g]['rp'];
+    }
+}
 ?>
 
 <link

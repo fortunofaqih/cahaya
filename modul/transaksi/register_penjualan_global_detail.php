@@ -22,10 +22,40 @@ function fmtDateR($d){
     if(empty($d)||$d==='0000-00-00') return '';
     $t=strtotime($d); return $t?date('d-M-Y',$t):'';
 }
-function fmtMoneyR($v){ return number_format((float)$v,2,',','.'); }
+function fmtMoneyR($v){
+    // Buang pecahan desimal tanpa pembulatan.
+    // Contoh: 400.412.886,50 -> 400.412.886,00
+    $v=(float)$v;
+    $whole=$v<0 ? ceil($v) : floor($v);
+    return number_format($whole,2,',','.');
+}
 function fmtQtyR($v){
     $s=number_format((float)$v,2,',','.');
     return rtrim(rtrim($s,'0'),',');
+}
+
+function classifyCategoryDetailR($inventoryName){
+    $n=strtoupper(trim((string)$inventoryName));
+    if($n==='') return null;
+
+    // SEDOTAN diprioritaskan agar "SEDOTAN BAHAN" tetap masuk SEDOTAN.
+    if(strpos($n,'SEDOTAN')!==false) return 'SEDOTAN';
+
+    if(preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n) && strpos($n,'SABLON')!==false) return 'PP SABLON';
+
+    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) && strpos($n,'WARNA')!==false) return 'HD WARNA';
+    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) && strpos($n,'KRESEK')!==false) return 'HD KRESEK';
+    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) && strpos($n,'SABLON')!==false) return 'HD SABLON';
+
+    if(strpos($n,'TALI')!==false && preg_match('/(^|[^A-Z])KG([^A-Z]|$)/',$n)) return 'TALI KG';
+    if(strpos($n,'TALI')!==false && strpos($n,'LOS')!==false) return 'TALI LOS';
+
+    if(preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/',$n)) return 'BAHAN';
+    if(strpos($n,'TERPAL')!==false) return 'TERPAL';
+    if(preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/',$n)) return 'BOX';
+    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n)) return 'HD';
+
+    return null;
 }
 function emptyCatR(){ return ['qty'=>0.0,'qty_kg'=>0.0,'rp'=>0.0]; }
 function emptyGrandR(){
@@ -34,7 +64,7 @@ function emptyGrandR(){
         
         'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
         'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
-        'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR(),'SEDOTAN'=>emptyCatR()
+        'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR()
     ];
 }
 
@@ -76,142 +106,100 @@ function sortIconR($column, $currentSort, $currentDir) {
     return $currentDir === 'asc' ? '▲' : '▼';
 }
 
+/*
+ * Register Penjualan Global Detail berbasis INVOICE:
+ * - TOTAL       = det_invoice.total
+ * - PENJUALAN   = det_invoice.subtotal
+ * - Qty/Qty KG  = det_shipping
+ * - Rp kategori = dialokasikan dari det_invoice.subtotal
+ *
+ * Jika satu shipping hanya memiliki satu kategori detail, seluruh subtotal
+ * invoice masuk ke kategori tersebut. Jika multi kategori, subtotal invoice
+ * dibagi proporsional memakai nilai referensi detail barang, sehingga jumlah
+ * seluruh Rp kategori tetap sama dengan subtotal invoice.
+ */
 $sql = "
 SELECT
     di.invoice_no,
     di.shipping_no,
     hi.invoice_date,
     hi.customer_name,
-    MAX(COALESCE(di.total,0)) AS total_invoice_shipping,
-    MAX(COALESCE(di.subtotal,0)) AS penjualan_shipping,
-  CASE
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%WARNA%'
-        THEN 'PE WARNA'
+    COALESCE(di.total,0) AS total_invoice_shipping,
+    COALESCE(di.subtotal,0) AS penjualan_shipping,
+    ds.id AS shipping_detail_id,
+    COALESCE(
+        NULLIF(TRIM(ds.inventory_name),''),
+        NULLIF(TRIM(mi.inventory_name),''),
+        ''
+    ) AS inventory_name,
 
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%KERTAS%'
-        THEN 'KERTAS'
+    CASE
+        WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))<>'' 
+         AND UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))<>'KG'
+            THEN COALESCE(ds.qty_pack_shipping,0)
+        WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))<>'' 
+         AND UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))<>'KG'
+            THEN COALESCE(ds.qty_detail_shipping,0)
+        ELSE COALESCE(ds.qty_shipping,0)
+    END AS category_qty,
 
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SABLON%'
-        THEN 'PP SABLON'
+    CASE
+        WHEN UPPER(TRIM(COALESCE(ds.uom_shipping,'')))='KG'
+            THEN COALESCE(ds.qty_shipping,0)
+        WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))='KG'
+            THEN COALESCE(ds.qty_pack_shipping,0)
+        WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))='KG'
+            THEN COALESCE(ds.qty_detail_shipping,0)
+        ELSE 0
+    END AS category_qty_kg,
 
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
-        THEN 'PP'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
-        THEN 'PE'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])HD([^A-Z]|$)'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%WARNA%'
-        THEN 'HD WARNA'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])HD([^A-Z]|$)'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%KRESEK%'
-        THEN 'HD KRESEK'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])HD([^A-Z]|$)'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SABLON%'
-        THEN 'HD SABLON'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%TALI%'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])KG([^A-Z]|$)'
-        THEN 'TALI KG'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%TALI%'
-     AND UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%LOS%'
-        THEN 'TALI LOS'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])BAHAN([^A-Z]|$)'
-        THEN 'BAHAN'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%SEDOTAN%'
-        THEN 'SEDOTAN'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) LIKE '%TERPAL%'
-        THEN 'TERPAL'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])BOX([^A-Z]|$)'
-        THEN 'BOX'
-
-    WHEN UPPER(COALESCE(NULLIF(TRIM(ds.inventory_name), ''),NULLIF(TRIM(mi.inventory_name), ''),'')) REGEXP '(^|[^A-Z])HD([^A-Z]|$)'
-        THEN 'HD'
-
-    ELSE NULL
-END AS category_group,
-    SUM(
-        CASE
-            WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))<>'' 
-             AND UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))<>'KG'
-                THEN COALESCE(ds.qty_pack_shipping,0)
-            WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))<>'' 
-             AND UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))<>'KG'
-                THEN COALESCE(ds.qty_detail_shipping,0)
-            ELSE COALESCE(ds.qty_shipping,0)
-        END
-    ) AS category_qty,
-    SUM(
-        CASE
-            WHEN UPPER(TRIM(COALESCE(ds.uom_shipping,'')))='KG'
-                THEN COALESCE(ds.qty_shipping,0)
-            WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))='KG'
-                THEN COALESCE(ds.qty_pack_shipping,0)
-            WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))='KG'
-                THEN COALESCE(ds.qty_detail_shipping,0)
-            ELSE 0
-        END
-    ) AS category_qty_kg,
-    SUM(
-        CASE
-            WHEN COALESCE(ds.subtotal,0)<>0 THEN COALESCE(ds.subtotal,0)
-            ELSE COALESCE(dso.price,0) *
+    CASE
+        WHEN COALESCE(ds.subtotal,0)<>0
+            THEN ABS(COALESCE(ds.subtotal,0))
+        WHEN COALESCE(dso.price,0)<>0
+            THEN ABS(
+                COALESCE(dso.price,0) *
                 CASE
                     WHEN COALESCE(ds.qty_pack_shipping,0)>0
                         THEN COALESCE(ds.qty_pack_shipping,0)
                     ELSE COALESCE(ds.qty_shipping,0)
                 END
-        END
-    ) AS category_rp
+            )
+        ELSE 0
+    END AS allocation_basis
+
 FROM det_invoice di
-INNER JOIN head_invoice hi ON hi.invoice_no=di.invoice_no
-INNER JOIN hed_shipping hs ON hs.shipping_no=di.shipping_no
-INNER JOIN det_shipping ds ON ds.shipping_no=di.shipping_no
-LEFT JOIN m_inventory mi ON mi.inventory_id=ds.inventory_id
-LEFT JOIN m_category mc
-    ON TRIM(mc.categori_id) = TRIM(mi.category)
+INNER JOIN head_invoice hi
+    ON TRIM(hi.invoice_no)=TRIM(di.invoice_no)
+INNER JOIN hed_shipping hs
+    ON TRIM(hs.shipping_no)=TRIM(di.shipping_no)
+INNER JOIN det_shipping ds
+    ON TRIM(ds.shipping_no)=TRIM(di.shipping_no)
+LEFT JOIN m_inventory mi
+    ON TRIM(mi.inventory_id)=TRIM(ds.inventory_id)
 LEFT JOIN detail_sales_order dso
     ON dso.id=(
         SELECT MIN(dso2.id)
         FROM detail_sales_order dso2
-        WHERE dso2.order_no=hs.order_no
-          AND dso2.inventory_id=ds.inventory_id
+        WHERE TRIM(dso2.order_no)=TRIM(hs.order_no)
+          AND TRIM(dso2.inventory_id)=TRIM(ds.inventory_id)
     )
-WHERE hi.invoice_date BETWEEN ? AND ?
 
-  /*
-   * Transaksi CP-MCP adalah transaksi khusus return.
-   * Return sudah dicatat di Register Penjualan Global Return,
-   * sehingga tidak dimasukkan lagi ke register ini.
-   */
+WHERE hi.invoice_date BETWEEN ? AND ?
   AND UPPER(COALESCE(di.invoice_no,'')) NOT LIKE '%CP-MCP%'
   AND UPPER(COALESCE(di.shipping_no,'')) NOT LIKE '%CP-MCP%'
   AND UPPER(COALESCE(hs.order_no,'')) NOT LIKE '%CP-MCP%'
-GROUP BY
-    di.invoice_no,di.shipping_no,hi.invoice_date,hi.customer_name,category_group
-HAVING category_group IN (
-    'HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON',
-    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN'
-)
+
 ORDER BY
     {$orderColumn} {$orderDirection},
     hi.invoice_date ASC,
     di.shipping_no ASC,
     di.invoice_no ASC,
-    category_group ASC
+    ds.id ASC
 ";
 
 $stmt=mysqli_prepare($conn,$sql);
-if(!$stmt) die('SQL Register Penjualan Global Error: '.h(mysqli_error($conn)));
+if(!$stmt) die('SQL Register Penjualan Global Detail Error: '.h(mysqli_error($conn)));
 mysqli_stmt_bind_param($stmt,'ss',$startDate,$endDate);
 mysqli_stmt_execute($stmt);
 $res=mysqli_stmt_get_result($stmt);
@@ -219,47 +207,98 @@ $res=mysqli_stmt_get_result($stmt);
 $cats=['HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN'];
 $rows=[];
 $grand=emptyGrandR();
+$shippingGroups=[];
 
 while($item=mysqli_fetch_assoc($res)){
-    $g = $item['category_group'];
+    $g=classifyCategoryDetailR($item['inventory_name']);
 
-    // Hanya tampilkan invoice/shipping yang memiliki kategori detail yang diizinkan.
-    if ($g === null || !in_array($g, $cats, true)) {
+    // Global Detail hanya menampilkan kategori yang termasuk daftar detail.
+    if($g===null || !in_array($g,$cats,true)){
         continue;
     }
 
-    $key=$item['invoice_no'].'|'.$item['shipping_no'];
+    $key=trim((string)$item['invoice_no']).'|'.trim((string)$item['shipping_no']);
 
-    if(!isset($rows[$key])){
-        $rows[$key]=[
+    if(!isset($shippingGroups[$key])){
+        $shippingGroups[$key]=[
             'shipping_no'=>$item['shipping_no'],
             'invoice_no'=>$item['invoice_no'],
             'customer_name'=>$item['customer_name'],
             'total'=>(float)$item['total_invoice_shipping'],
             'penjualan'=>(float)$item['penjualan_shipping'],
-            
-            'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
-            'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
-            'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR(),'SEDOTAN'=>emptyCatR()
+            'items'=>[]
         ];
-        $grand['total']+=(float)$item['total_invoice_shipping'];
-        $grand['penjualan']+=(float)$item['penjualan_shipping'];
     }
 
-    // Tidak ada kategori LAIN LAIN pada versi detail.
-    // Jika suatu inventory tidak cocok dengan seluruh kategori,
-    // data invoice tetap tampil tetapi tidak diakumulasi ke kategori produk.
-    if ($g !== null && isset($rows[$key][$g], $grand[$g])) {
-        $rows[$key][$g]['qty']+=(float)$item['category_qty'];
-        $rows[$key][$g]['qty_kg']+=(float)$item['category_qty_kg'];
-        $rows[$key][$g]['rp']+=(float)$item['category_rp'];
+    $shippingGroups[$key]['items'][]=[
+        'category'=>$g,
+        'qty'=>(float)$item['category_qty'],
+        'qty_kg'=>(float)$item['category_qty_kg'],
+        'basis'=>(float)$item['allocation_basis']
+    ];
+}
 
-        $grand[$g]['qty']+=(float)$item['category_qty'];
-        $grand[$g]['qty_kg']+=(float)$item['category_qty_kg'];
-        $grand[$g]['rp']+=(float)$item['category_rp'];
+mysqli_stmt_close($stmt);
+
+foreach($shippingGroups as $key=>$ship){
+    $rows[$key]=[
+        'shipping_no'=>$ship['shipping_no'],
+        'invoice_no'=>$ship['invoice_no'],
+        'customer_name'=>$ship['customer_name'],
+        'total'=>$ship['total'],
+        'penjualan'=>$ship['penjualan']
+    ];
+
+    foreach($cats as $cat){
+        $rows[$key][$cat]=emptyCatR();
+    }
+
+    $grand['total'] += $ship['total'];
+    $grand['penjualan'] += $ship['penjualan'];
+
+    $basisByCat=[];
+    $totalBasis=0.0;
+
+    foreach($ship['items'] as $it){
+        $g=$it['category'];
+
+        $rows[$key][$g]['qty'] += $it['qty'];
+        $rows[$key][$g]['qty_kg'] += $it['qty_kg'];
+
+        if(!isset($basisByCat[$g])) $basisByCat[$g]=0.0;
+        $basisByCat[$g] += abs($it['basis']);
+        $totalBasis += abs($it['basis']);
+    }
+
+    $catsInShipping=array_keys($basisByCat);
+
+    if(count($catsInShipping)===1){
+        $rows[$key][$catsInShipping[0]]['rp'] += $ship['penjualan'];
+    } elseif($totalBasis>0){
+        $allocated=0.0;
+        $last=count($catsInShipping)-1;
+
+        foreach($catsInShipping as $i=>$g){
+            if($i===$last){
+                $amount=$ship['penjualan']-$allocated;
+            }else{
+                $amount=$ship['penjualan']*($basisByCat[$g]/$totalBasis);
+                $allocated += $amount;
+            }
+
+            $rows[$key][$g]['rp'] += $amount;
+        }
+    } elseif(!empty($catsInShipping)){
+        // Safety fallback bila semua harga referensi 0.
+        $rows[$key][$catsInShipping[0]]['rp'] += $ship['penjualan'];
+    }
+
+    foreach($cats as $g){
+        $grand[$g]['qty'] += $rows[$key][$g]['qty'];
+        $grand[$g]['qty_kg'] += $rows[$key][$g]['qty_kg'];
+        $grand[$g]['rp'] += $rows[$key][$g]['rp'];
     }
 }
-mysqli_stmt_close($stmt);
 
 ?>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
