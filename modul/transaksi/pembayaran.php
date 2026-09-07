@@ -146,6 +146,12 @@ $sql = "
         COALESCE(cob.opening_balance, 0) AS opening_balance,
         COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE') AS payment_source,
         COALESCE(TRIM(db.return_id), '') AS return_id,
+        CASE
+            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                THEN COALESCE(hri.grand_total, 0)
+            ELSE COALESCE(hri.return_amount, 0)
+        END AS return_amount,
         COALESCE(db.cash_amount, 0) AS cash_amount,
         COALESCE(db.titip_amount, 0) AS titip_amount_used,
         COALESCE(db.bayar_amount, 0) AS bayar_amount
@@ -153,6 +159,9 @@ $sql = "
     LEFT JOIN detail_bayar db ON db.bayar_no = hb.bayar_no
     LEFT JOIN customer_opening_balance cob
         ON cob.opening_id = db.opening_id
+    LEFT JOIN head_retur_invoice hri
+        ON TRIM(hri.return_id) = TRIM(db.return_id)
+       AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
     LEFT JOIN (
         SELECT
             invoice_no,
@@ -197,6 +206,7 @@ while ($row = mysqli_fetch_assoc($res)) {
             'shipping_arr'   => [],
             'source_arr'     => [],
             'return_id'      => '',
+            'return_amount'  => 0.0,
             'cash_amount'    => 0.0,
             'bayar_amount'   => 0.0,
             'titip_display'  => 0.0,
@@ -224,6 +234,8 @@ while ($row = mysqli_fetch_assoc($res)) {
         $paymentRows[$bayarNo]['return_id'] === ''
     ) {
         $paymentRows[$bayarNo]['return_id'] = $returnId;
+        $paymentRows[$bayarNo]['return_amount'] =
+            (float)($row['return_amount'] ?? 0);
     }
 
     $shippingNo = trim((string)($row['shipping_no'] ?? ''));
@@ -268,6 +280,42 @@ foreach ($paymentRows as $bayarNo => $row) {
 
     $sources = array_keys($row['source_arr']);
     $row['payment_source'] = implode(', ', $sources);
+
+    $row['is_return_only'] =
+        count($sources) === 1 &&
+        in_array('RETURN', $sources, true) &&
+        trim((string)($row['return_id'] ?? '')) !== '';
+
+    /*
+     * Retur standalone adalah pengurang piutang, bukan uang masuk.
+     * Tampilkan nilai efektifnya sebagai minus pada kedua kolom nominal
+     * transaksi, sementara cash/transfer tetap Rp 0,00.
+     */
+    $isNegativeOpeningOnly =
+        count($sources) === 1 &&
+        in_array('OPENING (-)', $sources, true);
+
+    if ($row['is_return_only']) {
+        $negativeReturn = -abs((float)($row['return_amount'] ?? 0));
+        $row['nominal_bayar_display'] = $negativeReturn;
+        $row['total_bayar_display'] = $negativeReturn;
+    } elseif ($isNegativeOpeningOnly) {
+        /*
+         * Saldo Awal (-) standalone bukan penerimaan Cash/Titip,
+         * tetapi settlement kredit customer.
+         *
+         * head_bayar.total_bayar tetap Rp 0,00 karena tidak ada uang masuk.
+         * Untuk kebutuhan tampilan agar user Finance tidak bingung,
+         * tampilkan nilai settlement dari detail_bayar.bayar_amount.
+         *
+         * Rule transaksi lain tidak berubah.
+         */
+        $row['nominal_bayar_display'] = (float)$row['bayar_amount'];
+        $row['total_bayar_display'] = (float)$row['bayar_amount'];
+    } else {
+        $row['nominal_bayar_display'] = (float)$row['total_bayar'];
+        $row['total_bayar_display'] = (float)$row['bayar_amount'];
+    }
 
     if (in_array('OPENING (+)', $sources, true) || in_array('OPENING (-)', $sources, true)) {
         $row['shipping_no'] =
@@ -349,10 +397,14 @@ foreach ($titipBalances as $cid => $titipInfo) {
         'shipping_no'   => '-',
         'payment_source'=> 'TITIP',
         'return_id'     => '',
+        'return_amount' => 0.0,
         'cash_amount'   => 0.0,
         'bayar_amount'  => 0.0,
+        'nominal_bayar_display' => 0.0,
+        'total_bayar_display' => 0.0,
         'titip_display' => $saldoTitip,
         'is_titip_only' => true,
+        'is_return_only'=> false,
     ];
 }
 
@@ -365,10 +417,10 @@ $total_titip = 0.0;
 $total_bayar_detail = 0.0;
 
 foreach ($rows as $row) {
-    $total_bayar += (float)$row['total_bayar'];
+    $total_bayar += (float)($row['nominal_bayar_display'] ?? $row['total_bayar']);
     $total_cash += (float)$row['cash_amount'];
     $total_titip += (float)$row['titip_display'];
-    $total_bayar_detail += (float)$row['bayar_amount'];
+    $total_bayar_detail += (float)($row['total_bayar_display'] ?? $row['bayar_amount']);
 }
 ?>
 
@@ -656,10 +708,10 @@ foreach ($rows as $row) {
                             <td><?= h($row['customer_city']) ?></td>
                             <td class="text-center"><?= h($row['keterangan']) ?></td>
                             <td><?= h($row['bank_name']) ?></td>
-                            <td class="money-cell">Rp <?= h(formatMoney($row['total_bayar'])) ?></td>
+                            <td class="money-cell">Rp <?= h(formatMoney($row['nominal_bayar_display'] ?? $row['total_bayar'])) ?></td>
                             <td class="money-cell">Rp <?= h(formatMoney($row['cash_amount'])) ?></td>
                             <td class="money-cell">Rp <?= h(formatMoney($row['titip_display'])) ?></td>
-                            <td class="money-cell">Rp <?= h(formatMoney($row['bayar_amount'])) ?></td>
+                            <td class="money-cell">Rp <?= h(formatMoney($row['total_bayar_display'] ?? $row['bayar_amount'])) ?></td>
                             <td class="text-center">
                                 <?php if (!$isTitipOnly): ?>
                                     <a class="btn-vs btn-warning" href="index.php?page=edit_bayar&bayar_no=<?= urlencode($row['bayar_no']) ?>">

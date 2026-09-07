@@ -128,6 +128,8 @@ foreach ($marketingOptions as $m) {
 // 2. shipped_qty dan shipped_qty_pack dihitung dari SELURUH shipping non-cancel.
 // 3. Filter tanggal hanya menentukan SO/inventory yang punya aktivitas shipping di periode tsb.
 // 4. Complete/Outstanding memakai outstanding aktual, bukan outstanding periode.
+// 5. Jika quantity_pack tersedia, status otomatis mengikuti sisa Qty Pack.
+//    Qty/KG hanya fallback jika Qty Pack tidak tersedia.
 
 $where = [];
 $params = [];
@@ -210,12 +212,45 @@ $sql = "
         COALESCE(sa.total_shipping, 0) AS total_shipping,
         sa.first_shipping_date,
         sa.last_shipping_date,
-        (COALESCE(d.quantity, 0) - COALESCE(sa.shipped_qty, 0)) AS outstanding_qty,
-        (COALESCE(d.quantity_pack, 0) - COALESCE(sa.shipped_qty_pack, 0)) AS outstanding_pack,
+        GREATEST(
+            COALESCE(d.quantity, 0) - COALESCE(sa.shipped_qty, 0),
+            0
+        ) AS outstanding_qty,
+
+        GREATEST(
+            COALESCE(d.quantity_pack, 0) - COALESCE(sa.shipped_qty_pack, 0),
+            0
+        ) AS outstanding_pack,
+
+        /*
+         * BASIS STATUS KARTU STOK ORDER CUSTOMER
+         * ---------------------------------------
+         * Jika SO mempunyai Qty Pack, maka Qty Pack adalah basis utama
+         * COMPLETE / OUTSTANDING karena kolom yang dipantau marketing
+         * adalah jumlah kemasan barang yang belum terkirim.
+         *
+         * Contoh:
+         * Order    3 ROLL = 135 KG
+         * Shipping 3 ROLL = 141.80 KG
+         * => Outstanding Pack = 0 ROLL => COMPLETE.
+         *
+         * Perbedaan berat aktual tidak membuat order kembali OUTSTANDING.
+         *
+         * Jika Qty Pack memang tidak tersedia / 0, baru fallback ke Qty utama.
+         */
         CASE
-            WHEN COALESCE(d.quantity, 0) > 0
-                THEN (COALESCE(d.quantity, 0) - COALESCE(sa.shipped_qty, 0))
-            ELSE (COALESCE(d.quantity_pack, 0) - COALESCE(sa.shipped_qty_pack, 0))
+            WHEN COALESCE(d.quantity_pack, 0) > 0
+                 AND COALESCE(NULLIF(TRIM(d.uom_pack), ''), '') <> ''
+            THEN GREATEST(
+                COALESCE(d.quantity_pack, 0)
+                - COALESCE(sa.shipped_qty_pack, 0),
+                0
+            )
+            ELSE GREATEST(
+                COALESCE(d.quantity, 0)
+                - COALESCE(sa.shipped_qty, 0),
+                0
+            )
         END AS outstanding_base,
         kmc.id AS manual_complete_id,
         kmc.remarks AS manual_complete_remarks,

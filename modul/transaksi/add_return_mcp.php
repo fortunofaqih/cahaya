@@ -90,47 +90,108 @@ while ($uomRow = mysqli_fetch_assoc($uomRs)) {
     }
 }
 
+
 /*
 |--------------------------------------------------------------------------
-| AUTO NUMBERING CP-MCP
+| SALES RETURN ID - AUTO GENERATE
+|--------------------------------------------------------------------------
+| Format baru: R{URUTAN}{KODE_BULAN}/{TAHUN_2_DIGIT}
+| Contoh: R14JUL/26, R01AGT/26
+| Nomor urut selalu mengikuti Return Date, bukan tanggal hari ini.
 |--------------------------------------------------------------------------
 */
-function monthRoman($month) {
-    $romans = [
-        1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV',
-        5 => 'V', 6 => 'VI', 7 => 'VII', 8 => 'VIII',
-        9 => 'IX', 10 => 'X', 11 => 'XI', 12 => 'XII'
+function returnMonthCode(int $month): string
+{
+    $codes = [
+        1 => 'JAN', 2 => 'FEB', 3 => 'MAR', 4 => 'APR',
+        5 => 'MEI', 6 => 'JUN', 7 => 'JUL', 8 => 'AGT',
+        9 => 'SEP', 10 => 'OKT', 11 => 'NOV', 12 => 'DES'
     ];
 
-    return $romans[(int)$month] ?? '';
+    return $codes[$month] ?? '';
 }
 
-$currentYear = date('Y');
-$currentMonthRoman = monthRoman((int)date('n'));
+function returnParseGeneratorDate($value): ?string
+{
+    $value = trim((string)$value);
+    if ($value === '') return null;
 
-$returnNoSql = "
-    SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(return_id, '/', 1) AS UNSIGNED)), 0) AS max_no
-    FROM head_retur_invoice
-    WHERE return_id LIKE ?
-";
-$returnPattern = '%/CP-MCP/' . $currentMonthRoman . '/' . $currentYear;
-$returnNoStmt = mysqli_prepare($conn, $returnNoSql);
-if (!$returnNoStmt) {
-    die('Gagal generate Sales Return ID: ' . mysqli_error($conn));
+    foreach (['Y-m-d', 'd-M-Y', 'd-m-Y', 'd/m/Y'] as $format) {
+        $date = DateTime::createFromFormat($format, $value);
+        if ($date instanceof DateTime) {
+            return $date->format('Y-m-d');
+        }
+    }
+
+    return null;
 }
-mysqli_stmt_bind_param($returnNoStmt, 's', $returnPattern);
-mysqli_stmt_execute($returnNoStmt);
-$returnNoRow = mysqli_fetch_assoc(mysqli_stmt_get_result($returnNoStmt));
-mysqli_stmt_close($returnNoStmt);
 
-$nextReturnNo = ((int)($returnNoRow['max_no'] ?? 0)) + 1;
-$autoReturnId = $nextReturnNo . '/CP-MCP/' . $currentMonthRoman . '/' . $currentYear;
+function returnGenerateIdPreview(mysqli $conn, string $returnDate): string
+{
+    $ts = strtotime($returnDate);
+    $monthCode = returnMonthCode((int)date('n', $ts));
+    $year2 = date('y', $ts);
+    $pattern = 'R%' . $monthCode . '/' . $year2;
+
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT return_id
+         FROM head_retur_invoice
+         WHERE return_id LIKE ?"
+    );
+    mysqli_stmt_bind_param($stmt, 's', $pattern);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    $maxNo = 0;
+    $regex = '/^R(\d+)' . preg_quote($monthCode, '/') . '\/' . preg_quote($year2, '/') . '$/i';
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        $existingId = trim((string)($row['return_id'] ?? ''));
+        if (preg_match($regex, $existingId, $m)) {
+            $maxNo = max($maxNo, (int)$m[1]);
+        }
+    }
+
+    mysqli_stmt_close($stmt);
+
+    $nextNo = $maxNo + 1;
+    return 'R' . str_pad((string)$nextNo, 2, '0', STR_PAD_LEFT) . $monthCode . '/' . $year2;
+}
+
+/*
+ * Endpoint ringan untuk preview nomor saat checkbox Auto Generate dicentang
+ * atau Return Date berubah.
+ */
+if (isset($_GET['ajax_generate_return_id'])) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    try {
+        $generatorDate = returnParseGeneratorDate($_GET['return_date'] ?? '');
+        if (!$generatorDate) {
+            throw new RuntimeException('Return Date tidak valid.');
+        }
+
+        echo json_encode([
+            'success' => true,
+            'return_id' => returnGenerateIdPreview($conn, $generatorDate)
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        http_response_code(400);
+        echo json_encode([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    exit;
+}
 
 /*
 |--------------------------------------------------------------------------
 | INTERNAL INVOICE MCP
 |--------------------------------------------------------------------------
 */
+$currentYear = date('Y');
 $invoicePrefix = 'CP-MCP/INV/' . $currentYear . '/';
 $invoicePattern = $invoicePrefix . '%';
 
@@ -309,7 +370,6 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
 .return-id-input {
     font-weight: bold;
     color: #0d6efd;
-    background: #e9ecef !important;
 }
 
 .auto-id-input {
@@ -616,16 +676,28 @@ $todayDisplay = formatDateDisplay(date('Y-m-d'));
                         <label>
                             Sales Return ID <span class="required">*</span>
                         </label>
+                        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px;">
+                            <input type="checkbox"
+                                   name="auto_generate_return_id"
+                                   id="auto_generate_return_id"
+                                   value="1"
+                                   style="width:auto;">
+                            <label for="auto_generate_return_id"
+                                   style="display:inline;margin:0;color:#495057;text-transform:none;cursor:pointer;">
+                                Auto Generate
+                            </label>
+                        </div>
                         <input
                             type="text"
                             name="return_id"
+                            id="return_id"
                             class="return-id-input"
-                            value="<?= h($autoReturnId) ?>"
                             required
                             maxlength="50"
+                            placeholder="Input manual oleh user"
                         >
-                        <div class="small-note" style="margin-top:4px;">
-                            Nomor dibuat otomatis berdasarkan urutan CP-MCP bulan berjalan.
+                        <div class="small-note" id="return_id_note" style="margin-top:4px;">
+                            Manual: gunakan format sesuai Return Date, contoh R01AGT/26.
                         </div>
                     </div>
 
@@ -1216,6 +1288,43 @@ document.addEventListener('click', function(event) {
 
 document.getElementById('addItemButton').addEventListener('click', addItemRow);
 
+
+function loadAutoReturnId(){
+    var autoChecked = $('#auto_generate_return_id').is(':checked');
+    var returnIdInput = $('#return_id');
+    var returnDate = $('input[name="return_date"]').val();
+
+    if(!autoChecked){
+        returnIdInput.prop('readonly', false);
+        $('#return_id_note').text('Manual: gunakan format sesuai Return Date, contoh R01AGT/26.');
+        return;
+    }
+
+    returnIdInput.prop('readonly', true).val('Generating...');
+    $('#return_id_note').text('Nomor otomatis mengikuti Return Date dan urutan terakhir di database.');
+
+    fetch(
+        'modul/transaksi/add_return_mcp.php?ajax_generate_return_id=1&return_date=' +
+        encodeURIComponent(returnDate),
+        {headers:{'Accept':'application/json'}}
+    )
+    .then(function(response){
+        return response.json().then(function(data){
+            if(!response.ok || !data.success){
+                throw new Error(data.message || ('HTTP ' + response.status));
+            }
+            return data;
+        });
+    })
+    .then(function(result){
+        returnIdInput.val(result.return_id || '');
+    })
+    .catch(function(error){
+        returnIdInput.val('');
+        alert('Gagal membuat Sales Return ID otomatis: ' + error.message);
+    });
+}
+
 $(document).ready(function() {
     if (typeof flatpickr !== 'undefined') {
         flatpickr('.datepicker', {
@@ -1224,6 +1333,21 @@ $(document).ready(function() {
             disableMobile: true
         });
     }
+
+    $('#auto_generate_return_id').on('change', function(){
+        if(this.checked){
+            loadAutoReturnId();
+        }else{
+            $('#return_id').prop('readonly', false).val('').focus();
+            $('#return_id_note').text('Manual: gunakan format sesuai Return Date, contoh R01AGT/26.');
+        }
+    });
+
+    $('input[name="return_date"]').on('change', function(){
+        if($('#auto_generate_return_id').is(':checked')){
+            loadAutoReturnId();
+        }
+    });
 
     // CUSTOMER HYBRID HANDLER
     var customerList = <?= json_encode($customerList, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;

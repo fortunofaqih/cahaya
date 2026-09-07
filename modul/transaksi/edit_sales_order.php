@@ -103,6 +103,7 @@ $inventory_rs = mysqli_query($conn, "
         ON miu.inventory_id = mi.inventory_id 
        AND miu.`Default` = 1
     WHERE mi.status = 'Active'
+      AND UPPER(COALESCE(mi.inventory_id, '')) NOT LIKE '%MCP-INV%'
     ORDER BY mi.inventory_name ASC
 ");
 
@@ -1461,6 +1462,9 @@ function initInvSelect2(row) {
                     normalized.text = normalized.text ||
                         (normalized.inventory_id + ' — ' + (normalized.inventory_name || ''));
                     return normalized;
+                }).filter(function(item) {
+                    var inventoryId = String(item.inventory_id || item.id || '').toUpperCase();
+                    return inventoryId.indexOf('MCP-INV') === -1;
                 });
 
                 return {

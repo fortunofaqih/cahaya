@@ -43,6 +43,99 @@ function returnParseDate($value): ?string
     return null;
 }
 
+
+function returnMonthCodeByDate(string $returnDate): string
+{
+    $codes = [
+        1 => 'JAN', 2 => 'FEB', 3 => 'MAR', 4 => 'APR',
+        5 => 'MEI', 6 => 'JUN', 7 => 'JUL', 8 => 'AGT',
+        9 => 'SEP', 10 => 'OKT', 11 => 'NOV', 12 => 'DES'
+    ];
+
+    $month = (int)date('n', strtotime($returnDate));
+    return $codes[$month] ?? '';
+}
+
+function returnGenerateId(mysqli $conn, string $returnDate): string
+{
+    $ts = strtotime($returnDate);
+    $monthCode = returnMonthCodeByDate($returnDate);
+    $year2 = date('y', $ts);
+    $pattern = 'R%' . $monthCode . '/' . $year2;
+
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT return_id
+         FROM head_retur_invoice
+         WHERE return_id LIKE ?
+         FOR UPDATE"
+    );
+    mysqli_stmt_bind_param($stmt, 's', $pattern);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    $maxNo = 0;
+    $regex = '/^R(\d+)' . preg_quote($monthCode, '/') . '\/' . preg_quote($year2, '/') . '$/i';
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        $existingId = trim((string)($row['return_id'] ?? ''));
+        if (preg_match($regex, $existingId, $m)) {
+            $maxNo = max($maxNo, (int)$m[1]);
+        }
+    }
+
+    mysqli_stmt_close($stmt);
+
+    $nextNo = $maxNo + 1;
+    return 'R' . str_pad((string)$nextNo, 2, '0', STR_PAD_LEFT) . $monthCode . '/' . $year2;
+}
+
+function returnValidateManualId(string $returnId, string $returnDate): ?string
+{
+    $expectedMonth = returnMonthCodeByDate($returnDate);
+    $expectedYear = date('y', strtotime($returnDate));
+
+    $typedNo = '01';
+    if (preg_match('/^R(\d+)/i', $returnId, $numMatch)) {
+        $typedNo = str_pad((string)((int)$numMatch[1]), 2, '0', STR_PAD_LEFT);
+    }
+
+    $expectedExample = 'R' . $typedNo . $expectedMonth . '/' . $expectedYear;
+
+    if (!preg_match('/^R(\d+)([A-Z]{3})\/(\d{2})$/i', $returnId, $m)) {
+        return 'Format Sales Return ID tidak sesuai Return Date. '
+            . 'Kode bulan yang benar adalah ' . $expectedMonth
+            . '. Contoh penamaan yang seharusnya: ' . $expectedExample . '.';
+    }
+
+    $inputMonth = strtoupper($m[2]);
+    $inputYear = $m[3];
+
+    if ($inputMonth !== $expectedMonth || $inputYear !== $expectedYear) {
+        return 'Sales Return ID tidak sesuai Return Date. '
+            . 'Untuk tanggal ' . date('d-m-Y', strtotime($returnDate))
+            . ', kode bulan/tahun harus ' . $expectedMonth . '/' . $expectedYear
+            . '. Contoh penamaan yang seharusnya: ' . $expectedExample . '.';
+    }
+
+    return null;
+}
+
+function returnReleaseLock(mysqli $conn, ?string $lockName): void
+{
+    if (!$lockName) return;
+
+    try {
+        $stmt = mysqli_prepare($conn, "SELECT RELEASE_LOCK(?)");
+        if ($stmt) {
+            mysqli_stmt_bind_param($stmt, 's', $lockName);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+        }
+    } catch (Throwable $ignore) {
+    }
+}
+
 function returnRedirect(string $type, string $message, string $page): void
 {
     $_SESSION['alert'] =
@@ -77,6 +170,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $returnId      = trim((string)($_POST['return_id'] ?? ''));
+$autoGenerateReturnId = isset($_POST['auto_generate_return_id']) && $_POST['auto_generate_return_id'] === '1';
 $returnDate    = returnParseDate($_POST['return_date'] ?? '');
 $orderNo       = trim((string)($_POST['order_no'] ?? ''));
 $shippingNo    = trim((string)($_POST['shipping_no'] ?? ''));
@@ -87,7 +181,7 @@ $items         = $_POST['items'] ?? [];
 $user          = (string)($_SESSION['username'] ?? 'SYSTEM');
 
 if (
-    $returnId === '' ||
+    (!$autoGenerateReturnId && $returnId === '') ||
     !$returnDate ||
     $orderNo === '' ||
     $shippingNo === '' ||
@@ -104,8 +198,39 @@ if (!is_array($items)) {
     returnRedirect('danger', 'Detail retur tidak valid.', 'add_return');
 }
 
+if (!$autoGenerateReturnId) {
+    $manualIdError = returnValidateManualId($returnId, $returnDate);
+    if ($manualIdError !== null) {
+        returnRedirect('warning', $manualIdError, 'add_return');
+    }
+}
+
+$returnIdLockName = null;
+
 try {
     mysqli_begin_transaction($conn);
+
+    if ($autoGenerateReturnId) {
+        $returnIdLockName =
+            'SALES_RETURN_ID_' .
+            date('Ym', strtotime($returnDate));
+
+        $lockStmt = mysqli_prepare($conn, "SELECT GET_LOCK(?, 10) AS locked");
+        mysqli_stmt_bind_param($lockStmt, 's', $returnIdLockName);
+        mysqli_stmt_execute($lockStmt);
+        $lockRow = mysqli_fetch_assoc(mysqli_stmt_get_result($lockStmt));
+        mysqli_stmt_close($lockStmt);
+
+        if ((int)($lockRow['locked'] ?? 0) !== 1) {
+            throw new RuntimeException(
+                'Penomoran Sales Return sedang digunakan user lain. Silakan save kembali.'
+            );
+        }
+
+        // Generate ulang saat SAVE agar nomor tetap urut walaupun ada user lain
+        // yang menyimpan retur setelah form ini dibuka.
+        $returnId = returnGenerateId($conn, $returnDate);
+    }
 
     $stmt = mysqli_prepare(
         $conn,
@@ -519,6 +644,8 @@ try {
     mysqli_stmt_close($detailStmt);
 
     mysqli_commit($conn);
+    returnReleaseLock($conn, $returnIdLockName);
+    $returnIdLockName = null;
 
     returnRedirect(
         'success',
@@ -527,6 +654,7 @@ try {
     );
 } catch (Throwable $e) {
     mysqli_rollback($conn);
+    returnReleaseLock($conn, $returnIdLockName);
 
     returnRedirect(
         'danger',

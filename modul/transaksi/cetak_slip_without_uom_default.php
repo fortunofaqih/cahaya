@@ -2,6 +2,7 @@
 // modul/transaksi/cetak_slip_without_uom_default.php
 // Format cetak untuk Surat Jalan pre-printed Marketing - Mode Default UOM
 // UPDATE: Menampilkan remarks shipping dengan format vertical
+// FIX: Perbaikan posisi agar tidak tumpang tindih
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -140,8 +141,7 @@ function getItemNameWithRemarks($detail) {
     return $internalName;
 }
 
-// Pecah nama barang panjang menjadi beberapa baris.
-// Tidak memakai ellipsis (...). Teks akan diteruskan ke baris berikutnya.
+// PERBAIKAN: Fungsi wrapItemName dengan estimasi yang lebih akurat
 function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 4) {
     $text = preg_replace('/\s+/', ' ', trim((string)$text));
 
@@ -149,13 +149,14 @@ function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 4) {
         return [''];
     }
 
-    // Estimasi lebar karakter untuk area cetak.
-    // Nilai 0.50 dibuat sedikit lebih longgar agar teks tidak terlalu cepat turun baris.
-    $charWidthMm = $fontPt * 0.50 * 0.3528;
+    // PERBAIKAN: Estimasi lebar karakter yang lebih akurat untuk Arial 11pt
+    $charWidthMm = $fontPt * 0.55 * 0.3528;
     $maxChars = max(1, (int)floor($maxWidthMm / $charWidthMm));
+    
+    // Kurangi sedikit untuk memberi ruang
+    $maxChars = max(1, $maxChars - 2);
 
     // false = jangan memotong kata normal di tengah.
-    // Jika ada satu token sangat panjang tanpa spasi, baru dipecah manual di bawah.
     $wrapped = wordwrap($text, $maxChars, "\n", false);
     $lines = explode("\n", $wrapped);
 
@@ -183,9 +184,6 @@ function wrapItemName($text, $maxWidthMm = 70, $fontPt = 11, $maxLines = 4) {
         $result[] = '';
     }
 
-    // Batas maksimal mengikuti kapasitas fisik nota.
-    // Tidak menambahkan "..."; jika lebih panjang, mekanisme $maxRowSlots
-    // tetap mencegah item berikutnya menabrak area bawah nota.
     return array_slice($result, 0, $maxLines);
 }
 
@@ -756,54 +754,77 @@ $maxRowSlots = 10;
     $hasMoreRows = false;
     $isFirstItem = true;
 
+    // ===== PERBAIKAN: Kumpulkan semua baris terlebih dahulu =====
+    $allRows = [];
+    $totalSlots = 0;
+    
     foreach ($details as $detail):
         $itemName = getItemNameWithRemarks($detail);
         $nameLines = wrapItemName($itemName, 70, 11, 4);
         $lineCount = count($nameLines);
-
-        if ($usedSlots + $lineCount > $maxRowSlots) {
+        
+        if ($totalSlots + $lineCount > $maxRowSlots) {
             $hasMoreRows = true;
             break;
         }
-
+        
         $qtyParts = getQtyDisplay($detail);
-
         $qtyCol1 = $qtyParts[0] ?? '';
         $qtyCol2 = $qtyParts[1] ?? '';
         $qtyCol3 = $qtyParts[2] ?? '';
+        
+        $allRows[] = [
+            'qty1' => $qtyCol1,
+            'qty2' => $qtyCol2,
+            'qty3' => $qtyCol3,
+            'nameLines' => $nameLines,
+            'lineCount' => $lineCount
+        ];
+        
+        $totalSlots += $lineCount;
+    endforeach;
 
-        $topOffset = ($isFirstItem) ? 0 : 0.5;
+    // ===== PERBAIKIAN: Cetak dengan perhitungan posisi yang benar =====
+    $currentTop = $startTop;
+    
+    foreach ($allRows as $rowIndex => $rowData):
+        $qtyCol1 = $rowData['qty1'];
+        $qtyCol2 = $rowData['qty2'];
+        $qtyCol3 = $rowData['qty3'];
+        $nameLines = $rowData['nameLines'];
+        $lineCount = $rowData['lineCount'];
+        
+        // Hitung top offset untuk item pertama
+        $topOffset = ($rowIndex === 0) ? 0 : 0.5;
+        
+        // ===== PERBAIKAN UTAMA: Kuantitas diletakkan di baris PERTAMA =====
+        // (bukan di semua baris, cukup satu kali di baris pertama)
         $qtyTop = $currentTop;
-        $qtyCol2Top = $currentTop + $topOffset;
-        $qtyCol3Top = $currentTop + $topOffset;
     ?>
+        <!-- Kuantitas hanya di baris pertama -->
+        <div class="field row-field qty-col-1" style="top: <?= e($qtyTop) ?>mm;">
+            <?= e($qtyCol1) ?>
+        </div>
 
-        <div
-            class="field row-field qty-col-1"
-            style="top: <?= e($qtyTop) ?>mm;"
-        ><?= e($qtyCol1) ?></div>
+        <div class="field row-field qty-col-2" style="top: <?= e($qtyTop + $topOffset) ?>mm;">
+            <?= e($qtyCol2) ?>
+        </div>
 
-        <div
-            class="field row-field qty-col-2"
-            style="top: <?= e($qtyCol2Top) ?>mm;"
-        ><?= e($qtyCol2) ?></div>
+        <div class="field row-field qty-col-3" style="top: <?= e($qtyTop + $topOffset) ?>mm;">
+            <?= e($qtyCol3) ?>
+        </div>
 
-        <div
-            class="field row-field qty-col-3"
-            style="top: <?= e($qtyCol3Top) ?>mm;"
-        ><?= e($qtyCol3) ?></div>
-
+        <!-- Nama barang dengan beberapa baris -->
         <?php foreach ($nameLines as $lineIdx => $nameLine): ?>
-            <div
-                class="field row-field name-col"
-                style="top: <?= e($currentTop + ($lineIdx * $rowHeight)) ?>mm;"
-            ><?= e($nameLine) ?></div>
+            <div class="field row-field name-col" style="top: <?= e($currentTop + ($lineIdx * $rowHeight)) ?>mm;">
+                <?= e($nameLine) ?>
+            </div>
         <?php endforeach; ?>
 
     <?php
+        // Update posisi untuk item berikutnya
         $currentTop += $rowHeight * $lineCount;
         $usedSlots += $lineCount;
-        $isFirstItem = false;
     endforeach;
     ?>
 
@@ -812,10 +833,9 @@ $maxRowSlots = 10;
     ?>
 
     <?php if ($remarksShippingText !== ''): ?>
-        <div
-            class="remarks-shipping-field"
-            style="top: <?= e($remarksTop) ?>mm;"
-        ><?= nl2br(e($remarksShippingText)) ?></div>
+        <div class="remarks-shipping-field" style="top: <?= e($remarksTop) ?>mm;">
+            <?= nl2br(e($remarksShippingText)) ?>
+        </div>
     <?php endif; ?>
 
     <?php if ($hasMoreRows): ?>

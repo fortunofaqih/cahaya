@@ -386,6 +386,7 @@ mysqli_stmt_close($stmt);
 | SALDO AWAL CUSTOMER UNTUK EDIT
 |--------------------------------------------------------------------------
 | Saldo awal positif = piutang historis.
+| Saldo awal negatif = kredit customer.
 | Pembayaran dari bayar_no ini dikeluarkan agar item existing tetap tampil.
 |--------------------------------------------------------------------------
 */
@@ -644,7 +645,7 @@ $saldoTitipAvailable =
                 <?php if (empty($rows)): ?>
                     <tr>
                         <td colspan="10" class="text-center" style="padding:12px;color:#777;">
-                            Tidak ada invoice/shipping NON CP-MCP atau saldo awal positif outstanding.
+                            Tidak ada invoice/shipping NON CP-MCP atau saldo awal outstanding.
                             Transaksi tetap dapat diedit sebagai Retur Customer standalone.
                         </td>
                     </tr>
@@ -728,12 +729,24 @@ $saldoTitipAvailable =
                             <?= ((float)$opening['opening_balance'] < 0) ? '- ' : '' ?>Rp <?= h(formatMoney(abs((float)$opening['opening_balance']))) ?>
                         </td>
                         <td class="money">Rp <?= h(formatMoney($opening['paid_except_current'])) ?></td>
-                        <td class="money"><strong>Rp <?= h(formatMoney($opening['sisa_before_current'])) ?></strong></td>
+                        <td class="money">
+                            <strong>
+                                <?= ((float)$opening['opening_balance'] < 0) ? '- ' : '' ?>Rp <?= h(formatMoney($opening['sisa_before_current'])) ?>
+                            </strong>
+                        </td>
                         <td class="money">
                             <input type="text"
                                    class="pay-now-input js-pay-now"
                                    name="items[<?= $itemIndex ?>][pay_now]"
-                                   value="<?= h(formatMoney($openingChecked ? (float)($currentOpening['bayar_amount'] ?? 0) : 0)) ?>"
+                                   value="<?= h(formatMoney(
+                                       $openingChecked
+                                           ? (
+                                               ((float)$opening['opening_balance'] < 0)
+                                                   ? -abs((float)($currentOpening['bayar_amount'] ?? 0))
+                                                   : abs((float)($currentOpening['bayar_amount'] ?? 0))
+                                             )
+                                           : 0
+                                   )) ?>"
                                    autocomplete="off"
                                    <?= $openingChecked ? '' : 'disabled' ?>>
                         </td>
@@ -941,10 +954,14 @@ function selectedOpeningDirection() {
         }
     });
 
+    /*
+     * Saldo Awal (-) adalah kredit customer dan boleh digabung
+     * dengan Invoice / Saldo Awal (+) sebagai pengurang piutang.
+     */
     return {
         hasNegativeOpening,
         hasPositiveDebt,
-        invalidMix: hasNegativeOpening && hasPositiveDebt
+        invalidMix: false
     };
 }
 
@@ -953,6 +970,8 @@ function selectedSummary() {
     let payNowTotal = 0;
     let count = 0;
     let invalidPayNow = false;
+    let positiveTotal = 0;
+    let creditTotal = 0;
 
     $('.invoice-row').each(function () {
         const $row = $(this);
@@ -962,29 +981,104 @@ function selectedSummary() {
         const sisa = parseFloat($row.data('sisa')) || 0;
         const payNow = parseNumber($row.find('.js-pay-now').val());
 
-        total += sisa;
+        const source = String(
+            $row.find('input[name$="[source]"]').val() || 'INVOICE'
+        ).toUpperCase();
+
+        const openingSign = source === 'OPENING'
+            ? parseInt(
+                $row.find('input[name$="[opening_sign]"]').val() || '1',
+                10
+            )
+            : 1;
+
+        const isNegativeOpening =
+            source === 'OPENING' && openingSign < 0;
+
+        if (isNegativeOpening) {
+            total -= sisa;
+            creditTotal += sisa;
+
+            if (payNow > 0.01 || Math.abs(payNow) > sisa + 0.01) {
+                invalidPayNow = true;
+            }
+        } else {
+            total += sisa;
+            positiveTotal += sisa;
+
+            if (payNow < -0.01 || payNow > sisa + 0.01) {
+                invalidPayNow = true;
+            }
+        }
+
         payNowTotal += payNow;
         count++;
-
-        if (payNow < -0.01 || payNow > sisa + 0.01) {
-            invalidPayNow = true;
-        }
     });
 
-    return { total, payNowTotal, count, invalidPayNow };
+    return {
+        total,
+        payNowTotal,
+        count,
+        invalidPayNow,
+        positiveTotal,
+        creditTotal
+    };
+}
+
+/*
+ * Checkbox mengisi Bayar Sekarang sebesar seluruh sisa. Jika ada retur,
+ * batasi otomatis nominal cash per baris agar Invoice = Retur menghasilkan
+ * Bayar Sekarang Rp 0,00 dan tidak memicu validasi maksimum Rp 0,00.
+ */
+function capPayNowAfterReturn() {
+    /*
+     * Retur tidak mengubah nilai Bayar Sekarang.
+     *
+     * Bayar Sekarang = nilai piutang yang ingin diselesaikan.
+     * Retur = salah satu komponen penyelesaian pembayaran.
+     *
+     * Contoh:
+     * Sisa           : 940.000
+     * Bayar Sekarang : 940.000
+     * Retur          : 940.000
+     * Cash/Transfer  : 0
+     */
+    return;
 }
 
 function syncCashFromPayNow() {
     const selected = selectedSummary();
     const saldo = parseFloat($('#saldo_titip').val()) || 0;
+    const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+
+    /*
+     * Bayar Sekarang adalah nilai piutang yang diselesaikan.
+     * Retur terlebih dahulu menjadi komponen penyelesaian,
+     * sisanya baru dibayar melalui Cash/Transfer atau Titip.
+     */
+    const returDipakai = Math.min(returAmount, selected.payNowTotal);
+    const kebutuhanCashTitip = Math.max(
+        selected.payNowTotal - returDipakai,
+        0
+    );
 
     if ($('#pakai_titip').is(':checked')) {
-        const currentTitip = Math.min(parseNumber($('#nominal_titip').val()), saldo, selected.payNowTotal);
-        $('#nominal_titip').prop('disabled', false).val(formatRupiah(currentTitip));
-        $('#nominal_bayar').val(formatRupiah(Math.max(selected.payNowTotal - currentTitip, 0)));
+        const currentTitip = Math.min(
+            parseNumber($('#nominal_titip').val()),
+            saldo,
+            kebutuhanCashTitip
+        );
+
+        $('#nominal_titip')
+            .prop('disabled', false)
+            .val(formatRupiah(currentTitip));
+
+        $('#nominal_bayar').val(
+            formatRupiah(Math.max(kebutuhanCashTitip - currentTitip, 0))
+        );
     } else {
         $('#nominal_titip').prop('disabled', true).val('0,00');
-        $('#nominal_bayar').val(formatRupiah(selected.payNowTotal));
+        $('#nominal_bayar').val(formatRupiah(kebutuhanCashTitip));
     }
 }
 
@@ -992,6 +1086,11 @@ function checkNominal() {
     const selected = selectedSummary();
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
     const target = Math.max(selected.total - returAmount, 0);
+    const returDipakai = Math.min(returAmount, selected.payNowTotal);
+    const kebutuhanCashTitip = Math.max(
+        selected.payNowTotal - returDipakai,
+        0
+    );
 
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const cash = parseNumber($('#nominal_bayar').val());
@@ -1005,23 +1104,29 @@ function checkNominal() {
     $('#net_payable').val(target);
     $('#net_payable_display').val('Rp ' + formatRupiah(target));
     $('#selected_count_label').text(selected.count + ' dipilih');
-    $('#total_bayar_display').val('Rp ' + formatRupiah(total));
+    const selectedReturnId = String($('#return_id').val() || '').trim();
+    const transactionTotal =
+        selected.count < 1 && selectedReturnId !== ''
+            ? returAmount
+            : total;
+
+    $('#total_bayar_display').val('Rp ' + formatRupiah(transactionTotal));
 
     const warning = $('#warningNominal');
     warning.removeClass('warning-danger warning-info warning-ok').hide();
 
     const direction = selectedOpeningDirection();
 
-    if (direction.invalidMix) {
+    if (selected.invalidPayNow) {
         warning.addClass('warning-danger')
-            .html('Saldo Awal (-) / Kredit harus diproses tersendiri.')
+            .html('Nilai Bayar Sekarang tidak sesuai arah saldo atau melebihi Sisa Sebelum Transaksi Ini.')
             .show();
         return;
     }
 
-    if (selected.invalidPayNow) {
+    if (selected.payNowTotal < -0.01) {
         warning.addClass('warning-danger')
-            .html('Nilai Bayar Sekarang tidak boleh negatif atau melebihi Sisa Sebelum Transaksi Ini.')
+            .html('Pemakaian Saldo Awal (-) / Kredit melebihi nilai piutang yang diselesaikan.')
             .show();
         return;
     }
@@ -1033,18 +1138,23 @@ function checkNominal() {
         return;
     }
 
-    if (selected.payNowTotal > target + 0.01) {
+    if (selected.payNowTotal > selected.total + 0.01) {
         warning.addClass('warning-danger')
-            .html('Total Bayar Sekarang melebihi tagihan setelah Retur. Maksimal: Rp ' + formatRupiah(target))
+            .html(
+                'Total Bayar Sekarang melebihi sisa tagihan terpilih. Maksimal: Rp ' +
+                formatRupiah(selected.total)
+            )
             .show();
         return;
     }
 
-    if (Math.abs(total - selected.payNowTotal) > 0.01) {
+    if (Math.abs(total - kebutuhanCashTitip) > 0.01) {
         warning.addClass('warning-danger')
             .html(
-                'Total Cash/Transfer + Titip harus sama dengan total Bayar Sekarang. ' +
+                'Total Cash/Transfer + Titip harus sama dengan sisa pembayaran setelah Retur. ' +
                 'Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal) +
+                ' | Retur: Rp ' + formatRupiah(returDipakai) +
+                ' | Harus Cash/Titip: Rp ' + formatRupiah(kebutuhanCashTitip) +
                 ' | Cash/Titip: Rp ' + formatRupiah(total)
             )
             .show();
@@ -1053,7 +1163,7 @@ function checkNominal() {
 
     if (selected.count < 1) return;
 
-    const sisaSetelah = Math.max(target - selected.payNowTotal, 0);
+    const sisaSetelah = Math.max(selected.total - selected.payNowTotal, 0);
     if (sisaSetelah <= 0.01) {
         warning.addClass('warning-ok')
             .html('Pembayaran sesuai. Seluruh tagihan terpilih setelah Retur terselesaikan.')
@@ -1082,14 +1192,32 @@ $(document).ready(function () {
         if ($(this).is(':checked')) {
             $row.addClass('selected-row');
             $payNow.prop('disabled', false);
-            if (parseNumber($payNow.val()) <= 0.01) {
-                $payNow.val(formatRupiah(sisa));
+
+            const source = String(
+                $row.find('input[name$="[source]"]').val() || 'INVOICE'
+            ).toUpperCase();
+
+            const openingSign = source === 'OPENING'
+                ? parseInt(
+                    $row.find('input[name$="[opening_sign]"]').val() || '1',
+                    10
+                )
+                : 1;
+
+            const isNegativeOpening =
+                source === 'OPENING' && openingSign < 0;
+
+            if (Math.abs(parseNumber($payNow.val())) <= 0.01) {
+                $payNow.val(
+                    formatRupiah(isNegativeOpening ? -sisa : sisa)
+                );
             }
         } else {
             $row.removeClass('selected-row');
             $payNow.val('0,00').prop('disabled', true);
         }
 
+        capPayNowAfterReturn();
         syncCashFromPayNow();
         checkNominal();
     });
@@ -1100,7 +1228,33 @@ $(document).ready(function () {
     });
 
     $(document).on('blur', '.js-pay-now', function () {
-        $(this).val(formatRupiah(parseNumber($(this).val())));
+        const $row = $(this).closest('.invoice-row');
+        const sisa = parseFloat($row.data('sisa')) || 0;
+        let value = parseNumber($(this).val());
+
+        const source = String(
+            $row.find('input[name$="[source]"]').val() || 'INVOICE'
+        ).toUpperCase();
+
+        const openingSign = source === 'OPENING'
+            ? parseInt(
+                $row.find('input[name$="[opening_sign]"]').val() || '1',
+                10
+            )
+            : 1;
+
+        const isNegativeOpening =
+            source === 'OPENING' && openingSign < 0;
+
+        if (isNegativeOpening) {
+            if (value > 0) value = -value;
+            if (Math.abs(value) > sisa) value = -sisa;
+        } else {
+            if (value < 0) value = 0;
+            if (value > sisa) value = sisa;
+        }
+
+        $(this).val(formatRupiah(value));
         syncCashFromPayNow();
         checkNominal();
     });
@@ -1123,19 +1277,28 @@ $(document).ready(function () {
             info.removeClass('warning-danger warning-ok').addClass('warning-info').html(html).show();
         }
 
+        capPayNowAfterReturn();
+        syncCashFromPayNow();
         checkNominal();
     });
 
     $('#pakai_titip').on('change', function () {
         const selected = selectedSummary();
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
+        const returAmount = parseFloat($('#retur_invoice').val()) || 0;
+        const returDipakai = Math.min(returAmount, selected.payNowTotal);
+        const kebutuhanCashTitip = Math.max(
+            selected.payNowTotal - returDipakai,
+            0
+        );
+
         if ($(this).is(':checked')) {
-            const useTitip = Math.min(saldo, selected.payNowTotal);
+            const useTitip = Math.min(saldo, kebutuhanCashTitip);
             $('#nominal_titip').prop('disabled', false).val(formatRupiah(useTitip));
-            $('#nominal_bayar').val(formatRupiah(Math.max(selected.payNowTotal - useTitip, 0)));
+            $('#nominal_bayar').val(formatRupiah(Math.max(kebutuhanCashTitip - useTitip, 0)));
         } else {
             $('#nominal_titip').prop('disabled', true).val('0,00');
-            $('#nominal_bayar').val(formatRupiah(selected.payNowTotal));
+            $('#nominal_bayar').val(formatRupiah(kebutuhanCashTitip));
         }
         checkNominal();
     });
@@ -1155,16 +1318,16 @@ $(document).ready(function () {
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
         const target = Math.max(selected.total - returAmount, 0);
+        const returDipakai = Math.min(returAmount, selected.payNowTotal);
+        const kebutuhanCashTitip = Math.max(
+            selected.payNowTotal - returDipakai,
+            0
+        );
         const cash = parseNumber($('#nominal_bayar').val());
         const titip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
         const total = cash + titip;
         const selectedReturnId = String($('#return_id').val() || '').trim();
         const direction = selectedOpeningDirection();
-
-        if (direction.invalidMix) {
-            alert('Saldo Awal (-) / Kredit harus diproses tersendiri dan tidak boleh digabung dengan Invoice atau Saldo Awal (+).');
-            e.preventDefault(); return false;
-        }
 
         if (direction.hasNegativeOpening && (titip > 0.01 || selectedReturnId !== '')) {
             alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip atau Retur Customer.');
@@ -1177,7 +1340,12 @@ $(document).ready(function () {
         }
 
         if (selected.invalidPayNow) {
-            alert('Ada nilai Bayar Sekarang yang tidak valid atau melebihi sisa.');
+            alert('Ada nilai Bayar Sekarang yang tidak valid, salah arah saldo, atau melebihi sisa.');
+            e.preventDefault(); return false;
+        }
+
+        if (selected.payNowTotal < -0.01) {
+            alert('Pemakaian Saldo Awal (-) / Kredit melebihi nilai piutang yang diselesaikan.');
             e.preventDefault(); return false;
         }
 
@@ -1186,8 +1354,11 @@ $(document).ready(function () {
             e.preventDefault(); return false;
         }
 
-        if (selected.payNowTotal > target + 0.01) {
-            alert('Total Bayar Sekarang tidak boleh melebihi total tagihan setelah Retur. Maksimal: Rp ' + formatRupiah(target));
+        if (selected.payNowTotal > selected.total + 0.01) {
+            alert(
+                'Total Bayar Sekarang tidak boleh melebihi sisa tagihan terpilih. Maksimal: Rp ' +
+                formatRupiah(selected.total)
+            );
             e.preventDefault(); return false;
         }
 
@@ -1196,8 +1367,13 @@ $(document).ready(function () {
             e.preventDefault(); return false;
         }
 
-        if (Math.abs(total - selected.payNowTotal) > 0.01) {
-            alert('Total Cash/Transfer + Titip harus sama dengan total Bayar Sekarang. Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal));
+        if (Math.abs(total - kebutuhanCashTitip) > 0.01) {
+            alert(
+                'Total Cash/Transfer + Titip harus sama dengan sisa pembayaran setelah Retur. ' +
+                'Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal) +
+                ' | Retur: Rp ' + formatRupiah(returDipakai) +
+                ' | Harus Cash/Titip: Rp ' + formatRupiah(kebutuhanCashTitip)
+            );
             e.preventDefault(); return false;
         }
 
@@ -1226,19 +1402,36 @@ $(document).ready(function () {
     checkNominal();
 });
 $(document).on('input', '.js-pay-now', function () {
+    const $row = $(this).closest('.invoice-row');
+
+    const source = String(
+        $row.find('input[name$="[source]"]').val() || 'INVOICE'
+    ).toUpperCase();
+
+    const openingSign = source === 'OPENING'
+        ? parseInt(
+            $row.find('input[name$="[opening_sign]"]').val() || '1',
+            10
+        )
+        : 1;
+
+    const isNegativeOpening =
+        source === 'OPENING' && openingSign < 0;
+
     let value = String($(this).val() || '');
+    let digits = value.replace(/\D/g, '');
 
-    // Ambil angka saja
-    value = value.replace(/\D/g, '');
-
-    if (value === '') {
-        $(this).val('');
+    if (digits === '') {
+        $(this).val(isNegativeOpening ? '-' : '');
         return;
     }
 
-    // Format ribuan dengan titik
-    $(this).val(
-        parseInt(value, 10).toLocaleString('id-ID')
-    );
+    let formatted = parseInt(digits, 10).toLocaleString('id-ID');
+
+    if (isNegativeOpening) {
+        formatted = '-' + formatted;
+    }
+
+    $(this).val(formatted);
 });
 </script>

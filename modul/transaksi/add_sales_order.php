@@ -76,6 +76,7 @@ $inventory_rs = mysqli_query($conn, "
         ON miu.inventory_id = mi.inventory_id 
        AND miu.`Default` = 1
     WHERE mi.status = 'Active'
+      AND UPPER(COALESCE(mi.inventory_id, '')) NOT LIKE '%MCP-INV%'
     ORDER BY mi.inventory_name ASC
 ");
 $uom_map = [];

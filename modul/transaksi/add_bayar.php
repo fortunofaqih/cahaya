@@ -5,7 +5,7 @@
  * - Retur normal tetap memakai return_amount.
  */
 
-// modul/transaksi/add_bayar_shipping_revisi_lunas_legacy.php
+// modul/transaksi/add_bayar.php
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -30,7 +30,8 @@ function formatDateDisplay($date) {
 }
 
 function formatMoney($value) {
-    return number_format((float)$value, 2, ',', '.');
+    $value = round((float)$value, 0, PHP_ROUND_HALF_UP);
+    return number_format($value, 2, ',', '.');
 }
 
 function generateBayarNo($conn) {
@@ -109,7 +110,13 @@ $sqlShipping = "
 
         /*
          * SISA EFEKTIF:
-         * Nilai Shipping - Pembayaran - Retur yang sudah dipakai.
+         * Nilai resmi Shipping dari det_invoice
+         * - Pembayaran aktual
+         * - Retur yang sudah dipakai.
+         *
+         * sisa_after tidak lagi membatasi outstanding.
+         * Semua nominal invoice/outstanding dibulatkan ke Rupiah penuh.
+         * Tampilan tetap 2 digit desimal sehingga hasilnya selalu ,00.
          *
          * Invoice single-shipping:
          * pembayaran/retur legacy pada level invoice tetap ikut dihitung.
@@ -117,21 +124,24 @@ $sqlShipping = "
          * Invoice multi-shipping:
          * pembayaran/retur dihitung khusus pasangan invoice + shipping.
          */
-        CASE
-            WHEN src.shipping_count = 1
-                THEN GREATEST(
+        ROUND(
+            CASE
+                WHEN src.shipping_count = 1
+                    THEN GREATEST(
+                        src.shipping_amount
+                        - COALESCE(inv_pay.total_paid_invoice, 0)
+                        - COALESCE(ret_used_invoice.return_amount, 0),
+                        0
+                    )
+                ELSE GREATEST(
                     src.shipping_amount
-                    - COALESCE(inv_pay.total_paid_invoice, 0)
-                    - COALESCE(ret_used_invoice.return_amount, 0),
+                    - COALESCE(pay_shipping.paid_amount, 0)
+                    - COALESCE(ret_used_shipping.return_amount, 0),
                     0
                 )
-            ELSE GREATEST(
-                src.shipping_amount
-                - COALESCE(pay_shipping.paid_amount, 0)
-                - COALESCE(ret_used_shipping.return_amount, 0),
-                0
-            )
-        END AS sisa_shipping,
+            END,
+            0
+        ) AS sisa_shipping,
 
         COALESCE((
             SELECT SUM(ht.balance_amount)
@@ -153,12 +163,21 @@ $sqlShipping = "
             MAX(di.shipping_date) AS shipping_date,
             MAX(di.order_no) AS order_no,
 
-            SUM(
-                CASE
-                    WHEN COALESCE(di.total, 0) > 0
-                        THEN COALESCE(di.total, 0)
-                    ELSE COALESCE(di.subtotal, 0)
-                END
+            /*
+             * SOURCE OF TRUTH NILAI INVOICE:
+             * det_invoice.total, fallback det_invoice.subtotal.
+             * Save/Update Invoice sekarang bertanggung jawab memastikan
+             * kedua nilai ini selalu sinkron dengan head_invoice.
+             */
+            ROUND(
+                SUM(
+                    CASE
+                        WHEN COALESCE(di.total, 0) > 0
+                            THEN COALESCE(di.total, 0)
+                        ELSE COALESCE(di.subtotal, 0)
+                    END
+                ),
+                0
             ) AS shipping_amount,
 
             (
@@ -215,6 +234,12 @@ $sqlShipping = "
         GROUP BY db.invoice_no
     ) inv_pay
         ON inv_pay.invoice_no = src.invoice_no
+
+    /*
+     * sisa_after tidak lagi dipakai sebagai source of truth outstanding.
+     * Nilai resmi invoice berasal dari det_invoice, sedangkan outstanding
+     * dihitung dari nilai invoice resmi - pembayaran aktual - retur terpakai.
+     */
 
     /*
      * Retur yang sudah dipakai untuk pasangan invoice + shipping.
@@ -286,7 +311,7 @@ $sqlShipping = "
         src.shipping_amount > 0
         AND UPPER(COALESCE(src.invoice_no, '')) NOT LIKE '%CP-MCP%'
         AND UPPER(COALESCE(src.shipping_no, '')) NOT LIKE '%CP-MCP%'
-        AND (
+        AND ROUND(
             CASE
                 WHEN src.shipping_count = 1
                     THEN GREATEST(
@@ -301,8 +326,9 @@ $sqlShipping = "
                     - COALESCE(ret_used_shipping.return_amount, 0),
                     0
                 )
-            END
-        ) > 0.01
+            END,
+            0
+        ) > 0
 
     ORDER BY
         src.invoice_date DESC,
@@ -355,15 +381,37 @@ $sqlOpening = "
               AND db.opening_id = cob.opening_id
         ), 0) AS paid_amount,
 
-        GREATEST(
-            ABS(cob.opening_balance)
-            - COALESCE((
-                SELECT SUM(ABS(COALESCE(db2.bayar_amount, 0)))
-                FROM detail_bayar db2
-                WHERE db2.payment_source = 'OPENING'
-                  AND db2.opening_id = cob.opening_id
-            ), 0),
-            0
+        LEAST(
+            GREATEST(
+                ABS(cob.opening_balance)
+                - COALESCE((
+                    SELECT SUM(ABS(COALESCE(db2.bayar_amount, 0)))
+                    FROM detail_bayar db2
+                    WHERE db2.payment_source = 'OPENING'
+                      AND db2.opening_id = cob.opening_id
+                ), 0),
+                0
+            ),
+            COALESCE(
+                (
+                    SELECT GREATEST(COALESCE(db3.sisa_after, 0), 0)
+                    FROM detail_bayar db3
+                    WHERE db3.payment_source = 'OPENING'
+                      AND db3.opening_id = cob.opening_id
+                    ORDER BY db3.id DESC
+                    LIMIT 1
+                ),
+                GREATEST(
+                    ABS(cob.opening_balance)
+                    - COALESCE((
+                        SELECT SUM(ABS(COALESCE(db4.bayar_amount, 0)))
+                        FROM detail_bayar db4
+                        WHERE db4.payment_source = 'OPENING'
+                          AND db4.opening_id = cob.opening_id
+                    ), 0),
+                    0
+                )
+            )
         ) AS sisa_opening,
 
         COALESCE((
@@ -506,7 +554,7 @@ foreach ($shippings as $ship) {
 }
 
 
-/* Customer dari saldo awal positif yang masih outstanding. */
+/* Customer dari saldo awal positif/negatif yang masih outstanding. */
 foreach ($openingBalances as $opening) {
     $cid = trim((string)($opening['customer_id'] ?? ''));
 
@@ -925,7 +973,11 @@ uasort($paymentCustomers, function ($a, $b) {
                                 <?= ((float)$opening['opening_balance'] < 0) ? '- ' : '' ?>Rp <?= h(formatMoney(abs((float)$opening['opening_balance']))) ?>
                             </td>
                             <td class="money">Rp <?= h(formatMoney($opening['paid_amount'])) ?></td>
-                            <td class="money"><strong>Rp <?= h(formatMoney($opening['sisa_opening'])) ?></strong></td>
+                            <td class="money">
+                                <strong>
+                                    <?= ((float)$opening['opening_balance'] < 0) ? '- ' : '' ?>Rp <?= h(formatMoney($opening['sisa_opening'])) ?>
+                                </strong>
+                            </td>
                             <td class="money">
                                 <input type="text"
                                        class="pay-now-input js-pay-now"
@@ -1090,7 +1142,7 @@ function parseNumber(value) {
 }
 
 function formatRupiah(value) {
-    value = parseFloat(value) || 0;
+    value = Math.round(parseFloat(value) || 0);
 
     return value.toLocaleString('id-ID', {
         minimumFractionDigits: 2,
@@ -1126,10 +1178,15 @@ function getSelectedOpeningDirection() {
         }
     });
 
+    /*
+     * Saldo Awal (-) adalah kredit customer.
+     * Kredit BOLEH digabung dengan Invoice / Saldo Awal (+)
+     * karena fungsinya memang mengurangi piutang.
+     */
     return {
         hasNegativeOpening,
         hasPositiveDebt,
-        invalidMix: hasNegativeOpening && hasPositiveDebt
+        invalidMix: false
     };
 }
 
@@ -1138,6 +1195,8 @@ function getSelectedTotal() {
     let payNowTotal = 0;
     let count = 0;
     let invalidPayNow = false;
+    let positiveTotal = 0;
+    let creditTotal = 0;
 
     $('.invoice-row:visible').each(function () {
         const row = $(this);
@@ -1148,16 +1207,67 @@ function getSelectedTotal() {
         const sisa = parseFloat(row.data('sisa')) || 0;
         const payNow = parseNumber(row.find('.js-pay-now').val());
 
-        total += sisa;
+        const source = String(
+            row.find('input[name$="[source]"]').val() || 'INVOICE'
+        ).toUpperCase();
+
+        const openingSign = source === 'OPENING'
+            ? parseInt(
+                row.find('input[name$="[opening_sign]"]').val() || '1',
+                10
+            )
+            : 1;
+
+        const isNegativeOpening =
+            source === 'OPENING' && openingSign < 0;
+
+        /*
+         * PENTING:
+         * sisa_opening dari SQL tetap berupa ABS/magnitudo agar kompatibel
+         * dengan settlement existing. Tanda minus dikembalikan di sini.
+         */
+        const signedSisa = isNegativeOpening ? -sisa : sisa;
+
+        total += signedSisa;
         payNowTotal += payNow;
         count++;
 
-        if (payNow < -0.01 || payNow > sisa + 0.01) {
-            invalidPayNow = true;
+        if (isNegativeOpening) {
+            creditTotal += sisa;
+
+            /*
+             * Kredit wajib bernilai <= 0 dan tidak boleh lebih besar
+             * daripada sisa kreditnya.
+             */
+            if (payNow > 0.01 || Math.abs(payNow) > sisa + 0.01) {
+                invalidPayNow = true;
+            }
+        } else {
+            positiveTotal += sisa;
+
+            if (payNow < -0.01 || payNow > sisa + 0.01) {
+                invalidPayNow = true;
+            }
         }
     });
 
-    return { total, payNowTotal, count, invalidPayNow };
+    return {
+        total,
+        payNowTotal,
+        count,
+        invalidPayNow,
+        positiveTotal,
+        creditTotal
+    };
+}
+
+/*
+ * Retur TIDAK mengubah nilai Bayar Sekarang.
+ * Bayar Sekarang = nilai piutang yang ingin diselesaikan.
+ * Retur = salah satu komponen penyelesaian atas nilai tersebut.
+ */
+function capPayNowAfterReturn() {
+    return;
 }
 
 function refreshPaymentCalculation(resetCash = true) {
@@ -1190,23 +1300,25 @@ function refreshPaymentCalculation(resetCash = true) {
 
     if (resetCash) {
         const paymentRequested = selected.payNowTotal;
+        const returDipakai = Math.min(returAmount, paymentRequested);
+        const kebutuhanCashTitip = Math.max(paymentRequested - returDipakai, 0);
 
         if ($('#pakai_titip').is(':checked')) {
-            const useTitip = Math.min(saldoTitip, paymentRequested);
+            const useTitip = Math.min(saldoTitip, kebutuhanCashTitip);
 
             $('#nominal_titip')
                 .prop('disabled', false)
                 .val(formatRupiah(useTitip));
 
             $('#nominal_bayar').val(
-                formatRupiah(Math.max(paymentRequested - useTitip, 0))
+                formatRupiah(Math.max(kebutuhanCashTitip - useTitip, 0))
             );
         } else {
             $('#nominal_titip')
                 .prop('disabled', true)
                 .val('0,00');
 
-            $('#nominal_bayar').val(formatRupiah(paymentRequested));
+            $('#nominal_bayar').val(formatRupiah(kebutuhanCashTitip));
         }
     }
 
@@ -1219,6 +1331,8 @@ function checkNominal() {
     const payNowTotal = selected.payNowTotal;
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
     const target = Math.max(selectedTotal - returAmount, 0);
+    const returDipakai = Math.min(returAmount, payNowTotal);
+    const kebutuhanCashTitip = Math.max(payNowTotal - returDipakai, 0);
 
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const nominalCash = parseNumber($('#nominal_bayar').val());
@@ -1231,21 +1345,19 @@ function checkNominal() {
 
     $('#net_payable').val(target);
     $('#net_payable_display').val('Rp ' + formatRupiah(target));
-    $('#total_bayar_display').val('Rp ' + formatRupiah(totalBayar));
+    const selectedReturnId = String($('#return_id').val() || '').trim();
+    const transactionTotal =
+        selected.count < 1 && selectedReturnId !== ''
+            ? returAmount
+            : totalBayar;
+
+    $('#total_bayar_display').val('Rp ' + formatRupiah(transactionTotal));
 
     warning
         .removeClass('warning-danger warning-info warning-ok')
         .hide();
 
     const direction = getSelectedOpeningDirection();
-
-    if (direction.invalidMix) {
-        warning
-            .addClass('warning-danger')
-            .html('Saldo Awal (-) / Kredit tidak boleh digabung dalam satu transaksi dengan Invoice atau Saldo Awal (+).')
-            .show();
-        return;
-    }
 
     if (selected.invalidPayNow) {
         warning
@@ -1263,23 +1375,25 @@ function checkNominal() {
         return;
     }
 
-    if (payNowTotal > target + 0.01) {
+    if (payNowTotal > selectedTotal + 0.01) {
         warning
             .addClass('warning-danger')
             .html(
-                'Total Bayar Sekarang per item melebihi tagihan setelah Retur. ' +
-                'Maksimal: Rp ' + formatRupiah(target)
+                'Total Bayar Sekarang melebihi sisa tagihan terpilih. ' +
+                'Maksimal: Rp ' + formatRupiah(selectedTotal)
             )
             .show();
         return;
     }
 
-    if (Math.abs(totalBayar - payNowTotal) > 0.01) {
+    if (Math.abs(totalBayar - kebutuhanCashTitip) > 0.01) {
         warning
             .addClass('warning-danger')
             .html(
-                'Total Cash/Transfer + Titip harus sama dengan total kolom Bayar Sekarang. ' +
+                'Total Cash/Transfer + Titip harus sama dengan sisa pembayaran setelah Retur. ' +
                 'Bayar Sekarang: Rp ' + formatRupiah(payNowTotal) +
+                ' | Retur: Rp ' + formatRupiah(returDipakai) +
+                ' | Harus Cash/Titip: Rp ' + formatRupiah(kebutuhanCashTitip) +
                 ' | Cash/Titip: Rp ' + formatRupiah(totalBayar)
             )
             .show();
@@ -1288,7 +1402,7 @@ function checkNominal() {
 
     if (selectedTotal <= 0) return;
 
-    const remaining = Math.max(target - payNowTotal, 0);
+    const remaining = Math.max(selectedTotal - payNowTotal, 0);
 
     if (remaining <= 0.01) {
         warning
@@ -1429,7 +1543,7 @@ $(document).ready(function () {
         } else if (customerId) {
             $('#noInvoiceMessage')
                 .text(
-                    'Tidak ada invoice/shipping atau saldo awal positif yang masih outstanding. Jika customer memiliki Retur aktif, pilih pada bagian Retur Customer.'
+                    'Tidak ada invoice/shipping atau saldo awal yang masih outstanding. Jika customer memiliki Retur aktif, pilih pada bagian Retur Customer.'
                 )
                 .show();
         } else {
@@ -1455,9 +1569,27 @@ $(document).ready(function () {
 
         if ($(this).is(':checked')) {
             row.addClass('selected-row');
+
+            const source = String(
+                row.find('input[name$="[source]"]').val() || 'INVOICE'
+            ).toUpperCase();
+
+            const openingSign = source === 'OPENING'
+                ? parseInt(
+                    row.find('input[name$="[opening_sign]"]').val() || '1',
+                    10
+                )
+                : 1;
+
+            const sisa = parseFloat(row.data('sisa')) || 0;
+            const initialPayNow =
+                source === 'OPENING' && openingSign < 0
+                    ? -sisa
+                    : sisa;
+
             payInput
                 .prop('disabled', false)
-                .val(formatRupiah(parseFloat(row.data('sisa')) || 0));
+                .val(formatRupiah(initialPayNow));
         } else {
             row.removeClass('selected-row');
             payInput
@@ -1465,6 +1597,7 @@ $(document).ready(function () {
                 .val('0,00');
         }
 
+        capPayNowAfterReturn();
         refreshPaymentCalculation(true);
     });
 
@@ -1477,8 +1610,30 @@ $(document).ready(function () {
         const sisa = parseFloat(row.data('sisa')) || 0;
         let value = parseNumber($(this).val());
 
-        if (value < 0) value = 0;
-        if (value > sisa) value = sisa;
+        const source = String(
+            row.find('input[name$="[source]"]').val() || 'INVOICE'
+        ).toUpperCase();
+
+        const openingSign = source === 'OPENING'
+            ? parseInt(
+                row.find('input[name$="[opening_sign]"]').val() || '1',
+                10
+            )
+            : 1;
+
+        const isNegativeOpening =
+            source === 'OPENING' && openingSign < 0;
+
+        if (isNegativeOpening) {
+            /*
+             * Saldo awal kredit harus tetap MINUS.
+             */
+            if (value > 0) value = -value;
+            if (Math.abs(value) > sisa) value = -sisa;
+        } else {
+            if (value < 0) value = 0;
+            if (value > sisa) value = sisa;
+        }
 
         $(this).val(formatRupiah(value));
         refreshPaymentCalculation(true);
@@ -1497,6 +1652,7 @@ $(document).ready(function () {
 
         if (!returnId) {
             info.hide().html('');
+            capPayNowAfterReturn();
             refreshPaymentCalculation(true);
             return;
         }
@@ -1520,6 +1676,7 @@ $(document).ready(function () {
         /*
          * Retur mengurangi total tagihan terpilih.
          */
+        capPayNowAfterReturn();
         refreshPaymentCalculation(true);
     });
 
@@ -1556,6 +1713,8 @@ $(document).ready(function () {
         const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
         const targetBayar = Math.max(selected.total - returAmount, 0);
+        const returDipakai = Math.min(returAmount, selected.payNowTotal);
+        const kebutuhanCashTitip = Math.max(selected.payNowTotal - returDipakai, 0);
 
         const nominalCash = parseNumber($('#nominal_bayar').val());
         const nominalTitip = $('#pakai_titip').is(':checked')
@@ -1571,12 +1730,6 @@ $(document).ready(function () {
 
         const selectedReturnId = String($('#return_id').val() || '').trim();
         const direction = getSelectedOpeningDirection();
-
-        if (direction.invalidMix) {
-            alert('Saldo Awal (-) / Kredit harus diproses tersendiri dan tidak boleh digabung dengan Invoice atau Saldo Awal (+).');
-            e.preventDefault();
-            return false;
-        }
 
         if (
             direction.hasNegativeOpening &&
@@ -1599,19 +1752,21 @@ $(document).ready(function () {
             return false;
         }
 
-        if (selected.payNowTotal > targetBayar + 0.01) {
+        if (selected.payNowTotal > selected.total + 0.01) {
             alert(
-                'Total Bayar Sekarang tidak boleh melebihi total tagihan setelah Retur. Maksimal: Rp ' +
-                formatRupiah(targetBayar)
+                'Total Bayar Sekarang tidak boleh melebihi sisa tagihan terpilih. Maksimal: Rp ' +
+                formatRupiah(selected.total)
             );
             e.preventDefault();
             return false;
         }
 
-        if (Math.abs(totalBayar - selected.payNowTotal) > 0.01) {
+        if (Math.abs(totalBayar - kebutuhanCashTitip) > 0.01) {
             alert(
-                'Total Cash/Transfer + Titip harus sama dengan total kolom Bayar Sekarang. ' +
-                'Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal)
+                'Total Cash/Transfer + Titip harus sama dengan sisa pembayaran setelah Retur. ' +
+                'Bayar Sekarang: Rp ' + formatRupiah(selected.payNowTotal) +
+                ' | Retur: Rp ' + formatRupiah(returDipakai) +
+                ' | Harus Cash/Titip: Rp ' + formatRupiah(kebutuhanCashTitip)
             );
             e.preventDefault();
             return false;
@@ -1680,19 +1835,39 @@ $(document).ready(function () {
     refreshReturnOptions('');
 });
 $(document).on('input', '.js-pay-now', function () {
-    let value = String($(this).val() || '');
+    const row = $(this).closest('.invoice-row');
 
-    // Ambil angka saja
-    value = value.replace(/\D/g, '');
+    const source = String(
+        row.find('input[name$="[source]"]').val() || 'INVOICE'
+    ).toUpperCase();
 
-    if (value === '') {
-        $(this).val('');
+    const openingSign = source === 'OPENING'
+        ? parseInt(
+            row.find('input[name$="[opening_sign]"]').val() || '1',
+            10
+        )
+        : 1;
+
+    const isNegativeOpening =
+        source === 'OPENING' && openingSign < 0;
+
+    let raw = String($(this).val() || '');
+    let digits = raw.replace(/\D/g, '');
+
+    if (digits === '') {
+        $(this).val(isNegativeOpening ? '-' : '');
         return;
     }
 
-    // Format ribuan dengan titik
-    $(this).val(
-        parseInt(value, 10).toLocaleString('id-ID')
-    );
+    let formatted = parseInt(digits, 10).toLocaleString('id-ID');
+
+    /*
+     * Jangan hilangkan tanda minus untuk Saldo Awal (-).
+     */
+    if (isNegativeOpening) {
+        formatted = '-' + formatted;
+    }
+
+    $(this).val(formatted);
 });
 </script>

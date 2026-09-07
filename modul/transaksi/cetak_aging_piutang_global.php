@@ -2,30 +2,33 @@
 /*
  * modul/transaksi/cetak_aging_piutang_global.php
  *
- * RULE FINAL AGING PIUTANG:
+ * RULE FINAL AGING PIUTANG - STRICT MONTHLY CARRY-FORWARD:
  * 1. Customer yang tampil WAJIB masih ada dan aktif di m_customer.
- *    Customer yang sudah dihapus dari master tidak akan tampil lagi walaupun
- *    masih memiliki histori invoice/payment/return.
- * 2. SALDO AWAL carry-forward dari posisi akhir periode sebelumnya; customer_opening_balance hanya base migrasi.
- * 3. Untuk customer yang mempunyai saldo awal pada opening_date:
- *      - invoice dengan invoice_date <= opening_date dianggap sudah tercakup
- *        di saldo awal dan TIDAK dihitung lagi sebagai Penjualan.
- *      - invoice setelah opening_date dihitung sebagai Penjualan.
- *      - pembayaran setelah opening_date dihitung sebagai Bayar/Titip.
- * 4. Untuk customer yang TIDAK mempunyai saldo awal:
- *      - seluruh invoice valid sampai akhir periode dihitung sebagai Penjualan,
- *        termasuk invoice Juli yang masih ada di sistem.
- *      - seluruh pembayaran sampai akhir periode dihitung sebagai Bayar/Titip.
- * 5. Invoice / Shipping CP-MCP tidak masuk Penjualan/Pembayaran normal.
- * 6. Retur CP-MCP tetap dihitung standalone memakai grand_total.
- *    Retur normal memakai return_amount.
- * 7. Retur selalu mengurangi Penjualan Neto dan ditempatkan sebagai nilai MINUS
- *    di bucket "Lebih" sesuai rule user.
- * 8. TITIP pada Aging = detail_bayar.titip_amount yang SUDAH DIPAKAI.
- *    Saldo titip belum terpakai tidak ditampilkan dan tidak mengurangi piutang.
- * 9. Rumus wajib balance:
- *      Saldo Awal + Penjualan - Bayar - Titip = Akhir
- *      1-30 + 31-60 + 61-90 + Lebih + Belum Jatuh Tempo = Akhir
+ * 2. SALDO AWAL bulan berjalan = posisi piutang sampai H-1 bulan laporan.
+ *    customer_opening_balance hanya merupakan base migrasi, bukan mutasi bulanan.
+ * 3. TRANSAKSI SEBELUM BULAN FILTER tidak boleh tampil ulang pada kolom bulan berjalan:
+ *      - invoice sebelum startDate -> bagian dari SALDO AWAL;
+ *      - pembayaran sebelum startDate -> bagian dari SALDO AWAL;
+ *      - titip-used sebelum startDate -> bagian dari SALDO AWAL;
+ *      - retur sebelum startDate -> bagian dari SALDO AWAL.
+ * 4. Kolom PENJUALAN hanya memuat invoice pada bulan yang difilter
+ *    (dikurangi retur bulan berjalan sesuai rule laporan yang sudah digunakan).
+ * 5. Kolom BAYAR hanya memuat pembayaran cash/transfer pada bulan yang difilter.
+ * 6. Kolom TITIP hanya memuat titip yang DIPAKAI pada bulan yang difilter.
+ *    Titip-used bulan sebelumnya tidak tampil lagi karena efeknya sudah masuk
+ *    Saldo Akhir bulan sebelumnya dan otomatis menjadi Saldo Awal bulan ini.
+ * 7. Untuk customer yang memiliki opening balance:
+ *      - invoice dengan invoice_date <= opening_date sudah tercakup pada opening;
+ *      - hanya mutasi setelah opening_date yang dihitung lagi.
+ * 8. Untuk customer TANPA opening balance, histori sebelum startDate tetap
+ *    dihitung sebagai carry-forward SALDO AWAL, bukan dipindahkan ke Penjualan.
+ * 9. Invoice / Shipping CP-MCP tidak masuk Penjualan/Pembayaran normal.
+ * 10. Retur CP-MCP tetap dihitung standalone memakai grand_total;
+ *     retur normal memakai return_amount.
+ * 11. Retur normal mengurangi outstanding invoice terkait; Lebih bukan bucket retur.
+ * 12. Rumus wajib balance:
+ *       Saldo Awal + Penjualan - Bayar - Titip = Akhir
+ *       1-30 + 31-60 + 61-90 + Lebih + Belum Jatuh Tempo = Akhir
  */
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -49,7 +52,9 @@ function h($value)
 
 function formatMoney($value)
 {
-    return number_format((float)$value, 2, ',', '.');
+    $value = (float)$value;
+    $value = $value >= 0 ? floor($value) : ceil($value);
+    return number_format($value, 2, ',', '.');
 }
 
 function getMonthName($month)
@@ -231,8 +236,9 @@ function ensureCustomerRow(array &$customers, array $masterCustomers, string $cu
  * 2. CUT-OFF & OPENING BALANCE
  * ============================================================
  * Saldo Awal bulan berjalan = posisi piutang per H-1 periode.
- * customer_opening_balance hanya menjadi BASE migrasi, bukan angka yang
- * diulang terus setiap bulan.
+ * Semua mutasi sebelum startDate sudah menjadi carry-forward dan tidak boleh
+ * tampil ulang pada kolom Penjualan/Bayar/Titip bulan berjalan.
+ * customer_opening_balance hanya menjadi BASE migrasi.
  */
 $previousDate = date('Y-m-d', strtotime($startDate . ' -1 day'));
 
@@ -257,7 +263,7 @@ $sqlOpening = "
     WHERE 1=1
 ";
 
-$openingParams = [$endDate];
+$openingParams = [$previousDate];
 $openingTypes = 's';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -299,36 +305,12 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
 }
 mysqli_stmt_close($stmtOpening);
 
-/* Cut-off migrasi harus GLOBAL, tidak boleh mengikuti filter customer/kota. */
-$stmtGlobalCutoff = mysqli_prepare(
-    $conn,
-    "
-    SELECT MAX(cob.opening_date) AS cutoff_date
-    FROM customer_opening_balance cob
-    INNER JOIN m_customer mc
-        ON mc.customer_id = cob.customer_id
-       AND COALESCE(mc.is_active, 'Checked') = 'Checked'
-    WHERE LOWER(COALESCE(cob.status, 'Active')) = 'active'
-      AND cob.opening_date <= ?
-    "
-);
-mysqli_stmt_bind_param($stmtGlobalCutoff, 's', $endDate);
-mysqli_stmt_execute($stmtGlobalCutoff);
-$resGlobalCutoff = mysqli_stmt_get_result($stmtGlobalCutoff);
-$rowGlobalCutoff = mysqli_fetch_assoc($resGlobalCutoff);
-$globalOpeningCutoff = trim((string)($rowGlobalCutoff['cutoff_date'] ?? ''));
-mysqli_stmt_close($stmtGlobalCutoff);
-
 /*
- * Periode pertama setelah cut-off migrasi mempunyai perlakuan khusus untuk
- * customer TANPA opening balance: invoice legacy sebelum startDate tetap
- * ditampilkan sebagai Penjualan, sesuai rule MARDI.
- * Mulai bulan berikutnya, posisi akhir bulan sebelumnya otomatis menjadi Awal.
+ * Tidak ada lagi pengecualian "periode migrasi pertama".
+ * Semua mutasi sebelum startDate selalu menjadi carry-forward Saldo Awal.
+ * Dengan demikian transaksi bulan lalu tidak akan tampil ulang sebagai
+ * Penjualan / Bayar / Titip bulan berjalan.
  */
-$firstOperationalDate = $globalOpeningCutoff !== ''
-    ? date('Y-m-d', strtotime($globalOpeningCutoff . ' +1 day'))
-    : '';
-$isInitialMigrationPeriod = ($firstOperationalDate !== '' && $startDate === $firstOperationalDate);
 
 /* Temp result per customer supaya finalisasi ringan. */
 $calc = [];
@@ -344,7 +326,7 @@ foreach ($masterCustomers as $cid => $m) {
         'orphan_total' => 0.0,
         'pre_return' => 0.0,
         'period_return' => 0.0,
-        'total_return' => 0.0,
+        'bucket_credit_return' => 0.0,
         'b_1_30' => 0.0,
         'b_31_60' => 0.0,
         'b_61_90' => 0.0,
@@ -354,18 +336,24 @@ foreach ($masterCustomers as $cid => $m) {
 }
 
 /* ============================================================
- * 3. INVOICE + AGING BUCKET (AGREGASI SQL)
+ * 3. INVOICE + AGING BUCKET
  * ============================================================
- * Pembayaran invoice diagregasi terlebih dahulu per invoice. Dengan cara ini
- * PHP tidak perlu loop semua detail pembayaran untuk membentuk outstanding.
+ * SOURCE OF TRUTH NILAI INVOICE = sama persis dengan cetak_invoice.php:
+ * qty_pack_shipping × harga SO (price), fallback subtotal SO / quantity_pack.
+ * Total invoice dibulatkan normal ke rupiah penuh.
+ *
+ * Outstanding per invoice:
+ * invoice_calc - cash - titip_used - retur_linked_invoice.
+ *
+ * Bucket memakai umur lewat jatuh tempo, tetapi lebar bucket mengikuti
+ * jumlah hari kalender aktual:
+ * contoh Agustus 2026 => 1-31, 32-62, 63-92, >92.
  */
-$invoiceGrossExprSql = "
-    CASE
-        WHEN COALESCE(hi.piutang, 0) > 0 THEN COALESCE(hi.piutang, 0)
-        WHEN COALESCE(hi.payment_balance, 0) > 0 THEN COALESCE(hi.payment_balance, 0)
-        ELSE COALESCE(hi.grand_total, 0)
-    END
-";
+$bucket1Days = (int)date('t', strtotime($startDate));
+$prevMonthStart = date('Y-m-01', strtotime($startDate . ' -1 month'));
+$prev2MonthStart = date('Y-m-01', strtotime($startDate . ' -2 month'));
+$bucket2Limit = $bucket1Days + (int)date('t', strtotime($prevMonthStart));
+$bucket3Limit = $bucket2Limit + (int)date('t', strtotime($prev2MonthStart));
 
 $sqlInvoiceAgg = "
 WITH latest_opening AS (
@@ -379,41 +367,80 @@ WITH latest_opening AS (
         GROUP BY customer_id
     ) x ON x.opening_id = cob.opening_id
 ),
+invoice_calc AS (
+    SELECT
+        di.invoice_no,
+        ROUND(COALESCE(SUM(
+            COALESCE(ds.qty_pack_shipping, 0) *
+            CASE
+                WHEN COALESCE(dso.price, 0) > 0
+                    THEN COALESCE(dso.price, 0)
+                WHEN COALESCE(dso.quantity_pack, 0) > 0
+                    THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                ELSE 0
+            END
+        ), 0), 0) AS gross
+    FROM det_invoice di
+    INNER JOIN hed_shipping hs
+        ON hs.shipping_no = di.shipping_no
+    INNER JOIN det_shipping ds
+        ON ds.shipping_no = di.shipping_no
+    LEFT JOIN detail_sales_order dso
+        ON dso.order_no = hs.order_no
+       AND dso.inventory_id = ds.inventory_id
+    GROUP BY di.invoice_no
+),
 pay_inv AS (
     SELECT
         db.invoice_no,
         SUM(
-            /*
-             * Cash mengikuti tanggal pembayaran (head_bayar.bayar_date).
-             * Titip mengikuti tanggal PEMAKAIAN titip, yaitu saat detail_bayar
-             * dibuat. Ini penting karena tanggal bayar bisa tetap memakai tanggal
-             * asal titip yang bahkan lebih lama daripada tanggal invoice.
-             */
             CASE
-                WHEN hb.bayar_date <= ? THEN
+                WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+                  OR (
+                        LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                    AND COALESCE(TRIM(db.return_id), '') <> ''
+                  )
+                THEN 0
+                ELSE
                     CASE
-                        WHEN COALESCE(db.cash_amount, 0) > 0 THEN COALESCE(db.cash_amount, 0)
-                        ELSE GREATEST(COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0), 0)
+                        WHEN hb.bayar_date <= ? THEN
+                            CASE
+                                WHEN COALESCE(db.cash_amount, 0) > 0
+                                    THEN COALESCE(db.cash_amount, 0)
+                                ELSE GREATEST(
+                                    COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
+                                    0
+                                )
+                            END
+                        ELSE 0
                     END
-                ELSE 0
-            END
-            +
-            CASE
-                WHEN DATE(COALESCE(db.date_created, hb.date_created, hb.bayar_date)) <= ?
-                THEN COALESCE(db.titip_amount, 0)
-                ELSE 0
+                    +
+                    CASE
+                        WHEN DATE(COALESCE(db.date_created, hb.date_created, hb.bayar_date)) <= ?
+                            THEN COALESCE(db.titip_amount, 0)
+                        ELSE 0
+                    END
             END
         ) AS paid_total
     FROM detail_bayar db
-    INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
-    WHERE (
-            hb.bayar_date <= ?
-         OR DATE(COALESCE(db.date_created, hb.date_created, hb.bayar_date)) <= ?
-    )
-      AND COALESCE(db.invoice_no, '') <> ''
+    INNER JOIN head_bayar hb
+        ON hb.bayar_no = db.bayar_no
+    WHERE COALESCE(db.invoice_no, '') <> ''
       AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
       AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
     GROUP BY db.invoice_no
+),
+return_inv AS (
+    SELECT
+        hri.invoice_no,
+        SUM(COALESCE(hri.return_amount, 0)) AS return_total
+    FROM head_retur_invoice hri
+    WHERE hri.return_date <= ?
+      AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+      AND COALESCE(hri.invoice_no, '') <> ''
+      AND UPPER(COALESCE(hri.invoice_no, '')) NOT LIKE '%CP-MCP%'
+      AND UPPER(COALESCE(hri.shipping_no, '')) NOT LIKE '%CP-MCP%'
+    GROUP BY hri.invoice_no
 ),
 inv_base AS (
     SELECT
@@ -422,20 +449,27 @@ inv_base AS (
         hi.invoice_date,
         DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days, 0) DAY) AS due_date,
         lo.opening_date,
-        $invoiceGrossExprSql AS gross,
-        COALESCE(pi.paid_total, 0) AS paid_total
+        COALESCE(ic.gross, 0) AS gross,
+        COALESCE(pi.paid_total, 0) AS paid_total,
+        COALESCE(ri.return_total, 0) AS return_total
     FROM head_invoice hi
     INNER JOIN m_customer mc
         ON mc.customer_id = hi.customer_id
        AND COALESCE(mc.is_active, 'Checked') = 'Checked'
-    LEFT JOIN latest_opening lo ON lo.customer_id = hi.customer_id
-    LEFT JOIN pay_inv pi ON pi.invoice_no = hi.invoice_no
+    LEFT JOIN latest_opening lo
+        ON lo.customer_id = hi.customer_id
+    LEFT JOIN invoice_calc ic
+        ON ic.invoice_no = hi.invoice_no
+    LEFT JOIN pay_inv pi
+        ON pi.invoice_no = hi.invoice_no
+    LEFT JOIN return_inv ri
+        ON ri.invoice_no = hi.invoice_no
     WHERE hi.invoice_date <= ?
       AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
 ";
 
-$invoiceAggParams = [$endDate, $endDate, $endDate, $endDate, $endDate, $endDate];
-$invoiceAggTypes = 'ssssss';
+$invoiceAggParams = [$previousDate, $endDate, $endDate, $endDate, $endDate];
+$invoiceAggTypes = 'sssss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
     $sqlInvoiceAgg .= " AND COALESCE(mc.area_code, '') = ? ";
@@ -454,7 +488,9 @@ if ($filterBy === 'grup' && $filterValue !== '') {
 $sqlInvoiceAgg .= "
 ),
 eligible AS (
-    SELECT *, (gross - paid_total) AS outstanding
+    SELECT
+        *,
+        (gross - paid_total - return_total) AS outstanding
     FROM inv_base
     WHERE opening_date IS NULL OR invoice_date > opening_date
 )
@@ -466,32 +502,34 @@ SELECT
     SUM(CASE
         WHEN outstanding < 0 THEN outstanding
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) > 90 THEN outstanding
+         AND DATEDIFF(?, due_date) > {$bucket3Limit} THEN outstanding
         ELSE 0 END
     ) AS b_lebih,
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) BETWEEN 61 AND 90 THEN outstanding
-        ELSE 0 END
+         AND DATEDIFF(?, due_date) > {$bucket2Limit}
+         AND DATEDIFF(?, due_date) <= {$bucket3Limit}
+        THEN outstanding ELSE 0 END
     ) AS b_61_90,
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) BETWEEN 31 AND 60 THEN outstanding
-        ELSE 0 END
+         AND DATEDIFF(?, due_date) > {$bucket1Days}
+         AND DATEDIFF(?, due_date) <= {$bucket2Limit}
+        THEN outstanding ELSE 0 END
     ) AS b_31_60,
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) BETWEEN 1 AND 30 THEN outstanding
-        ELSE 0 END
+         AND DATEDIFF(?, due_date) BETWEEN 1 AND {$bucket1Days}
+        THEN outstanding ELSE 0 END
     ) AS b_1_30,
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) <= 0 THEN outstanding
-        ELSE 0 END
+         AND DATEDIFF(?, due_date) <= 0
+        THEN outstanding ELSE 0 END
     ) AS belum_jatuh_tempo
 FROM eligible
 GROUP BY customer_id
@@ -505,7 +543,9 @@ $invoiceAggParams[] = $asOfDate;
 $invoiceAggParams[] = $asOfDate;
 $invoiceAggParams[] = $asOfDate;
 $invoiceAggParams[] = $asOfDate;
-$invoiceAggTypes .= 'ssssssss';
+$invoiceAggParams[] = $asOfDate;
+$invoiceAggParams[] = $asOfDate;
+$invoiceAggTypes .= 'ssssssssss';
 
 $stmtInvoiceAgg = mysqli_prepare($conn, $sqlInvoiceAgg);
 mysqli_stmt_bind_param($stmtInvoiceAgg, $invoiceAggTypes, ...$invoiceAggParams);
@@ -524,8 +564,13 @@ while ($r = mysqli_fetch_assoc($resInvoiceAgg)) {
 mysqli_stmt_close($stmtInvoiceAgg);
 
 /* ============================================================
- * 4. PEMBAYARAN / TITIP USED (AGREGASI PER CUSTOMER)
- * ============================================================ */
+ * 4. PEMBAYARAN CASH + TITIP TERPAKAI
+ * ============================================================
+ * Cash mengikuti head_bayar.bayar_date.
+ * Titip hanya mengurangi A/R ketika benar-benar DIPAKAI pada detail_bayar,
+ * dengan tanggal efektif date_created (fallback tanggal head_bayar).
+ * Titip masuk di detail_titip tidak mengurangi piutang.
+ */
 $sqlPayAgg = "
 WITH latest_opening AS (
     SELECT cob.customer_id, cob.opening_date, cob.opening_balance
@@ -547,17 +592,38 @@ pay_base AS (
         lo.opening_balance,
         db.invoice_no,
         db.opening_id,
-        UPPER(COALESCE(db.payment_source, 'INVOICE')) AS payment_source,
+        UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) AS payment_source,
         hi.invoice_date AS linked_invoice_date,
+
         CASE
-            WHEN COALESCE(db.cash_amount, 0) > 0 THEN COALESCE(db.cash_amount, 0)
-            ELSE GREATEST(COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0), 0)
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+              OR (
+                    LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                AND COALESCE(TRIM(db.return_id), '') <> ''
+              )
+            THEN 0
+            WHEN COALESCE(db.cash_amount, 0) > 0
+                THEN COALESCE(db.cash_amount, 0)
+            ELSE GREATEST(
+                COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
+                0
+            )
         END AS cash_raw,
-        COALESCE(db.titip_amount, 0) AS titip_raw,
+
+        CASE
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+              OR (
+                    LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                AND COALESCE(TRIM(db.return_id), '') <> ''
+              )
+            THEN 0
+            ELSE COALESCE(db.titip_amount, 0)
+        END AS titip_raw,
+
         CASE
             WHEN lo.opening_date IS NOT NULL
              AND (
-                    UPPER(COALESCE(db.payment_source, 'INVOICE')) = 'OPENING'
+                    UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
                  OR COALESCE(db.opening_id, 0) > 0
                  OR COALESCE(db.invoice_no, '') = ''
                  OR hi.invoice_date <= lo.opening_date
@@ -565,19 +631,25 @@ pay_base AS (
              ) THEN 1
             ELSE 0
         END AS is_opening_target,
+
         CASE
             WHEN lo.opening_date IS NULL
-             AND (COALESCE(db.invoice_no, '') = '' OR hi.invoice_no IS NULL) THEN 1
-            ELSE 0
+             AND (COALESCE(db.invoice_no, '') = '' OR hi.invoice_no IS NULL)
+            THEN 1 ELSE 0
         END AS is_orphan,
+
         CASE WHEN COALESCE(lo.opening_balance, 0) < 0 THEN -1 ELSE 1 END AS opening_sign
+
     FROM detail_bayar db
-    INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
+    INNER JOIN head_bayar hb
+        ON hb.bayar_no = db.bayar_no
     INNER JOIN m_customer mc
         ON mc.customer_id = hb.customer_id
        AND COALESCE(mc.is_active, 'Checked') = 'Checked'
-    LEFT JOIN latest_opening lo ON lo.customer_id = hb.customer_id
-    LEFT JOIN head_invoice hi ON hi.invoice_no = db.invoice_no
+    LEFT JOIN latest_opening lo
+        ON lo.customer_id = hb.customer_id
+    LEFT JOIN head_invoice hi
+        ON hi.invoice_no = db.invoice_no
     WHERE (
             hb.bayar_date <= ?
          OR DATE(COALESCE(db.date_created, hb.date_created, hb.bayar_date)) <= ?
@@ -586,7 +658,7 @@ pay_base AS (
       AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
 ";
 
-$payAggParams = [$endDate, $endDate, $endDate];
+$payAggParams = [$previousDate, $endDate, $endDate];
 $payAggTypes = 'sss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -608,7 +680,6 @@ $sqlPayAgg .= "
 SELECT
     customer_id,
 
-    /* Cash mengikuti tanggal bayar. */
     SUM(CASE
         WHEN cash_date < ?
          AND (opening_date IS NULL OR cash_date > opening_date)
@@ -616,7 +687,6 @@ SELECT
         ELSE 0 END
     ) AS pre_cash,
 
-    /* Titip mengikuti tanggal pemakaian, bukan tanggal asal titip. */
     SUM(CASE
         WHEN titip_date < ?
          AND (opening_date IS NULL OR titip_date > opening_date)
@@ -638,28 +708,34 @@ SELECT
         ELSE 0 END
     ) AS period_titip,
 
-    SUM(CASE WHEN is_opening_target = 1 THEN
-        (
-            CASE
-                WHEN cash_date <= ? AND (opening_date IS NULL OR cash_date > opening_date)
-                THEN cash_raw ELSE 0
-            END
-            +
-            CASE
-                WHEN titip_date <= ? AND (opening_date IS NULL OR titip_date > opening_date)
-                THEN titip_raw ELSE 0
-            END
-        ) * opening_sign
+    SUM(CASE
+        WHEN is_opening_target = 1 THEN
+            (
+                CASE
+                    WHEN cash_date <= ?
+                     AND (opening_date IS NULL OR cash_date > opening_date)
+                    THEN cash_raw * opening_sign ELSE 0
+                END
+                +
+                CASE
+                    WHEN titip_date <= ?
+                     AND (opening_date IS NULL OR titip_date > opening_date)
+                    THEN titip_raw * opening_sign ELSE 0
+                END
+            )
         ELSE 0 END
     ) AS opening_target_total,
 
-    SUM(CASE WHEN is_orphan = 1 THEN
-        (
-            CASE WHEN cash_date <= ? THEN cash_raw ELSE 0 END
-            + CASE WHEN titip_date <= ? THEN titip_raw ELSE 0 END
-        )
+    SUM(CASE
+        WHEN is_orphan = 1 THEN
+            (
+                CASE WHEN cash_date <= ? THEN cash_raw ELSE 0 END
+                +
+                CASE WHEN titip_date <= ? THEN titip_raw ELSE 0 END
+            )
         ELSE 0 END
     ) AS orphan_total
+
 FROM pay_base
 GROUP BY customer_id
 ";
@@ -680,6 +756,7 @@ $stmtPayAgg = mysqli_prepare($conn, $sqlPayAgg);
 mysqli_stmt_bind_param($stmtPayAgg, $payAggTypes, ...$payAggParams);
 mysqli_stmt_execute($stmtPayAgg);
 $resPayAgg = mysqli_stmt_get_result($stmtPayAgg);
+
 while ($r = mysqli_fetch_assoc($resPayAgg)) {
     $cid = trim((string)($r['customer_id'] ?? ''));
     if (!isset($calc[$cid])) {
@@ -692,9 +769,15 @@ while ($r = mysqli_fetch_assoc($resPayAgg)) {
 mysqli_stmt_close($stmtPayAgg);
 
 /* ============================================================
- * 5. RETUR (AGREGASI PER CUSTOMER)
+ * 5. RETUR
  * ============================================================
- * Retur tetap ditempatkan sebagai MINUS pada bucket Lebih.
+ * Retur periode tetap mengurangi kolom PENJUALAN.
+ * Untuk bucket:
+ * - retur normal yang terhubung invoice post-opening sudah mengurangi outstanding
+ *   invoice pada CTE return_inv di atas;
+ * - retur CP-MCP / orphan / retur terhadap invoice historis yang sudah tercakup
+ *   opening tidak memiliki invoice eligible untuk ditempati, sehingga efek kreditnya
+ *   ditempatkan pada bucket Lebih sebagai credit balance, BUKAN sebagai "bucket retur".
  */
 $sqlReturnAgg = "
 WITH latest_opening AS (
@@ -707,27 +790,45 @@ WITH latest_opening AS (
           AND opening_date <= ?
         GROUP BY customer_id
     ) x ON x.opening_id = cob.opening_id
-), ret_base AS (
+),
+ret_base AS (
     SELECT
         hri.customer_id,
         hri.return_date,
+        hri.invoice_no,
+        hri.shipping_no,
         lo.opening_date,
+        hi_ret.invoice_date AS linked_invoice_date,
         CASE
             WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
               OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
             THEN COALESCE(hri.grand_total, 0)
             ELSE COALESCE(hri.return_amount, 0)
-        END AS return_value
+        END AS return_value,
+        CASE
+            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+              OR COALESCE(hri.invoice_no, '') = ''
+              OR hi_ret.invoice_no IS NULL
+              OR (
+                    lo.opening_date IS NOT NULL
+                AND hi_ret.invoice_date <= lo.opening_date
+              )
+            THEN 1 ELSE 0
+        END AS is_bucket_credit
     FROM head_retur_invoice hri
     INNER JOIN m_customer mc
         ON mc.customer_id = hri.customer_id
        AND COALESCE(mc.is_active, 'Checked') = 'Checked'
-    LEFT JOIN latest_opening lo ON lo.customer_id = hri.customer_id
+    LEFT JOIN latest_opening lo
+        ON lo.customer_id = hri.customer_id
+    LEFT JOIN head_invoice hi_ret
+        ON hi_ret.invoice_no = hri.invoice_no
     WHERE hri.return_date <= ?
       AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
 ";
 
-$returnAggParams = [$endDate, $endDate];
+$returnAggParams = [$previousDate, $endDate];
 $returnAggTypes = 'ss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -745,7 +846,8 @@ if ($filterBy === 'grup' && $filterValue !== '') {
 }
 
 $sqlReturnAgg .= "
-), applicable AS (
+),
+applicable AS (
     SELECT *
     FROM ret_base
     WHERE opening_date IS NULL OR return_date > opening_date
@@ -754,7 +856,7 @@ SELECT
     customer_id,
     SUM(CASE WHEN return_date < ? THEN return_value ELSE 0 END) AS pre_return,
     SUM(CASE WHEN return_date BETWEEN ? AND ? THEN return_value ELSE 0 END) AS period_return,
-    SUM(return_value) AS total_return
+    SUM(CASE WHEN is_bucket_credit = 1 THEN return_value ELSE 0 END) AS bucket_credit_return
 FROM applicable
 GROUP BY customer_id
 ";
@@ -768,12 +870,13 @@ $stmtReturnAgg = mysqli_prepare($conn, $sqlReturnAgg);
 mysqli_stmt_bind_param($stmtReturnAgg, $returnAggTypes, ...$returnAggParams);
 mysqli_stmt_execute($stmtReturnAgg);
 $resReturnAgg = mysqli_stmt_get_result($stmtReturnAgg);
+
 while ($r = mysqli_fetch_assoc($resReturnAgg)) {
     $cid = trim((string)($r['customer_id'] ?? ''));
     if (!isset($calc[$cid])) {
         continue;
     }
-    foreach (['pre_return','period_return','total_return'] as $k) {
+    foreach (['pre_return','period_return','bucket_credit_return'] as $k) {
         $calc[$cid][$k] = (float)($r[$k] ?? 0);
     }
 }
@@ -787,40 +890,34 @@ foreach ($masterCustomers as $cid => $m) {
     $hasOpening = isset($openingMap[$cid]);
     $openingBalance = $hasOpening ? (float)$openingMap[$cid]['opening_balance'] : 0.0;
 
+    /*
+     * STRICT MONTHLY CARRY-FORWARD
+     * ----------------------------------------------------------
+     * Semua mutasi sebelum tanggal 1 bulan laporan menjadi Saldo Awal.
+     * Kolom bulan berjalan hanya menerima transaksi startDate..endDate.
+     */
     if ($hasOpening) {
-        // Normal: base migrasi + seluruh mutasi setelah opening hingga H-1.
+        // Base migrasi + mutasi SETELAH opening sampai H-1.
         $saldoAwal =
             $openingBalance
             + $c['pre_invoice']
             - $c['pre_return']
             - $c['pre_cash']
             - $c['pre_titip'];
-
-        $periodInvoice = $c['period_invoice'];
-        $periodCash = $c['period_cash'];
-        $periodTitip = $c['period_titip'];
-        $periodReturn = $c['period_return'];
-    } elseif ($isInitialMigrationPeriod) {
-        // Rule khusus periode migrasi pertama: MARDI dan customer tanpa opening
-        // tetap menampilkan invoice legacy sebagai Penjualan, bukan Saldo Awal.
-        $saldoAwal = 0.0;
-        $periodInvoice = $c['pre_invoice'] + $c['period_invoice'];
-        $periodCash = $c['pre_cash'] + $c['period_cash'];
-        $periodTitip = $c['pre_titip'] + $c['period_titip'];
-        $periodReturn = $c['pre_return'] + $c['period_return'];
     } else {
-        // Bulan setelah migrasi: ending bulan lalu menjadi opening bulan ini.
+        // Tanpa base migrasi: seluruh histori sebelum bulan laporan = Saldo Awal.
         $saldoAwal =
             $c['pre_invoice']
             - $c['pre_return']
             - $c['pre_cash']
             - $c['pre_titip'];
-
-        $periodInvoice = $c['period_invoice'];
-        $periodCash = $c['period_cash'];
-        $periodTitip = $c['period_titip'];
-        $periodReturn = $c['period_return'];
     }
+
+    // Mutasi yang TAMPIL selalu hanya transaksi bulan yang sedang difilter.
+    $periodInvoice = $c['period_invoice'];
+    $periodCash = $c['period_cash'];
+    $periodTitip = $c['period_titip'];
+    $periodReturn = $c['period_return'];
 
     $penjualanNeto = $periodInvoice - $periodReturn;
     $akhir = $saldoAwal + $penjualanNeto - $periodCash - $periodTitip;
@@ -837,14 +934,16 @@ foreach ($masterCustomers as $cid => $m) {
     // Pembayaran orphan tanpa invoice menjadi kredit di Lebih.
     $bLebih -= $c['orphan_total'];
 
-    // Sesuai rule bisnis: seluruh retur tampil minus pada Lebih.
-    $bLebih -= $c['total_return'];
+    // Retur hanya masuk ke Lebih bila tidak memiliki invoice eligible
+    // (CP-MCP/orphan/historical opening). Ini diperlakukan sebagai credit balance,
+    // bukan sebagai "bucket retur".
+    $bLebih -= $c['bucket_credit_return'];
 
     $amounts = initAmountRow();
     $amounts['saldo_awal'] = $saldoAwal;
     $amounts['penjualan'] = $penjualanNeto;
     $amounts['bayar'] = $periodCash;
-    $amounts['titip_used'] = $periodTitip;
+    $amounts['titip_used'] = $periodTitip; // TITIP yang benar-benar dipakai pada periode
     $amounts['retur'] = $periodReturn;
     $amounts['akhir'] = $akhir;
     $amounts['b_1_30'] = $c['b_1_30'];
@@ -1021,7 +1120,7 @@ Setting Epson LQ-2190: pilih <strong>US Std Fanfold</strong>, ukuran <strong>14 
 <div class="printed">Dicetak: <?= h($printedAt) ?></div>
 <table>
 <thead><tr>
-<th>No</th><th><?= h($labelColumn) ?></th><th>Saldo Awal</th><th>Penjualan</th><th>Pembayaran</th><th>Titip</th><th>Saldo Akhir</th><th>1 - 30 Hari</th><th>31 - 60 Hari</th><th>61 - 90 Hari</th><th>Lebih / Retur</th><th>Belum Jatuh Tempo</th>
+<th>No</th><th><?= h($labelColumn) ?></th><th>Saldo Awal</th><th>Penjualan</th><th>Pembayaran</th><th>Titip</th><th>Saldo Akhir</th><th>1 - 30 Hari</th><th>31 - 60 Hari</th><th>61 - 90 Hari</th><th>Lebih</th><th>Belum Jatuh Tempo</th>
 </tr></thead>
 <tbody>
 <?php if (empty($rows)): ?>
@@ -1051,7 +1150,7 @@ Setting Epson LQ-2190: pilih <strong>US Std Fanfold</strong>, ukuran <strong>14 
 <section class="print-page">
 <div class="title"><?= h($title) ?></div><div class="subtitle"><?= h($subtitle) ?></div><div class="printed">Dicetak: <?= h($printedAt) ?> | Halaman <?= $pageIndex+1 ?> / <?= $pageCount ?></div>
 <table><thead><tr>
-<th>No</th><th><?= h($labelColumn) ?></th><th>Saldo Awal</th><th>Penjualan</th><th>Pembayaran</th><th>Titip</th><th>Saldo Akhir</th><th>1 - 30 Hari</th><th>31 - 60 Hari</th><th>61 - 90 Hari</th><th>Lebih / Retur</th><th>Belum Jatuh Tempo</th>
+<th>No</th><th><?= h($labelColumn) ?></th><th>Saldo Awal</th><th>Penjualan</th><th>Pembayaran</th><th>Titip</th><th>Saldo Akhir</th><th>1 - 30 Hari</th><th>31 - 60 Hari</th><th>61 - 90 Hari</th><th>Lebih</th><th>Belum Jatuh Tempo</th>
 </tr></thead><tbody>
 <?php if (empty($pageRows)): ?>
 <tr><td colspan="12" class="text-center">Tidak ada data aging piutang untuk filter ini.</td></tr>

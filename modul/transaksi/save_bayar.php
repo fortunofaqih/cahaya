@@ -21,6 +21,8 @@
 // - Titip uang dialokasikan terlebih dahulu, sisanya Cash/Transfer.
 // - Retur dipilih standalone berdasarkan Customer, hanya boleh dipakai satu kali, dan MENGURANGI total tagihan yang harus dibayar.
 // - Setelah semua detail tersimpan, status/payment_balance setiap invoice dihitung ulang.
+// - Semua nominal pembayaran dinormalisasi ke Rupiah penuh (PHP_ROUND_HALF_UP).
+// - sisa_after disimpan sebagai histori, bukan source of truth outstanding.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -101,6 +103,10 @@ function parseNumber($value) {
     return is_numeric($value)
         ? (float)$value
         : 0.0;
+}
+
+function roundPaymentMoney($value): float {
+    return (float) round((float)$value, 0, PHP_ROUND_HALF_UP);
 }
 
 function generateBayarNo($conn) {
@@ -368,12 +374,15 @@ function getShippingPaymentData(
             MAX(di.shipping_date) AS shipping_date,
             MAX(di.order_no) AS order_no,
 
-            SUM(
-                CASE
-                    WHEN COALESCE(di.total, 0) > 0
-                        THEN COALESCE(di.total, 0)
-                    ELSE COALESCE(di.subtotal, 0)
-                END
+            ROUND(
+                SUM(
+                    CASE
+                        WHEN COALESCE(di.total, 0) > 0
+                            THEN COALESCE(di.total, 0)
+                        ELSE COALESCE(di.subtotal, 0)
+                    END
+                ),
+                0
             ) AS shipping_amount,
 
             (
@@ -544,15 +553,28 @@ function getShippingPaymentData(
     $row['return_used'] = $returnUsed;
 
     /*
-     * SISA EFEKTIF:
-     * shipping_amount - pembayaran - retur terpakai
+     * SISA EFEKTIF existing:
+     * shipping_amount - pembayaran - retur terpakai.
      */
-    $row['sisa_shipping'] = max(
-        (float)$row['shipping_amount']
-        - $paidAmount
-        - $returnUsed,
-        0
+    $baseSisaShipping = roundPaymentMoney(
+        max(
+            (float)$row['shipping_amount']
+            - $paidAmount
+            - $returnUsed,
+            0
+        )
     );
+
+    /*
+     * SOURCE OF TRUTH OUTSTANDING:
+     * nilai resmi invoice/shipping dari det_invoice
+     * - pembayaran aktual
+     * - retur terpakai.
+     *
+     * sisa_after tetap disimpan sebagai snapshot histori transaksi,
+     * tetapi tidak lagi menjadi pembatas outstanding berikutnya.
+     */
+    $row['sisa_shipping'] = $baseSisaShipping;
 
     return $row;
 }
@@ -642,15 +664,44 @@ function getOpeningPaymentData(
 
     mysqli_stmt_close($stmtPaid);
 
-    $openingBalance = (float)($row['opening_balance'] ?? 0);
-    $paidAmount = (float)($paidRow['paid_amount'] ?? 0);
+    $openingBalance = roundPaymentMoney(
+        (float)($row['opening_balance'] ?? 0)
+    );
+    $paidAmount = roundPaymentMoney(
+        (float)($paidRow['paid_amount'] ?? 0)
+    );
 
     $row['paid_amount'] = $paidAmount;
     $row['opening_sign'] = $openingBalance < 0 ? -1 : 1;
-    $row['sisa_opening'] = max(
+
+    $baseSisaOpening = max(
         abs($openingBalance) - $paidAmount,
         0
     );
+
+    /* Sama seperti invoice: hormati settlement terakhir dari sisa_after. */
+    $stmtLatestOpening = mysqli_prepare(
+        $conn,
+        "SELECT sisa_after
+         FROM detail_bayar
+         WHERE payment_source = 'OPENING'
+           AND opening_id = ?
+         ORDER BY id DESC
+         LIMIT 1
+         FOR UPDATE"
+    );
+
+    mysqli_stmt_bind_param($stmtLatestOpening, 'i', $openingId);
+    mysqli_stmt_execute($stmtLatestOpening);
+    $latestOpeningRow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtLatestOpening));
+    mysqli_stmt_close($stmtLatestOpening);
+
+    if ($latestOpeningRow && $latestOpeningRow['sisa_after'] !== null) {
+        $latestSisaAfter = max((float)$latestOpeningRow['sisa_after'], 0);
+        $row['sisa_opening'] = min($baseSisaOpening, $latestSisaAfter);
+    } else {
+        $row['sisa_opening'] = $baseSisaOpening;
+    }
 
     return $row;
 }
@@ -846,12 +897,11 @@ function validateSelectedReturnByCustomer(
     }
 
     $returnAmount =
-        round(
+        roundPaymentMoney(
             (float)(
                 $row['effective_return_amount']
                 ?? 0
-            ),
-            2
+            )
         );
 
     if ($returnAmount <= 0.0001) {
@@ -939,13 +989,21 @@ function updateInvoicePaymentStatus(
 
     mysqli_stmt_close($stmt);
 
-    $invoiceAmount = (float)($row['invoice_amount'] ?? 0);
-    $invoicePaid = (float)($row['paid_amount'] ?? 0);
-    $invoiceRetur = (float)($row['return_amount'] ?? 0);
+    $invoiceAmount = roundPaymentMoney(
+        (float)($row['invoice_amount'] ?? 0)
+    );
+    $invoicePaid = roundPaymentMoney(
+        (float)($row['paid_amount'] ?? 0)
+    );
+    $invoiceRetur = roundPaymentMoney(
+        (float)($row['return_amount'] ?? 0)
+    );
 
-    $invoiceBalance = max(
-        $invoiceAmount - $invoicePaid - $invoiceRetur,
-        0
+    $invoiceBalance = roundPaymentMoney(
+        max(
+            $invoiceAmount - $invoicePaid - $invoiceRetur,
+            0
+        )
     );
 
     if ($invoiceBalance <= 0.0001) {
@@ -1021,9 +1079,11 @@ $returnId =
 
 
 $nominalBayar =
-    parseNumber(
-        $_POST['nominal_bayar']
-        ?? 0
+    roundPaymentMoney(
+        parseNumber(
+            $_POST['nominal_bayar']
+            ?? 0
+        )
     );
 
 $pakaiTitip =
@@ -1036,15 +1096,19 @@ $pakaiTitip =
 
 $nominalTitip =
     $pakaiTitip
-        ? parseNumber(
-            $_POST['nominal_titip']
-            ?? 0
+        ? roundPaymentMoney(
+            parseNumber(
+                $_POST['nominal_titip']
+                ?? 0
+            )
         )
         : 0.0;
 
 $totalBayar =
-    $nominalBayar +
-    $nominalTitip;
+    roundPaymentMoney(
+        $nominalBayar +
+        $nominalTitip
+    );
 
 $keterangan =
     trim(
@@ -1166,11 +1230,14 @@ foreach (
             );
         }
 
-        $payNow = parseNumber($item['pay_now'] ?? 0);
-
-        if ($payNow < 0) {
-            redirectWithAlert('error', 'Nilai Bayar Sekarang saldo awal tidak boleh negatif.', 'add_bayar');
-        }
+        /*
+         * Untuk OPENING, tanda pay_now divalidasi lagi terhadap opening_balance
+         * dari database di dalam transaksi. Saldo Awal (-) memang boleh
+         * membawa nilai negatif karena merupakan kredit customer.
+         */
+        $payNow = roundPaymentMoney(
+            parseNumber($item['pay_now'] ?? 0)
+        );
 
         $selectedPosted[$key] = [
             'source' => 'OPENING',
@@ -1246,7 +1313,9 @@ foreach (
         );
     }
 
-    $payNow = parseNumber($item['pay_now'] ?? 0);
+    $payNow = roundPaymentMoney(
+        parseNumber($item['pay_now'] ?? 0)
+    );
 
     if ($payNow < 0) {
         redirectWithAlert('error', 'Nilai Bayar Sekarang invoice tidak boleh negatif.', 'add_bayar');
@@ -1339,16 +1408,49 @@ try {
                 );
             }
 
-            $payNow = round((float)($posted['pay_now'] ?? 0), 2);
+            $payNow = roundPaymentMoney(
+                (float)($posted['pay_now'] ?? 0)
+            );
 
-            if ($payNow > $sisaOpening + 0.01) {
-                throw new Exception(
-                    'Bayar Sekarang untuk Saldo Awal melebihi sisa. Sisa: Rp ' .
-                    number_format($sisaOpening, 2, ',', '.')
-                );
+            $openingSign = (int)($opening['opening_sign'] ?? 1);
+
+            if ($openingSign < 0) {
+                /*
+                 * Saldo Awal (-) adalah kredit customer:
+                 * - nilai transaksi harus tetap negatif;
+                 * - batas pemakaian memakai magnitudo sisa kredit.
+                 */
+                if ($payNow > 0.01) {
+                    throw new Exception(
+                        'Bayar Sekarang untuk Saldo Awal (-) / Kredit harus bernilai minus.'
+                    );
+                }
+
+                if (abs($payNow) > $sisaOpening + 0.01) {
+                    throw new Exception(
+                        'Pemakaian Saldo Awal (-) melebihi sisa kredit. Sisa kredit: Rp ' .
+                        number_format($sisaOpening, 2, ',', '.')
+                    );
+                }
+
+                $selectedTotal -= $sisaOpening;
+            } else {
+                if ($payNow < -0.01) {
+                    throw new Exception(
+                        'Bayar Sekarang untuk Saldo Awal (+) tidak boleh negatif.'
+                    );
+                }
+
+                if ($payNow > $sisaOpening + 0.01) {
+                    throw new Exception(
+                        'Bayar Sekarang untuk Saldo Awal melebihi sisa. Sisa: Rp ' .
+                        number_format($sisaOpening, 2, ',', '.')
+                    );
+                }
+
+                $selectedTotal += $sisaOpening;
             }
 
-            $selectedTotal += $sisaOpening;
             $requestedPaymentTotal += $payNow;
 
             $validItems[] = [
@@ -1405,7 +1507,9 @@ try {
             );
         }
 
-        $payNow = round((float)($posted['pay_now'] ?? 0), 2);
+        $payNow = roundPaymentMoney(
+                (float)($posted['pay_now'] ?? 0)
+            );
 
         if ($payNow > $sisaShipping + 0.01) {
             throw new Exception(
@@ -1454,8 +1558,9 @@ try {
     |--------------------------------------------------------------------------
     | VALIDASI ARAH TRANSAKSI OPENING
     |--------------------------------------------------------------------------
-    | Opening negatif adalah kredit/lebih customer dan diproses tersendiri.
-    | Tidak boleh dicampur invoice/opening positif, retur, atau titip.
+    | Opening negatif adalah kredit/lebih customer dan BOLEH mengurangi
+    | Invoice / Opening positif dalam transaksi yang sama.
+    | Rule existing tetap: tidak digabung dengan retur atau titip.
     |--------------------------------------------------------------------------
     */
     $hasNegativeOpening = false;
@@ -1472,12 +1577,6 @@ try {
         }
     }
 
-    if ($hasNegativeOpening && $hasPositiveDebtItem) {
-        throw new Exception(
-            'Saldo Awal (-) / Kredit harus diproses tersendiri dan tidak boleh digabung dengan Invoice atau Saldo Awal (+).'
-        );
-    }
-
     if ($hasNegativeOpening && $returnId !== '') {
         throw new Exception(
             'Saldo Awal (-) / Kredit tidak boleh digabung dengan Retur Customer.'
@@ -1489,6 +1588,18 @@ try {
             'Saldo Awal (-) / Kredit tidak boleh diselesaikan menggunakan Titip Uang.'
         );
     }
+
+    /*
+     * Saldo Awal (-) standalone:
+     * - hanya ada item OPENING negatif;
+     * - tidak ada Invoice / Saldo Awal (+);
+     * - bukan proses netting ke piutang positif.
+     *
+     * Rule netting lama tetap berlaku bila kredit digabung dengan item positif.
+     */
+    $isNegativeOpeningStandalone =
+        $hasNegativeOpening &&
+        !$hasPositiveDebtItem;
 
     /*
     |--------------------------------------------------------------------------
@@ -1513,13 +1624,25 @@ try {
             );
     }
 
-    $selectedTotal = round($selectedTotal, 2);
-    $requestedPaymentTotal = round($requestedPaymentTotal, 2);
+    $selectedTotal = roundPaymentMoney($selectedTotal);
+    $requestedPaymentTotal = roundPaymentMoney($requestedPaymentTotal);
+
+    /*
+     * Kredit Saldo Awal (-) tidak boleh dipakai melebihi nilai piutang
+     * yang sedang diselesaikan. Nilai net Bayar Sekarang minimal Rp 0.
+     */
+    if (
+        !$isNegativeOpeningStandalone &&
+        $requestedPaymentTotal < -0.01
+    ) {
+        throw new Exception(
+            'Pemakaian Saldo Awal (-) / Kredit melebihi nilai Invoice / Saldo Awal (+) yang diselesaikan.'
+        );
+    }
 
     $selectedReturnAmount =
-        round(
-            $selectedReturnAmount,
-            2
+        roundPaymentMoney(
+            $selectedReturnAmount
         );
 
     /*
@@ -1535,48 +1658,58 @@ try {
         );
 
     $netPayable =
-        round(
-            $netPayable,
-            2
+        roundPaymentMoney(
+            $netPayable
         );
 
-    $totalBayar = round($totalBayar, 2);
+    $totalBayar = roundPaymentMoney($totalBayar);
 
     /*
-     * Nominal Cash/Transfer + Titip wajib sama dengan total Bayar Sekarang
-     * yang diketik user per item. Server tidak lagi mengalokasikan berdasarkan
-     * urutan item secara otomatis.
+     * Bayar Sekarang = nilai piutang yang ingin diselesaikan.
+     * Retur terlebih dahulu menjadi komponen penyelesaian.
+     * Sisanya wajib sama dengan Cash/Transfer + Titip.
      */
-    if (abs($totalBayar - $requestedPaymentTotal) > 0.01) {
+    $returnAppliedToPayment = min(
+        $selectedReturnAmount,
+        $requestedPaymentTotal
+    );
+
+    $requiredCashTitip = max(
+        $requestedPaymentTotal - $returnAppliedToPayment,
+        0
+    );
+
+    $returnAppliedToPayment = roundPaymentMoney($returnAppliedToPayment);
+    $requiredCashTitip = roundPaymentMoney($requiredCashTitip);
+
+    if (abs($totalBayar - $requiredCashTitip) > 0.01) {
         throw new Exception(
-            'Total Cash/Transfer + Titip harus sama dengan total Bayar Sekarang per item. ' .
+            'Total Cash/Transfer + Titip harus sama dengan sisa pembayaran setelah Retur. ' .
             'Bayar Sekarang: Rp ' . number_format($requestedPaymentTotal, 2, ',', '.') .
+            ' | Retur Dipakai: Rp ' . number_format($returnAppliedToPayment, 2, ',', '.') .
+            ' | Harus Cash/Titip: Rp ' . number_format($requiredCashTitip, 2, ',', '.') .
             ' | Cash/Titip: Rp ' . number_format($totalBayar, 2, ',', '.')
         );
     }
 
     /*
     |--------------------------------------------------------------------------
-    | VALIDASI TOTAL SETELAH RETUR - SUPPORT PEMBAYARAN PARSIAL
+    | VALIDASI BAYAR SEKARANG - SUPPORT PEMBAYARAN PARSIAL
     |--------------------------------------------------------------------------
-    | Total Cash + Titip boleh lebih kecil dari netPayable.
-    | Yang tidak diperbolehkan adalah pembayaran melebihi sisa tagihan.
+    | Bayar Sekarang tidak boleh melebihi total sisa piutang terpilih.
+    | Retur tidak menurunkan batas Bayar Sekarang; retur hanya menurunkan
+    | kebutuhan Cash/Transfer + Titip.
     */
-    if ($requestedPaymentTotal > $netPayable + 0.01) {
+    if ($requestedPaymentTotal > $selectedTotal + 0.01) {
         throw new Exception(
-            'Total bayar tidak boleh melebihi total tagihan setelah dikurangi Retur. ' .
-            'Total tagihan: Rp ' .
-            number_format($selectedTotal, 2, ',', '.') .
-            ' | Retur: Rp ' .
-            number_format($selectedReturnAmount, 2, ',', '.') .
-            ' | Maksimal pembayaran: Rp ' .
-            number_format($netPayable, 2, ',', '.') .
-            ' | Total bayar: Rp ' .
-            number_format($totalBayar, 2, ',', '.')
+            'Total Bayar Sekarang tidak boleh melebihi total sisa tagihan terpilih. ' .
+            'Total tagihan: Rp ' . number_format($selectedTotal, 2, ',', '.') .
+            ' | Bayar Sekarang: Rp ' . number_format($requestedPaymentTotal, 2, ',', '.')
         );
     }
 
     if (
+        !$isNegativeOpeningStandalone &&
         $requestedPaymentTotal <= 0.0001 &&
         $netPayable > 0.0001 &&
         $returnId === ''
@@ -1588,8 +1721,11 @@ try {
 
     /*
      * Jika net payable Rp 0 karena Retur, transaksi tetap boleh disimpan.
+     * Saldo Awal (-) standalone juga sah tanpa Retur karena ini adalah
+     * penyelesaian kredit opening, bukan pembayaran invoice bernilai Rp 0.
      */
     if (
+        !$isNegativeOpeningStandalone &&
         $netPayable <= 0.0001 &&
         $returnId === ''
     ) {
@@ -1597,6 +1733,17 @@ try {
             'Pembayaran Rp 0,00 hanya dapat disimpan jika No. Retur dipilih.'
         );
     }
+
+    /*
+     * Untuk transaksi retur-only, head_bayar.total_bayar menyimpan nilai
+     * retur (positif) agar transaksi tidak lagi tercatat Rp 0,00. Nilai cash,
+     * titip, dan detail_bayar.bayar_amount tetap Rp 0,00 supaya retur tidak
+     * pernah terhitung sebagai penerimaan uang.
+     */
+    $storedTotalBayar =
+        empty($validItems) && $returnId !== ''
+            ? $selectedReturnAmount
+            : $totalBayar;
 
     /*
     |--------------------------------------------------------------------------
@@ -1699,7 +1846,7 @@ try {
         $customerName,
         $customerAddress,
         $customerCity,
-        $totalBayar,
+        $storedTotalBayar,
         $keterangan,
         $bankName,
         $remarks,
@@ -1731,6 +1878,33 @@ try {
 
     $remainingCash =
         $nominalBayar;
+
+    /*
+     * Total Saldo Awal (-) yang dipakai berfungsi sebagai kredit internal
+     * untuk membiayai settlement item positif. Kredit ini bukan Cash/Titip.
+     */
+    $remainingOpeningCreditForPayment = 0.0;
+
+    /*
+     * Kredit opening hanya perlu dialokasikan ke item positif bila memang
+     * sedang dipakai untuk netting. Untuk Saldo Awal (-) standalone,
+     * kredit tersebut diselesaikan pada baris OPENING-nya sendiri dan
+     * tidak boleh dianggap sebagai alokasi yang masih harus dihabiskan.
+     */
+    if (!$isNegativeOpeningStandalone) {
+        foreach ($validItems as $creditItem) {
+            if (
+                ($creditItem['source'] ?? 'INVOICE') === 'OPENING' &&
+                (int)($creditItem['opening_sign'] ?? 1) < 0
+            ) {
+                $remainingOpeningCreditForPayment +=
+                    abs(roundPaymentMoney((float)($creditItem['pay_now'] ?? 0)));
+            }
+        }
+    }
+
+    $remainingOpeningCreditForPayment =
+        roundPaymentMoney($remainingOpeningCreditForPayment);
 
     $stmtDetail =
         mysqli_prepare(
@@ -1784,47 +1958,126 @@ try {
         as $item
     ) {
         $sisaBefore =
-            round(
+            roundPaymentMoney(
                 (float)$item[
                     'sisa_before'
-                ],
-                2
+                ]
             );
 
         /*
-         * Nilai pembayaran detail berasal langsung dari kolom Bayar Sekarang.
-         * Tidak lagi bergantung pada urutan invoice / saldo awal yang dipilih.
+         * pay_now = nilai settlement pada item.
+         *
+         * OPENING (-):
+         * - tetap disimpan negatif pada bayar_amount;
+         * - tidak menggunakan Cash/Titip;
+         * - magnitudonya mengurangi sisa kredit opening.
+         *
+         * Item positif:
+         * - Retur tetap mengikuti algoritma existing;
+         * - Saldo Awal (-) menjadi kredit internal yang mengurangi kebutuhan
+         *   Cash/Titip tetapi TIDAK mengurangi nilai settlement invoice.
+         *   Dengan demikian status/balance invoice tetap benar.
          */
-        $detailAmount = round((float)($item['pay_now'] ?? 0), 2);
+        $requestedDetailSettlement = roundPaymentMoney(
+            (float)($item['pay_now'] ?? 0)
+        );
+        $isNegativeOpening =
+            ($item['source'] ?? 'INVOICE') === 'OPENING' &&
+            (int)($item['opening_sign'] ?? 1) < 0;
 
-        if ($detailAmount < -0.01 || $detailAmount > $sisaBefore + 0.01) {
-            throw new Exception('Nilai Bayar Sekarang per item tidak valid.');
-        }
+        if ($isNegativeOpening) {
+            if (
+                $requestedDetailSettlement > 0.01 ||
+                abs($requestedDetailSettlement) > $sisaBefore + 0.01
+            ) {
+                throw new Exception('Nilai Saldo Awal (-) per item tidak valid.');
+            }
 
-        $detailTitip =
-            min(
-                $remainingTitip,
+            $detailReturnApplied = 0.0;
+            $detailOpeningCreditApplied = 0.0;
+            $detailTitip = 0.0;
+            $detailCash = 0.0;
+
+            /*
+             * Simpan tetap MINUS agar arah saldo awal tidak berubah menjadi plus.
+             */
+            $detailAmount = $requestedDetailSettlement;
+
+            $sisaAfter = max(
+                $sisaBefore - abs($requestedDetailSettlement),
+                0
+            );
+        } else {
+            if (
+                $requestedDetailSettlement < -0.01 ||
+                $requestedDetailSettlement > $sisaBefore + 0.01
+            ) {
+                throw new Exception('Nilai Bayar Sekarang per item tidak valid.');
+            }
+
+            $detailReturnApplied = 0.0;
+
+            if (!$returnStored && $returnId !== '') {
+                $detailReturnApplied = min(
+                    $selectedReturnAmount,
+                    $requestedDetailSettlement,
+                    $sisaBefore
+                );
+            }
+
+            /*
+             * bayar_amount tetap merepresentasikan settlement invoice setelah
+             * retur. Kredit opening tidak dikurangkan dari bayar_amount karena
+             * kredit tersebut harus ikut menutup balance invoice.
+             */
+            $detailAmount = max(
+                $requestedDetailSettlement - $detailReturnApplied,
+                0
+            );
+
+            $detailAmount = roundPaymentMoney($detailAmount);
+
+            $detailOpeningCreditApplied = min(
+                $remainingOpeningCreditForPayment,
                 $detailAmount
             );
 
-        $detailCash =
-            $detailAmount -
-            $detailTitip;
+            $moneyNeeded = max(
+                $detailAmount - $detailOpeningCreditApplied,
+                0
+            );
 
-        if (
-            $detailCash >
-            $remainingCash + 0.01
-        ) {
-            throw new Exception(
-                'Alokasi pembayaran cash/transfer tidak mencukupi.'
+            $remainingOpeningCreditForPayment -=
+                $detailOpeningCreditApplied;
+
+            if (abs($remainingOpeningCreditForPayment) < 0.0001) {
+                $remainingOpeningCreditForPayment = 0;
+            }
+
+            $detailTitip = min(
+                $remainingTitip,
+                $moneyNeeded
+            );
+
+            $detailCash = $moneyNeeded - $detailTitip;
+
+            if ($detailCash > $remainingCash + 0.01) {
+                throw new Exception(
+                    'Alokasi pembayaran cash/transfer tidak mencukupi.'
+                );
+            }
+
+            $remainingTitip -=
+                $detailTitip;
+
+            $remainingCash -=
+                $detailCash;
+
+            $sisaAfter = max(
+                $sisaBefore - $requestedDetailSettlement,
+                0
             );
         }
-
-        $remainingTitip -=
-            $detailTitip;
-
-        $remainingCash -=
-            $detailCash;
 
         if (
             abs(
@@ -1845,32 +2098,23 @@ try {
         $detailRemarks = $remarks;
 
         $detailReturnId = '';
-        $detailReturnApplied = 0.0;
 
         if (
             !$returnStored &&
             $returnId !== ''
         ) {
             $detailReturnId = $returnId;
-
-            /*
-             * return_id secara schema disimpan satu kali pada detail pertama.
-             * sisa_after dibuat konsisten dengan sisa efektif.
-             */
-            $detailReturnApplied = min(
-                $selectedReturnAmount,
-                $sisaBefore
-            );
-
             $returnStored = true;
         }
 
-        $sisaAfter = max(
-            $sisaBefore
-            - $detailAmount
-            - $detailReturnApplied,
-            0
-        );
+        /*
+         * Normalisasi nominal sebelum INSERT agar tidak ada pecahan .50
+         * yang lolos dari data lama atau manipulasi request.
+         */
+        $detailCash = roundPaymentMoney($detailCash);
+        $detailTitip = roundPaymentMoney($detailTitip);
+        $detailAmount = roundPaymentMoney($detailAmount);
+        $sisaAfter = roundPaymentMoney($sisaAfter);
 
         $detailOpeningId =
             ($item['source'] ?? 'INVOICE') === 'OPENING'
@@ -1975,7 +2219,8 @@ try {
      */
     if (
         abs($remainingCash) > 0.01 ||
-        abs($remainingTitip) > 0.01
+        abs($remainingTitip) > 0.01 ||
+        abs($remainingOpeningCreditForPayment) > 0.01
     ) {
         throw new Exception(
             'Alokasi pembayaran tidak seimbang. ' .
@@ -1989,6 +2234,13 @@ try {
             ' | Sisa Titip: Rp ' .
             number_format(
                 $remainingTitip,
+                2,
+                ',',
+                '.'
+            ) .
+            ' | Sisa Kredit Saldo Awal: Rp ' .
+            number_format(
+                $remainingOpeningCreditForPayment,
                 2,
                 ',',
                 '.'
@@ -2068,7 +2320,7 @@ try {
         ) .
         ' | Sisa Setelah Pembayaran Rp ' .
         number_format(
-            max($netPayable - $totalBayar, 0),
+            max($selectedTotal - $requestedPaymentTotal, 0),
             2,
             ',',
             '.'

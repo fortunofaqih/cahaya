@@ -278,6 +278,8 @@ header("Content-Type: text/html; charset=UTF-8");
         width: 100%;
         border-collapse: collapse;
         margin-top: 3px;
+        page-break-inside: avoid;
+        break-inside: avoid-page;
     }
     
     .produksi-table th, 
@@ -347,6 +349,13 @@ header("Content-Type: text/html; charset=UTF-8");
         }
         .flex-container {
             width: 100%;
+        }
+        .produksi-table,
+        .produksi-table thead,
+        .produksi-table tbody,
+        .produksi-table tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid-page !important;
         }
     }
 </style>

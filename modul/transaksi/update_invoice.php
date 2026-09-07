@@ -75,6 +75,17 @@ function parseMoney($value): float
     return is_numeric($value) ? (float)$value : 0.0;
 }
 
+/**
+ * Semua nominal invoice disimpan sebagai Rupiah penuh.
+ * Pembulatan normal / HALF UP:
+ * 84.911.059,49 => 84.911.059
+ * 84.911.059,50 => 84.911.060
+ */
+function roundInvoiceMoney($value): float
+{
+    return (float) round((float)$value, 0, PHP_ROUND_HALF_UP);
+}
+
 function toDbDate($value): ?string
 {
     $value = trim((string)$value);
@@ -396,6 +407,10 @@ function calculateShippingInvoice(
         );
     }
 
+    // Simpan subtotal per Shipping dalam Rupiah penuh agar det_invoice
+    // dan head_invoice selalu konsisten tanpa pecahan desimal.
+    $shippingSubtotal = roundInvoiceMoney($shippingSubtotal);
+
     return [
         'shipping_no' => (string)$shipping['shipping_no'],
         'shipping_date' => (string)$shipping['shipping_date'],
@@ -410,6 +425,150 @@ function calculateShippingInvoice(
             (string)($shipping['remarks_shipping'] ?? ''),
     ];
 }
+
+
+/**
+ * Verifikasi keras sebelum COMMIT.
+ *
+ * Tujuan:
+ * - head_invoice.subtotal/grand_total harus sama dengan hasil hitung server.
+ * - SUM(det_invoice.subtotal/total) harus sama dengan header.
+ * - setiap Shipping yang dipilih harus tersimpan dengan subtotal/total yang benar.
+ *
+ * Jika satu saja tidak cocok, transaksi di-ROLLBACK sehingga sistem tidak pernah
+ * menampilkan pesan sukses untuk invoice yang sebenarnya belum sinkron.
+ */
+function verifyInvoicePersistence(
+    mysqli $conn,
+    string $invoiceNo,
+    float $expectedSubtotal,
+    array $expectedShippingRows
+): void {
+    $expectedSubtotal = roundInvoiceMoney($expectedSubtotal);
+
+    $stmtHead = mysqli_prepare(
+        $conn,
+        "SELECT subtotal, grand_total
+         FROM head_invoice
+         WHERE invoice_no = ?
+         LIMIT 1"
+    );
+    mysqli_stmt_bind_param($stmtHead, 's', $invoiceNo);
+    mysqli_stmt_execute($stmtHead);
+    $headResult = mysqli_stmt_get_result($stmtHead);
+    $head = mysqli_fetch_assoc($headResult) ?: null;
+    mysqli_stmt_close($stmtHead);
+
+    if (!$head) {
+        throw new RuntimeException(
+            "Verifikasi gagal: header Invoice $invoiceNo tidak ditemukan setelah UPDATE."
+        );
+    }
+
+    $dbHeadSubtotal = roundInvoiceMoney((float)($head['subtotal'] ?? 0));
+    $dbHeadGrandTotal = roundInvoiceMoney((float)($head['grand_total'] ?? 0));
+
+    if (
+        abs($dbHeadSubtotal - $expectedSubtotal) > 0.01 ||
+        abs($dbHeadGrandTotal - $expectedSubtotal) > 0.01
+    ) {
+        throw new RuntimeException(
+            "Verifikasi gagal: nilai header Invoice $invoiceNo tidak tersimpan sesuai hasil hitung. " .
+            "Expected Rp " . number_format($expectedSubtotal, 0, ',', '.') .
+            ", DB subtotal Rp " . number_format($dbHeadSubtotal, 0, ',', '.') .
+            ", DB grand total Rp " . number_format($dbHeadGrandTotal, 0, ',', '.') . "."
+        );
+    }
+
+    $stmtDetailTotal = mysqli_prepare(
+        $conn,
+        "SELECT
+            COUNT(*) AS row_count,
+            COALESCE(SUM(subtotal), 0) AS subtotal_sum,
+            COALESCE(SUM(total), 0) AS total_sum
+         FROM det_invoice
+         WHERE invoice_no = ?"
+    );
+    mysqli_stmt_bind_param($stmtDetailTotal, 's', $invoiceNo);
+    mysqli_stmt_execute($stmtDetailTotal);
+    $detailResult = mysqli_stmt_get_result($stmtDetailTotal);
+    $detailSummary = mysqli_fetch_assoc($detailResult) ?: [];
+    mysqli_stmt_close($stmtDetailTotal);
+
+    $rowCount = (int)($detailSummary['row_count'] ?? 0);
+    $dbDetailSubtotal = roundInvoiceMoney((float)($detailSummary['subtotal_sum'] ?? 0));
+    $dbDetailTotal = roundInvoiceMoney((float)($detailSummary['total_sum'] ?? 0));
+
+    if ($rowCount !== count($expectedShippingRows)) {
+        throw new RuntimeException(
+            "Verifikasi gagal: jumlah detail Invoice $invoiceNo tidak sesuai. " .
+            "Expected " . count($expectedShippingRows) . " Shipping, DB $rowCount Shipping."
+        );
+    }
+
+    if (
+        abs($dbDetailSubtotal - $expectedSubtotal) > 0.01 ||
+        abs($dbDetailTotal - $expectedSubtotal) > 0.01
+    ) {
+        throw new RuntimeException(
+            "Verifikasi gagal: total det_invoice tidak sama dengan header Invoice $invoiceNo. " .
+            "Expected Rp " . number_format($expectedSubtotal, 0, ',', '.') .
+            ", SUM subtotal detail Rp " . number_format($dbDetailSubtotal, 0, ',', '.') .
+            ", SUM total detail Rp " . number_format($dbDetailTotal, 0, ',', '.') . "."
+        );
+    }
+
+    $stmtShipping = mysqli_prepare(
+        $conn,
+        "SELECT subtotal, total
+         FROM det_invoice
+         WHERE invoice_no = ?
+           AND shipping_no = ?
+         LIMIT 1"
+    );
+
+    foreach ($expectedShippingRows as $row) {
+        $shippingNo = (string)($row['shipping_no'] ?? '');
+        $expectedRowSubtotal = roundInvoiceMoney((float)($row['subtotal'] ?? 0));
+
+        mysqli_stmt_bind_param(
+            $stmtShipping,
+            'ss',
+            $invoiceNo,
+            $shippingNo
+        );
+        mysqli_stmt_execute($stmtShipping);
+
+        $shippingResult = mysqli_stmt_get_result($stmtShipping);
+        $dbRow = mysqli_fetch_assoc($shippingResult) ?: null;
+
+        if (!$dbRow) {
+            mysqli_stmt_close($stmtShipping);
+            throw new RuntimeException(
+                "Verifikasi gagal: Shipping $shippingNo tidak tersimpan pada Invoice $invoiceNo."
+            );
+        }
+
+        $dbRowSubtotal = roundInvoiceMoney((float)($dbRow['subtotal'] ?? 0));
+        $dbRowTotal = roundInvoiceMoney((float)($dbRow['total'] ?? 0));
+
+        if (
+            abs($dbRowSubtotal - $expectedRowSubtotal) > 0.01 ||
+            abs($dbRowTotal - $expectedRowSubtotal) > 0.01
+        ) {
+            mysqli_stmt_close($stmtShipping);
+            throw new RuntimeException(
+                "Verifikasi gagal: Shipping $shippingNo tersimpan dengan nominal berbeda. " .
+                "Expected Rp " . number_format($expectedRowSubtotal, 0, ',', '.') .
+                ", DB subtotal Rp " . number_format($dbRowSubtotal, 0, ',', '.') .
+                ", DB total Rp " . number_format($dbRowTotal, 0, ',', '.') . "."
+            );
+        }
+    }
+
+    mysqli_stmt_close($stmtShipping);
+}
+
 
 $invoiceNo = strtoupper(postValue('invoice_no'));
 
@@ -603,11 +762,13 @@ try {
         $sourceCustomerId
     );
 
-    $subtotal = round($calculatedSubtotal, 2);
+    // Header invoice juga wajib Rupiah penuh. Karena subtotal setiap Shipping
+    // sudah dibulatkan, jumlah det_invoice akan sama persis dengan head_invoice.
+    $subtotal = roundInvoiceMoney($calculatedSubtotal);
     $grandTotal = $subtotal;
 
-    $downPayment = max($downPaymentInput, 0);
-    $titipApplied = max($titipAppliedInput, 0);
+    $downPayment = roundInvoiceMoney(max($downPaymentInput, 0));
+    $titipApplied = roundInvoiceMoney(max($titipAppliedInput, 0));
 
     /*
      * Total DP + titip tidak boleh melebihi Grand Total.
@@ -626,10 +787,10 @@ try {
         $remainingAfterDp
     );
 
-    $paymentBalance = max(
+    $paymentBalance = roundInvoiceMoney(max(
         $grandTotal - $downPayment - $titipApplied,
         0
-    );
+    ));
 
     $piutang = $paymentBalance;
 
@@ -688,6 +849,14 @@ try {
     );
 
     mysqli_stmt_execute($stmtHead);
+
+    if (mysqli_stmt_affected_rows($stmtHead) < 0) {
+        mysqli_stmt_close($stmtHead);
+        throw new RuntimeException(
+            "UPDATE head_invoice untuk $invoiceNo gagal dijalankan."
+        );
+    }
+
     mysqli_stmt_close($stmtHead);
 
     $stmtDelete = mysqli_prepare(
@@ -724,8 +893,8 @@ try {
         $shippingNo = $shippingRow['shipping_no'];
         $shippingDate = $shippingRow['shipping_date'];
         $shippingOrderNo = $shippingRow['order_no'];
-        $rowSubtotal = (float)$shippingRow['subtotal'];
-        $rowTotal = (float)$shippingRow['total'];
+        $rowSubtotal = roundInvoiceMoney($shippingRow['subtotal']);
+        $rowTotal = roundInvoiceMoney($shippingRow['total']);
         $remarksShipping = $shippingRow['remarks_shipping'];
 
         mysqli_stmt_bind_param(
@@ -746,11 +915,26 @@ try {
 
     mysqli_stmt_close($stmtDetail);
 
+    /*
+     * PENTING:
+     * Jangan COMMIT sebelum data header + detail benar-benar terbukti sinkron.
+     * Ini mencegah kondisi invoice terlihat berhasil diedit di layar tetapi
+     * head_invoice/det_invoice masih menyimpan nominal lama.
+     */
+    verifyInvoicePersistence(
+        $conn,
+        $invoiceNo,
+        $subtotal,
+        $validShippingRows
+    );
+
     mysqli_commit($conn);
 
     redirectWithAlert(
         'success',
-        "Invoice $invoiceNo berhasil diperbarui. Customer mengikuti Shipping: $sourceCustomerId - $sourceCustomerName.",
+        "Invoice $invoiceNo berhasil diperbarui dan diverifikasi. Grand Total tersimpan: Rp " .
+        number_format($grandTotal, 0, ',', '.') .
+        ". Customer mengikuti Shipping: $sourceCustomerId - $sourceCustomerName.",
         '../../index.php?page=invoice'
     );
 } catch (Throwable $e) {

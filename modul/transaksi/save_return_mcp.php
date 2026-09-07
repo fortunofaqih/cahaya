@@ -87,6 +87,47 @@ function mcpParseDate($value): ?string
     return null;
 }
 
+
+function mcpReturnMonthCode(string $returnDate): string
+{
+    $codes = [
+        1 => 'JAN', 2 => 'FEB', 3 => 'MAR', 4 => 'APR',
+        5 => 'MEI', 6 => 'JUN', 7 => 'JUL', 8 => 'AGT',
+        9 => 'SEP', 10 => 'OKT', 11 => 'NOV', 12 => 'DES'
+    ];
+
+    $month = (int)date('n', strtotime($returnDate));
+    return $codes[$month] ?? '';
+}
+
+function mcpValidateManualReturnId(string $returnId, string $returnDate): ?string
+{
+    $expectedMonth = mcpReturnMonthCode($returnDate);
+    $expectedYear = date('y', strtotime($returnDate));
+
+    $typedNo = '01';
+    if (preg_match('/^R(\d+)/i', $returnId, $numMatch)) {
+        $typedNo = str_pad((string)((int)$numMatch[1]), 2, '0', STR_PAD_LEFT);
+    }
+
+    $expectedExample = 'R' . $typedNo . $expectedMonth . '/' . $expectedYear;
+
+    if (!preg_match('/^R(\d+)([A-Z]{3})\/(\d{2})$/i', $returnId, $m)) {
+        return 'Format Sales Return ID tidak sesuai Return Date. '
+            . 'Kode bulan yang benar adalah ' . $expectedMonth
+            . '. Contoh penamaan yang seharusnya: ' . $expectedExample . '.';
+    }
+
+    if (strtoupper($m[2]) !== $expectedMonth || $m[3] !== $expectedYear) {
+        return 'Sales Return ID tidak sesuai Return Date. '
+            . 'Untuk tanggal ' . date('d-m-Y', strtotime($returnDate))
+            . ', kode bulan/tahun harus ' . $expectedMonth . '/' . $expectedYear
+            . '. Contoh penamaan yang seharusnya: ' . $expectedExample . '.';
+    }
+
+    return null;
+}
+
 function mcpRedirect(string $type, string $message, string $page): void
 {
     $_SESSION['alert'] =
@@ -288,44 +329,35 @@ function mcpGenerateReturnId(
     mysqli $conn,
     string $returnDate
 ): string {
-    $ts = strtotime($returnDate);
-    $year = (int)date('Y', $ts);
-    $month = (int)date('n', $ts);
-    $romanMonth = mcpRomanMonth($month);
-    $suffix = '/CP-MCP/' . $romanMonth . '/' . $year;
-    $pattern = '%' . $suffix;
+    $monthCode = mcpReturnMonthCode($returnDate);
+    $year2 = date('y', strtotime($returnDate));
+    $pattern = 'R%' . $monthCode . '/' . $year2;
 
-    $sql = "
-        SELECT COALESCE(
-            MAX(
-                CAST(
-                    SUBSTRING_INDEX(return_id, '/', 1)
-                    AS UNSIGNED
-                )
-            ),
-            0
-        ) AS max_no
-        FROM head_retur_invoice
-        WHERE return_id LIKE ?
-    ";
-
-    $stmt = mysqli_prepare($conn, $sql);
-
-    if (!$stmt) {
-        throw new RuntimeException(
-            'Gagal generate Sales Return ID: ' . mysqli_error($conn)
-        );
-    }
-
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT return_id
+         FROM head_retur_invoice
+         WHERE return_id LIKE ?
+         FOR UPDATE"
+    );
     mysqli_stmt_bind_param($stmt, 's', $pattern);
     mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
 
-    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    $maxNo = 0;
+    $regex = '/^R(\d+)' . preg_quote($monthCode, '/') . '\/' . preg_quote($year2, '/') . '$/i';
+
+    while ($row = mysqli_fetch_assoc($result)) {
+        $existingId = trim((string)($row['return_id'] ?? ''));
+        if (preg_match($regex, $existingId, $match)) {
+            $maxNo = max($maxNo, (int)$match[1]);
+        }
+    }
+
     mysqli_stmt_close($stmt);
 
-    $next = ((int)($row['max_no'] ?? 0)) + 1;
-
-    return $next . $suffix;
+    $next = $maxNo + 1;
+    return 'R' . str_pad((string)$next, 2, '0', STR_PAD_LEFT) . $monthCode . '/' . $year2;
 }
 
 function mcpGenerateInventoryId(
@@ -409,6 +441,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 |--------------------------------------------------------------------------
 */
 $submittedReturnId = trim((string)($_POST['return_id'] ?? ''));
+$autoGenerateReturnId = isset($_POST['auto_generate_return_id']) && $_POST['auto_generate_return_id'] === '1';
 $returnDate = mcpParseDate($_POST['return_date'] ?? '');
 
 $externalOrderNo = trim((string)($_POST['order_no'] ?? ''));
@@ -437,6 +470,29 @@ $remainingBalance = mcpMoney($_POST['remaining_invoice_balance'] ?? 0);
 
 $items = $_POST['items'] ?? [];
 $user = (string)($_SESSION['username'] ?? 'SYSTEM');
+
+if (!$returnDate) {
+    mcpRedirect('danger', 'Return Date tidak valid.', 'add_return_mcp');
+}
+
+if (!$autoGenerateReturnId) {
+    if ($submittedReturnId === '') {
+        mcpRedirect('danger', 'Sales Return ID wajib diisi.', 'add_return_mcp');
+    }
+
+    $manualReturnIdError = mcpValidateManualReturnId(
+        $submittedReturnId,
+        $returnDate
+    );
+
+    if ($manualReturnIdError !== null) {
+        mcpRedirect(
+            'warning',
+            $manualReturnIdError,
+            'add_return_mcp'
+        );
+    }
+}
 
 // VALIDASI CUSTOMER
 $customerId = '';
@@ -654,7 +710,9 @@ try {
     |--------------------------------------------------------------------------
     */
     $year = (int)date('Y', strtotime($returnDate));
-    $globalLockName = 'CP_MCP_' . $year;
+    $globalLockName =
+        'SALES_RETURN_ID_' .
+        date('Ym', strtotime($returnDate));
 
     $lockStmt = mysqli_prepare(
         $conn,
@@ -684,13 +742,25 @@ try {
     | RETURN ID
     |--------------------------------------------------------------------------
     */
-    $returnId = $submittedReturnId;
-
-    if (
-        $returnId === '' ||
-        mcpExists($conn, 'head_retur_invoice', 'return_id', $returnId)
-    ) {
+    if ($autoGenerateReturnId) {
+        // Generate ulang saat SAVE agar nomor tetap urut dan aman dari
+        // preview lama bila ada user lain yang lebih dulu menyimpan.
         $returnId = mcpGenerateReturnId($conn, $returnDate);
+    } else {
+        $returnId = $submittedReturnId;
+
+        if (
+            mcpExists(
+                $conn,
+                'head_retur_invoice',
+                'return_id',
+                $returnId
+            )
+        ) {
+            throw new RuntimeException(
+                'Sales Return ID ' . $returnId . ' sudah digunakan.'
+            );
+        }
     }
 
     /*

@@ -3,8 +3,8 @@
 // REVISI:
 // - Perhitungan harga disamakan dengan cetak_sales_order.php
 // - Harga menggunakan price_unit (prioritas utama) atau price (prioritas kedua)
-// - Subtotal tetap menggunakan detail_sales_order.subtotal (seperti existing)
-// - Total halaman = jumlah subtotal item pada shipping tersebut
+// - Subtotal DISAMAKAN dengan cetak_invoice.php: qty_pack_shipping × harga SO
+// - Total halaman = jumlah subtotal hasil rumus cetak_invoice.php pada shipping tersebut
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
@@ -31,7 +31,8 @@ function fmtNumber($v) {
 }
 
 function fmtMoney($v) {
-    return number_format((float)$v, 2, ',', '.');
+    $rounded = round((float)$v, 0, PHP_ROUND_HALF_UP);
+    return number_format($rounded, 0, ',', '.');
 }
 
 $invoiceNo = trim($_GET['invoice_no'] ?? $_GET['id'] ?? '');
@@ -136,7 +137,16 @@ function getItems($conn, $shippingNo) {
                 ELSE 0
             END AS invoice_price,
 
-            COALESCE(dso.subtotal, 0) AS invoice_subtotal
+            (
+                COALESCE(ds.qty_pack_shipping, 0) *
+                CASE
+                    WHEN COALESCE(dso.price, 0) > 0
+                        THEN COALESCE(dso.price, 0)
+                    WHEN COALESCE(dso.quantity_pack, 0) > 0
+                        THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                    ELSE 0
+                END
+            ) AS invoice_subtotal
 
         FROM det_shipping ds
 
@@ -427,7 +437,7 @@ body {
     |--------------------------------------------------------------------------
     | TOTAL SHIPPING
     |--------------------------------------------------------------------------
-    | Total menggunakan detail_sales_order.subtotal (seperti existing)
+    | Total menggunakan subtotal hasil rumus yang sama dengan cetak_invoice.php
     |--------------------------------------------------------------------------
     */
     $shippingSubtotal = 0;
@@ -693,7 +703,7 @@ body {
     |--------------------------------------------------------------------------
     | SUMMARY
     |--------------------------------------------------------------------------
-    | Total menggunakan detail_sales_order.subtotal (seperti existing)
+    | Total menggunakan subtotal hasil rumus yang sama dengan cetak_invoice.php
     |--------------------------------------------------------------------------
     -->
     <table class="summary">

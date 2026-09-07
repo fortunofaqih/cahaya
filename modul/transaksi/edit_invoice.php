@@ -40,7 +40,9 @@ function moneyToFloat($value) {
 }
 
 function fmtMoney($value) {
-    return number_format((float)$value, 2, ',', '.');
+    // Invoice menggunakan Rupiah penuh: tidak tampilkan angka desimal.
+    // Pembulatan normal, contoh 84.911.059,50 => 84.911.060.
+    return number_format(round((float)$value, 0, PHP_ROUND_HALF_UP), 0, ',', '.');
 }
 
 function fmtQty($value) {

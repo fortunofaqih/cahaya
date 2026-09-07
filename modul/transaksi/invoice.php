@@ -43,7 +43,9 @@ function formatDateDisplay($date) {
 }
 
 function formatMoney($value) {
-    return number_format((float)$value, 2, ',', '.');
+    $value = (float)$value;
+    $value = $value >= 0 ? floor($value) : ceil($value);
+    return number_format($value, 2, ',', '.');
 }
 
 function appIcon($name) {
@@ -160,7 +162,8 @@ $sql = "
         hi.user_modified,
         hi.date_modified,
         COALESCE(dc.total_shipping, 0) AS total_shipping,
-        COALESCE(dc.shipping_nos, '') AS shipping_nos
+        COALESCE(dc.shipping_nos, '') AS shipping_nos,
+        COALESCE(iv.invoice_total_calc, 0) AS invoice_total_calc
     FROM head_invoice hi
     LEFT JOIN (
         SELECT
@@ -170,6 +173,29 @@ $sql = "
         FROM det_invoice
         GROUP BY invoice_no
     ) dc ON dc.invoice_no = hi.invoice_no
+    LEFT JOIN (
+        SELECT
+            di_calc.invoice_no,
+            ROUND(COALESCE(SUM(
+                COALESCE(ds_calc.qty_pack_shipping, 0) *
+                CASE
+                    WHEN COALESCE(dso_calc.price, 0) > 0
+                        THEN COALESCE(dso_calc.price, 0)
+                    WHEN COALESCE(dso_calc.quantity_pack, 0) > 0
+                        THEN COALESCE(dso_calc.subtotal, 0) / NULLIF(dso_calc.quantity_pack, 0)
+                    ELSE 0
+                END
+            ), 0), 0) AS invoice_total_calc
+        FROM det_invoice di_calc
+        INNER JOIN hed_shipping hs_calc
+            ON hs_calc.shipping_no = di_calc.shipping_no
+        INNER JOIN det_shipping ds_calc
+            ON ds_calc.shipping_no = di_calc.shipping_no
+        LEFT JOIN detail_sales_order dso_calc
+            ON dso_calc.order_no = hs_calc.order_no
+           AND dso_calc.inventory_id = ds_calc.inventory_id
+        GROUP BY di_calc.invoice_no
+    ) iv ON iv.invoice_no = hi.invoice_no
     $where_sql
     ORDER BY
         " . ($sort === 'shipping_no'
@@ -201,12 +227,27 @@ $detailSql = "
         ds.uom_pack_shipping,
         ds.qty_detail_shipping,
         ds.uom_detail_shipping,
-        ds.price_unit,
-        ds.subtotal,
+        CASE
+            WHEN COALESCE(dso.price_unit, 0) > 0 THEN COALESCE(dso.price_unit, 0)
+            WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+            ELSE 0
+        END AS invoice_price,
+        (
+            COALESCE(ds.qty_pack_shipping, 0) *
+            CASE
+                WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+                WHEN COALESCE(dso.quantity_pack, 0) > 0
+                    THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                ELSE 0
+            END
+        ) AS invoice_subtotal,
         ds.remarks_inventory_shipping
     FROM det_invoice di
     INNER JOIN hed_shipping hs ON hs.shipping_no = di.shipping_no
     INNER JOIN det_shipping ds ON ds.shipping_no = di.shipping_no
+    LEFT JOIN detail_sales_order dso
+        ON dso.order_no = hs.order_no
+       AND dso.inventory_id = ds.inventory_id
     INNER JOIN head_invoice hi ON hi.invoice_no = di.invoice_no
     $where_sql  
     ORDER BY di.invoice_no, di.shipping_date, di.shipping_no, ds.id
@@ -592,8 +633,8 @@ if ($detailStmt) {
                             <td><?= h($paymentTerm) ?></td>
                             <td><?= h($row['currency']) ?></td>
                             <td class="text-right">Rp <?= h(formatMoney($row['down_payment'])) ?></td>
-                            <td class="text-right">Rp <?= h(formatMoney($row['subtotal'])) ?></td>
-                            <td class="text-right text-bold">Rp <?= h(formatMoney($row['grand_total'])) ?></td>
+                            <td class="text-right">Rp <?= h(formatMoney($row['invoice_total_calc'])) ?></td>
+                            <td class="text-right text-bold">Rp <?= h(formatMoney($row['invoice_total_calc'])) ?></td>
                             <td><?= h($row['remarks_invoice']) ?></td>
                             <!--<td class="text-center"><span class="<?= h($statusClass) ?>"><?= h($statusText) ?></span></td>-->
                             <td><?= h($row['create_user']) ?></td>
@@ -637,8 +678,8 @@ if ($detailStmt) {
                                                     <td><?= h($detailRow['uom_pack_shipping']) ?></td>
                                                     <td class="text-right"><?= h(formatMoney($detailRow['qty_detail_shipping'])) ?></td>
                                                     <td><?= h($detailRow['uom_detail_shipping']) ?></td>
-                                                    <td class="text-right">Rp <?= h(formatMoney($detailRow['price_unit'])) ?></td>
-                                                    <td class="text-right">Rp <?= h(formatMoney($detailRow['subtotal'])) ?></td>
+                                                    <td class="text-right">Rp <?= h(formatMoney($detailRow['invoice_price'])) ?></td>
+                                                    <td class="text-right">Rp <?= h(formatMoney($detailRow['invoice_subtotal'])) ?></td>
                                                     <td><?= h($detailRow['remarks_inventory_shipping']) ?></td>
                                                 </tr>
                                             <?php endforeach; ?>

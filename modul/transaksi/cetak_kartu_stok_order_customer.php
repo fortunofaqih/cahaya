@@ -75,20 +75,94 @@ function shortSizeFromName($inventoryName, $catalog = '') {
     return $name;
 }
 
+function bucketKeyFromUnit($unit) {
+    $unit = strtoupper(trim((string)$unit));
+
+    if ($unit === '') {
+        return null;
+    }
+
+    // Sesuai kebutuhan Kartu Stok Order Customer:
+    // BAL = BAL / ROLL / ROL
+    // KG  = KG
+    // OTHER = seluruh UoM lainnya (PACK, PAK, IKT, BOX, LBR, ZAK, KRG, DUS, dst.)
+    if (in_array($unit, ['BAL', 'ROLL', 'ROL'], true)) {
+        return 'BAL';
+    }
+
+    if ($unit === 'KG') {
+        return 'KG';
+    }
+
+    return 'OTHER';
+}
+
 function appendUnit(&$bucket, $qty, $unit) {
     $qty = (float)($qty ?? 0);
-    $unit = strtoupper(trim((string)$unit));
-    if ($qty == 0 || $unit === '') {
+    $key = bucketKeyFromUnit($unit);
+
+    if ($qty == 0 || $key === null) {
         return;
     }
 
-    if ($unit === 'BAL') {
-        $bucket['BAL'] += $qty;
-    } elseif ($unit === 'KG') {
-        $bucket['KG'] += $qty;
-    } else {
-        $bucket['OTHER'] += $qty;
+    $bucket[$key] += $qty;
+}
+
+/**
+ * Tambahkan UoM detail hanya bila kelompok kolomnya belum terwakili
+ * oleh Qty utama / Qty Pack pada baris yang sama.
+ *
+ * Contoh:
+ * Qty = 5 KG, Qty Pack = 1 ROLL, Detail = 1 ROLL
+ * => BAL tetap 1 dan KG tetap 5 (ROLL detail tidak dihitung dua kali).
+ */
+function appendDetailUnitIfNotRepresented(&$bucket, $qty, $unit, array $representedBuckets) {
+    $qty = (float)($qty ?? 0);
+    $key = bucketKeyFromUnit($unit);
+
+    if ($qty == 0 || $key === null) {
+        return;
     }
+
+    if (in_array($key, $representedBuckets, true)) {
+        return;
+    }
+
+    $bucket[$key] += $qty;
+}
+
+/**
+ * Tambahkan Qty Pack hanya bila kelompok UoM-nya berbeda dari Qty utama.
+ *
+ * Contoh:
+ * Qty      = 450 KG
+ * Qty Pack = 450 KG
+ * => KG hanya 450, bukan 900.
+ *
+ * Tetapi:
+ * Qty      = 5 KG
+ * Qty Pack = 1 ROLL
+ * => KG = 5 dan BAL = 1.
+ */
+function appendPrimaryPackIfDifferentBucket(&$bucket, $qtyPack, $uomPack, $primaryUnit) {
+    $qtyPack = (float)($qtyPack ?? 0);
+    if ($qtyPack == 0) {
+        return;
+    }
+
+    $packKey = bucketKeyFromUnit($uomPack);
+    $primaryKey = bucketKeyFromUnit($primaryUnit);
+
+    if ($packKey === null) {
+        return;
+    }
+
+    // Jika Qty utama ada dan masuk bucket yang sama, jangan dihitung dua kali.
+    if ($primaryKey !== null && $packKey === $primaryKey) {
+        return;
+    }
+
+    $bucket[$packKey] += $qtyPack;
 }
 
 $order_no = trim((string)($_GET['order_no'] ?? ''));
@@ -205,34 +279,81 @@ $totalShip = ['BAL' => 0.0, 'OTHER' => 0.0, 'KG' => 0.0];
 while ($ship = mysqli_fetch_assoc($shippingRows)) {
     $bucket = ['BAL' => 0.0, 'OTHER' => 0.0, 'KG' => 0.0];
 
-    // Ambil multi UOM detail kalau ada
+    /*
+     * SUMBER UTAMA SHIPPING:
+     * 1. qty_shipping + uom_shipping
+     * 2. qty_pack_shipping + uom_pack_shipping
+     *
+     * Keduanya boleh tampil bersamaan karena memang dua representasi order.
+     * Contoh 1 ROLL = 5 KG => BAL = 1 dan KG = 5.
+     */
+    $representedBuckets = [];
+
+    if ((float)$ship['qty_shipping'] != 0) {
+        appendUnit($bucket, $ship['qty_shipping'], $ship['uom_shipping']);
+        $key = bucketKeyFromUnit($ship['uom_shipping']);
+        if ($key !== null) $representedBuckets[] = $key;
+    }
+
+    if ((float)$ship['qty_pack_shipping'] != 0) {
+        $qtyShippingKey = bucketKeyFromUnit($ship['uom_shipping']);
+        $qtyPackShippingKey = bucketKeyFromUnit($ship['uom_pack_shipping']);
+
+        appendPrimaryPackIfDifferentBucket(
+            $bucket,
+            $ship['qty_pack_shipping'],
+            $ship['uom_pack_shipping'],
+            $ship['uom_shipping']
+        );
+
+        // Tandai bucket Qty Pack sebagai terwakili hanya bila memang berbeda
+        // dari bucket Qty utama. Jika sama (mis. KG + KG), Qty Pack tidak dihitung.
+        if (
+            $qtyPackShippingKey !== null
+            && ($qtyShippingKey === null || $qtyPackShippingKey !== $qtyShippingKey)
+        ) {
+            $representedBuckets[] = $qtyPackShippingKey;
+        }
+    }
+
+    $representedBuckets = array_values(array_unique($representedBuckets));
+
+    /*
+     * UoM Detail hanya menjadi pelengkap untuk kelompok yang BELUM terwakili
+     * Qty/Qty Pack. Dengan demikian detail tidak menggandakan ROLL/BAL/KG
+     * yang sebenarnya merupakan transaksi yang sama.
+     */
     $sqlDetailUom = "SELECT uom_detail, qty_detail FROM det_shipping_uom_detail WHERE det_shipping_id = ? ORDER BY id ASC";
     $stmtDetailUom = mysqli_prepare($conn, $sqlDetailUom);
     $hasMultiDetail = false;
+
     if ($stmtDetailUom) {
         $detId = (int)$ship['det_shipping_id'];
         mysqli_stmt_bind_param($stmtDetailUom, 'i', $detId);
         mysqli_stmt_execute($stmtDetailUom);
         $detailRes = mysqli_stmt_get_result($stmtDetailUom);
+
         while ($du = mysqli_fetch_assoc($detailRes)) {
-            appendUnit($bucket, $du['qty_detail'], $du['uom_detail']);
+            appendDetailUnitIfNotRepresented(
+                $bucket,
+                $du['qty_detail'],
+                $du['uom_detail'],
+                $representedBuckets
+            );
             $hasMultiDetail = true;
         }
+
         mysqli_stmt_close($stmtDetailUom);
     }
 
+    // Fallback legacy jika tabel multi-UoM detail belum berisi data.
     if (!$hasMultiDetail) {
-        appendUnit($bucket, $ship['qty_detail_shipping'], $ship['uom_detail_shipping']);
-    }
-
-    // Qty Pack untuk Other/BAL kalau belum terwakili detail
-    if ((float)$ship['qty_pack_shipping'] != 0) {
-        appendUnit($bucket, $ship['qty_pack_shipping'], $ship['uom_pack_shipping']);
-    }
-
-    // Qty base biasanya KG
-    if ((float)$ship['qty_shipping'] != 0) {
-        appendUnit($bucket, $ship['qty_shipping'], $ship['uom_shipping']);
+        appendDetailUnitIfNotRepresented(
+            $bucket,
+            $ship['qty_detail_shipping'],
+            $ship['uom_detail_shipping'],
+            $representedBuckets
+        );
     }
 
     $totalShip['BAL'] += $bucket['BAL'];
@@ -262,16 +383,60 @@ while ($ship = mysqli_fetch_assoc($shippingRows)) {
 $shipments = array_values($shipments);
 
 $orderBucket = ['BAL' => 0.0, 'OTHER' => 0.0, 'KG' => 0.0];
-appendUnit($orderBucket, $order['quantity_detail'], $order['uom_detail']);
-appendUnit($orderBucket, $order['quantity_pack'], $order['uom_pack']);
-appendUnit($orderBucket, $order['quantity'], $order['uom']);
+
+// Qty utama dan Qty Pack adalah sumber utama order.
+// Contoh: Order 2 ROLL dan 10 KG => BAL = 2, KG = 10.
+$orderRepresentedBuckets = [];
+
+if ((float)$order['quantity'] != 0) {
+    appendUnit($orderBucket, $order['quantity'], $order['uom']);
+    $key = bucketKeyFromUnit($order['uom']);
+    if ($key !== null) $orderRepresentedBuckets[] = $key;
+}
+
+if ((float)$order['quantity_pack'] != 0) {
+    $orderQtyKey = bucketKeyFromUnit($order['uom']);
+    $orderPackKey = bucketKeyFromUnit($order['uom_pack']);
+
+    appendPrimaryPackIfDifferentBucket(
+        $orderBucket,
+        $order['quantity_pack'],
+        $order['uom_pack'],
+        $order['uom']
+    );
+
+    // Jika Qty Pack bucket-nya sama dengan Qty utama, tidak perlu ditandai
+    // sebagai bucket tambahan karena nilainya memang tidak ditambahkan.
+    if (
+        $orderPackKey !== null
+        && ($orderQtyKey === null || $orderPackKey !== $orderQtyKey)
+    ) {
+        $orderRepresentedBuckets[] = $orderPackKey;
+    }
+}
+
+$orderRepresentedBuckets = array_values(array_unique($orderRepresentedBuckets));
+
+// Qty Detail hanya melengkapi kelompok yang belum ada di Qty / Qty Pack.
+appendDetailUnitIfNotRepresented(
+    $orderBucket,
+    $order['quantity_detail'],
+    $order['uom_detail'],
+    $orderRepresentedBuckets
+);
 
 // Outstanding dihitung dari data yang diprint/periode filter.
 // Untuk kolom yang memang tidak ada di order, tampilkan kosong agar tidak muncul angka minus seperti -1 BAL.
 $outstanding = [
-    'BAL' => $orderBucket['BAL'] != 0 ? ($orderBucket['BAL'] - $totalShip['BAL']) : 0,
-    'OTHER' => $orderBucket['OTHER'] != 0 ? ($orderBucket['OTHER'] - $totalShip['OTHER']) : 0,
-    'KG' => $orderBucket['KG'] != 0 ? ($orderBucket['KG'] - $totalShip['KG']) : 0,
+    'BAL' => $orderBucket['BAL'] != 0
+        ? max(0, $orderBucket['BAL'] - $totalShip['BAL'])
+        : 0,
+    'OTHER' => $orderBucket['OTHER'] != 0
+        ? max(0, $orderBucket['OTHER'] - $totalShip['OTHER'])
+        : 0,
+    'KG' => $orderBucket['KG'] != 0
+        ? max(0, $orderBucket['KG'] - $totalShip['KG'])
+        : 0,
 ];
 
 $hargaText = '-';
@@ -570,7 +735,7 @@ if ($keterangan === '') {
     <div class="print-page">
         <table class="top-table">
             <tr>
-                <td class="doc-code">MCP/FM/MRKT/01</td>
+                <td class="doc-code">CP/FM/MRKT/01</td>
                 <td class="title">KARTU STOK ORDER CUSTOMER</td>
                 <td class="rev">Rev : 00&nbsp;&nbsp;Tgl : 01/06/2010</td>
             </tr>
@@ -579,7 +744,7 @@ if ($keterangan === '') {
         <table class="info">
             <tr>
                 <td class="label">TGL. ORDER</td><td class="colon">:</td><td><?= e(fmtDate($order['order_date'])) ?></td>
-                <td class="right-label">MCP</td><td class="colon">:</td><td><?= e($order['sop'] ?: '-') ?></td>
+                <td class="right-label">CP</td><td class="colon">:</td><td><?= e($order['sop'] ?: '-') ?></td>
             </tr>
             <tr>
                 <td class="label">NAMA CUSTOMER</td><td class="colon">:</td><td><?= e($order['customer_name']) ?></td>
