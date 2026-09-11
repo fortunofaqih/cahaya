@@ -446,76 +446,91 @@ while ($row = mysqli_fetch_assoc($resOpening)) {
 }
 
 /*
- * Daftar Retur aktif per customer.
- * Retur tidak lagi terikat ke invoice/shipping yang dicentang.
- * Retur yang return_id-nya sudah pernah tersimpan di detail_bayar
- * tidak ditampilkan lagi agar tidak dapat digunakan dua kali.
+ * Daftar Retur aktif per customer - SUPPORT MULTI + PARSIAL.
+ *
+ * Rule Finance:
+ * - Retur boleh dipilih lebih dari satu.
+ * - Retur boleh dipakai sebagian.
+ * - Sisa Retur boleh dipakai lagi pada pembayaran berikutnya.
+ * - Retur selalu ditampilkan sebagai nilai NEGATIF, tetapi nilai yang
+ *   disimpan pada perhitungan form memakai magnitudo positif.
+ *
+ * Kompatibilitas data lama:
+ * - detail_bayar payment_source='RETURN' yang baru: pemakaian dihitung dari
+ *   ABS(bayar_amount).
+ * - link return_id lama pada detail non-RETURN dianggap sudah memakai retur
+ *   secara penuh agar transaksi lama tidak tiba-tiba tersedia kembali.
  */
 $returnsByCustomer = [];
 
 $sqlReturnList = "
     SELECT
-        hri.return_id,
-        hri.return_date,
-        hri.customer_id,
-        hri.customer_name,
-        hri.invoice_no,
-        TRIM(hri.shipping_no) AS shipping_no,
-        hri.return_amount,
-        hri.grand_total,
-        CASE
-            WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
-              OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
-                THEN COALESCE(hri.grand_total, 0)
-            ELSE COALESCE(hri.return_amount, 0)
-        END AS effective_return_amount,
-        hri.reason_return,
-        hri.remarks_return
-    FROM head_retur_invoice hri
-    WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
-      AND COALESCE(hri.customer_id, '') <> ''
-
-      /*
-       * Retur hanya boleh dipilih satu kali.
-       * Jika return_id sudah pernah tersimpan di detail_bayar,
-       * retur tersebut dianggap sudah digunakan dan tidak ditampilkan lagi.
-       */
-      AND NOT EXISTS (
-          SELECT 1
-          FROM detail_bayar db_used
-          WHERE TRIM(COALESCE(db_used.return_id, '')) = TRIM(hri.return_id)
-      )
-
-    ORDER BY hri.return_date DESC, hri.return_id DESC
+        src.*,
+        GREATEST(src.effective_return_amount - src.used_amount, 0) AS available_amount
+    FROM (
+        SELECT
+            hri.return_id,
+            hri.return_date,
+            hri.customer_id,
+            hri.customer_name,
+            hri.invoice_no,
+            TRIM(hri.shipping_no) AS shipping_no,
+            hri.return_amount,
+            hri.grand_total,
+            CASE
+                WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                  OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                    THEN COALESCE(hri.grand_total, 0)
+                ELSE COALESCE(hri.return_amount, 0)
+            END AS effective_return_amount,
+            CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM detail_bayar db_legacy
+                    WHERE TRIM(COALESCE(db_legacy.return_id,'')) = TRIM(hri.return_id)
+                      AND (
+                            UPPER(COALESCE(NULLIF(TRIM(db_legacy.payment_source),''),'INVOICE')) <> 'RETURN'
+                         OR ABS(COALESCE(db_legacy.bayar_amount,0)) <= 0.0001
+                      )
+                ) THEN
+                    CASE
+                        WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                          OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                            THEN COALESCE(hri.grand_total, 0)
+                        ELSE COALESCE(hri.return_amount, 0)
+                    END
+                ELSE COALESCE((
+                    SELECT SUM(ABS(COALESCE(db_used.bayar_amount,0)))
+                    FROM detail_bayar db_used
+                    WHERE TRIM(COALESCE(db_used.return_id,'')) = TRIM(hri.return_id)
+                      AND UPPER(COALESCE(NULLIF(TRIM(db_used.payment_source),''),'INVOICE')) = 'RETURN'
+                ),0)
+            END AS used_amount,
+            hri.reason_return,
+            hri.remarks_return
+        FROM head_retur_invoice hri
+        WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+          AND COALESCE(hri.customer_id, '') <> ''
+    ) src
+    WHERE GREATEST(src.effective_return_amount - src.used_amount, 0) > 0.01
+    ORDER BY src.return_date ASC, src.return_id ASC
 ";
 
 $resReturnList = mysqli_query($conn, $sqlReturnList);
-
 if (!$resReturnList) {
     die('Query daftar retur gagal: ' . mysqli_error($conn));
 }
-
 while ($ret = mysqli_fetch_assoc($resReturnList)) {
     $customerKey = trim((string)($ret['customer_id'] ?? ''));
-
-    if ($customerKey === '') {
-        continue;
-    }
-
-    if (!isset($returnsByCustomer[$customerKey])) {
-        $returnsByCustomer[$customerKey] = [];
-    }
-
+    if ($customerKey === '') continue;
+    if (!isset($returnsByCustomer[$customerKey])) $returnsByCustomer[$customerKey] = [];
     $returnsByCustomer[$customerKey][] = [
         'return_id' => (string)($ret['return_id'] ?? ''),
         'return_date' => (string)($ret['return_date'] ?? ''),
         'return_amount' => (float)($ret['effective_return_amount'] ?? 0),
+        'used_amount' => (float)($ret['used_amount'] ?? 0),
+        'available_amount' => (float)($ret['available_amount'] ?? 0),
         'reason_return' => (string)($ret['reason_return'] ?? ''),
-        /*
-         * Retur diperlakukan sebagai kredit customer yang berdiri sendiri.
-         * invoice_no / shipping_no asal retur sengaja tidak dikirim ke UI
-         * agar tidak terlihat seolah-olah retur masih terikat ke dokumen CP-MCP.
-         */
     ];
 }
 
@@ -789,6 +804,7 @@ uasort($paymentCustomers, function ($a, $b) {
 .text-center{text-align:center}
 .row-checkbox{width:16px;height:16px}
 .return-select{min-width:210px}
+.return-use-table{width:100%;border-collapse:collapse;font-size:10px}.return-use-table th,.return-use-table td{border:1px solid #d3d3d3;padding:5px}.return-use-table th{background:#e9ecef;color:#2b4c7e}.return-use-input{width:120px!important;text-align:right}.return-use-row.selected-row td{background:#fff3cd}
 .summary-count{font-weight:800;color:#0d6efd}
 @media(max-width:1100px){.form-grid-4{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:900px){.form-grid-2,.form-grid-3,.form-grid-4{grid-template-columns:1fr}}
@@ -999,33 +1015,75 @@ uasort($paymentCustomers, function ($a, $b) {
     </div>
 
     <div class="form-section">
-        <div class="form-section-title">3. Retur Customer (Opsional)</div>
+        <div class="form-section-title">3. Retur Customer (Opsional - Bisa Multi & Parsial)</div>
         <div class="form-section-body">
-            <div class="form-grid-2">
-                <div class="ff">
-                    <label>No. Retur</label>
-                    <select name="return_id" id="return_id" disabled>
-                        <option value="">-- Tidak Ada / Pilih No. Retur --</option>
-                    </select>
-                </div>
+            <!-- Hidden compatibility state untuk kalkulasi existing. -->
+            <input type="hidden" name="return_id" id="return_id" value="">
+            <input type="hidden" name="retur_invoice" id="retur_invoice" value="0">
 
-                <div class="ff">
-                    <label>Nilai Retur Terpilih</label>
-                    <input type="text"
-                           id="retur_amount_display"
-                           class="readonly-highlight"
-                           value="Rp 0,00"
-                           readonly>
-                    <input type="hidden"
-                           name="retur_invoice"
-                           id="retur_invoice"
-                           value="0">
-                </div>
+            <div class="invoice-table-wrap" style="max-height:280px;">
+                <table class="return-use-table">
+                    <thead>
+                        <tr>
+                            <th style="width:42px;">Pilih</th>
+                            <th>No. Retur</th>
+                            <th>Tanggal</th>
+                            <th>Nilai Retur</th>
+                            <th>Sudah Dipakai</th>
+                            <th>Sisa Retur</th>
+                            <th>Dipakai Sekarang</th>
+                            <th>Alasan</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php $returnFormIndex = 0; ?>
+                    <?php foreach ($returnsByCustomer as $retCustomerId => $retRows): ?>
+                        <?php foreach ($retRows as $ret): ?>
+                            <tr class="return-use-row"
+                                data-customer-id="<?= h($retCustomerId) ?>"
+                                data-return-id="<?= h($ret['return_id']) ?>"
+                                data-available="<?= h($ret['available_amount']) ?>"
+                                style="display:none;">
+                                <td class="text-center">
+                                    <input type="checkbox"
+                                           class="row-checkbox js-select-return"
+                                           name="returns[<?= $returnFormIndex ?>][selected]"
+                                           value="1">
+                                    <input type="hidden" name="returns[<?= $returnFormIndex ?>][return_id]" value="<?= h($ret['return_id']) ?>">
+                                </td>
+                                <td><strong><?= h($ret['return_id']) ?></strong></td>
+                                <td class="text-center"><?= h(formatDateDisplay($ret['return_date'])) ?></td>
+                                <td class="money text-retur">- Rp <?= h(formatMoney($ret['return_amount'])) ?></td>
+                                <td class="money">Rp <?= h(formatMoney($ret['used_amount'])) ?></td>
+                                <td class="money"><strong>Rp <?= h(formatMoney($ret['available_amount'])) ?></strong></td>
+                                <td class="money">
+                                    <input type="text"
+                                           class="return-use-input js-return-use"
+                                           name="returns[<?= $returnFormIndex ?>][use_amount]"
+                                           value="0,00"
+                                           autocomplete="off"
+                                           disabled>
+                                </td>
+                                <td><?= h($ret['reason_return']) ?></td>
+                            </tr>
+                            <?php $returnFormIndex++; ?>
+                        <?php endforeach; ?>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
 
+            <div class="form-grid-2" style="margin-top:10px;">
+                <div class="ff">
+                    <label>Total Nilai Retur Terpilih</label>
+                    <input type="text" id="retur_amount_display" class="readonly-highlight" value="Rp 0,00" readonly>
+                </div>
+                <div class="ff">
+                    <label>Jumlah Retur Dipilih</label>
+                    <input type="text" id="return_count_display" class="readonly-highlight" value="0 retur" readonly>
+                </div>
                 <div class="ff field-full">
-                    <div id="returnInfo"
-                         class="warning-box warning-info"
-                         style="display:none;"></div>
+                    <div id="returnInfo" class="warning-box warning-info" style="display:none;"></div>
                 </div>
             </div>
         </div>
@@ -1148,6 +1206,16 @@ function formatRupiah(value) {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     });
+}
+
+function formatSignedRupiah(value) {
+    value = Math.round(parseFloat(value) || 0);
+
+    if (value < 0) {
+        return '- Rp ' + formatRupiah(Math.abs(value));
+    }
+
+    return 'Rp ' + formatRupiah(value);
 }
 
 function getSelectedOpeningDirection() {
@@ -1278,23 +1346,33 @@ function refreshPaymentCalculation(resetCash = true) {
         $('#pakai_titip').prop('checked', false).prop('disabled', true);
         $('#nominal_titip').prop('disabled', true).val('0,00');
         $('#return_id').val('').prop('disabled', true);
-        $('#retur_invoice').val(0);
-        $('#retur_amount_display').val('Rp ' + formatRupiah(0));
+        $('.return-use-row:visible').removeClass('selected-row').each(function(){
+            $(this).find('.js-select-return').prop('checked', false).prop('disabled', true);
+            $(this).find('.js-return-use').prop('disabled', true).val('0,00');
+        });
+        syncSelectedReturns();
         $('#returnInfo').hide().html('');
     } else {
         $('#pakai_titip').prop('disabled', false);
         $('#return_id').prop('disabled', false);
+        $('.return-use-row:visible .js-select-return').prop('disabled', false);
     }
 
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-    const netPayable = Math.max(selected.total - returAmount, 0);
+    /*
+     * TOTAL SETELAH RETUR boleh negatif.
+     * Contoh retur-only Rp940.000 tanpa tagihan:
+     * 0 - 940.000 = -940.000
+     * Nilai negatif adalah kredit customer, bukan Cash/Transfer negatif.
+     */
+    const netPayable = selected.total - returAmount;
 
     $('#selected_total').val(selected.total);
     $('#selected_total_display').val('Rp ' + formatRupiah(selected.total));
 
     $('#net_payable').val(netPayable);
-    $('#net_payable_display').val('Rp ' + formatRupiah(netPayable));
+    $('#net_payable_display').val(formatSignedRupiah(netPayable));
 
     $('#selected_count_label').text(selected.count + ' dipilih');
 
@@ -1330,7 +1408,7 @@ function checkNominal() {
     const selectedTotal = selected.total;
     const payNowTotal = selected.payNowTotal;
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-    const target = Math.max(selectedTotal - returAmount, 0);
+    const target = selectedTotal - returAmount;
     const returDipakai = Math.min(returAmount, payNowTotal);
     const kebutuhanCashTitip = Math.max(payNowTotal - returDipakai, 0);
 
@@ -1344,7 +1422,7 @@ function checkNominal() {
     const warning = $('#warningNominal');
 
     $('#net_payable').val(target);
-    $('#net_payable_display').val('Rp ' + formatRupiah(target));
+    $('#net_payable_display').val(formatSignedRupiah(target));
     const selectedReturnId = String($('#return_id').val() || '').trim();
     const transactionTotal =
         selected.count < 1 && selectedReturnId !== ''
@@ -1421,58 +1499,59 @@ function checkNominal() {
     }
 }
 
-function refreshReturnOptions(customerId) {
-    const select = $('#return_id');
-    const info = $('#returnInfo');
+function syncSelectedReturns() {
+    let total = 0;
+    let count = 0;
+    let invalid = false;
+    const ids = [];
 
-    select.empty().append(
-        $('<option>', {
-            value: '',
-            text: '-- Tidak Ada / Pilih No. Retur --'
-        })
-    );
+    $('.return-use-row:visible').each(function () {
+        const row = $(this);
+        const checked = row.find('.js-select-return').is(':checked');
+        const input = row.find('.js-return-use');
+        const available = parseFloat(row.data('available')) || 0;
 
-    $('#retur_invoice').val(0);
-    $('#retur_amount_display').val('Rp ' + formatRupiah(0));
-    info.hide().html('');
+        if (!checked) return;
 
-    if (!customerId) {
-        select.prop('disabled', true);
-        return;
-    }
+        let used = parseNumber(input.val());
+        if (used <= 0.01 || used > available + 0.01) invalid = true;
 
-    const rows = returnsByCustomer[String(customerId)] || [];
-
-    rows.forEach(function (ret) {
-        let text =
-            ret.return_id +
-            ' | ' +
-            ret.return_date +
-            ' | Rp ' +
-            formatRupiah(ret.return_amount);
-
-        if (ret.reason_return) {
-            text += ' | ' + ret.reason_return;
-        }
-
-        select.append(
-            $('<option>', {
-                value: ret.return_id,
-                text: text
-            })
-            .attr('data-return-amount', ret.return_amount)
-            .attr('data-reason-return', ret.reason_return || '')
-        );
+        total += Math.max(used, 0);
+        count++;
+        ids.push(String(row.data('return-id') || ''));
     });
 
-    select.prop('disabled', false);
+    $('#return_id').val(ids.filter(Boolean).join(','));
+    $('#retur_invoice').val(total);
+    $('#retur_amount_display').val((total > 0.01 ? '- Rp ' : 'Rp ') + formatRupiah(total));
+    $('#return_count_display').val(count + ' retur');
 
-    if (!rows.length) {
-        info
-            .removeClass('warning-danger warning-ok')
-            .addClass('warning-info')
-            .html('Customer ini tidak memiliki Retur aktif.')
-            .show();
+    return { total, count, invalid, ids };
+}
+
+function refreshReturnOptions(customerId) {
+    $('.return-use-row').hide().removeClass('selected-row').each(function () {
+        $(this).find('.js-select-return').prop('checked', false).prop('disabled', false);
+        $(this).find('.js-return-use').prop('disabled', true).val('0,00');
+    });
+
+    let count = 0;
+    if (customerId) {
+        $('.return-use-row').each(function () {
+            if (String($(this).data('customer-id')) === String(customerId)) {
+                $(this).show();
+                count++;
+            }
+        });
+    }
+
+    syncSelectedReturns();
+    const info = $('#returnInfo');
+    if (customerId && count === 0) {
+        info.removeClass('warning-danger warning-ok').addClass('warning-info')
+            .html('Customer ini tidak memiliki sisa Retur aktif yang dapat digunakan.').show();
+    } else {
+        info.hide().html('');
     }
 }
 
@@ -1639,44 +1718,36 @@ $(document).ready(function () {
         refreshPaymentCalculation(true);
     });
 
-    $('#return_id').on('change', function () {
-        const opt = $(this).find(':selected');
-        const returnId = $(this).val() || '';
-        const amount = parseFloat(opt.attr('data-return-amount')) || 0;
-        const reason = opt.attr('data-reason-return') || '';
+    $(document).on('change', '.js-select-return', function () {
+        const row = $(this).closest('.return-use-row');
+        const input = row.find('.js-return-use');
+        const available = parseFloat(row.data('available')) || 0;
 
-        $('#retur_invoice').val(amount);
-        $('#retur_amount_display').val('Rp ' + formatRupiah(amount));
-
-        const info = $('#returnInfo');
-
-        if (!returnId) {
-            info.hide().html('');
-            capPayNowAfterReturn();
-            refreshPaymentCalculation(true);
-            return;
+        if ($(this).is(':checked')) {
+            row.addClass('selected-row');
+            input.prop('disabled', false).val(formatRupiah(available));
+        } else {
+            row.removeClass('selected-row');
+            input.prop('disabled', true).val('0,00');
         }
 
-        let html =
-            'Retur terpilih: <strong>' +
-            returnId +
-            '</strong> | Rp ' +
-            formatRupiah(amount);
+        syncSelectedReturns();
+        refreshPaymentCalculation(true);
+    });
 
-        if (reason) {
-            html += ' | ' + reason;
-        }
+    $(document).on('input keyup', '.js-return-use', function () {
+        syncSelectedReturns();
+        refreshPaymentCalculation(true);
+    });
 
-        info
-            .removeClass('warning-danger warning-ok')
-            .addClass('warning-info')
-            .html(html)
-            .show();
-
-        /*
-         * Retur mengurangi total tagihan terpilih.
-         */
-        capPayNowAfterReturn();
+    $(document).on('blur', '.js-return-use', function () {
+        const row = $(this).closest('.return-use-row');
+        const available = parseFloat(row.data('available')) || 0;
+        let value = parseNumber($(this).val());
+        if (value < 0) value = Math.abs(value);
+        if (value > available) value = available;
+        $(this).val(formatRupiah(value));
+        syncSelectedReturns();
         refreshPaymentCalculation(true);
     });
 
@@ -1712,7 +1783,7 @@ $(document).ready(function () {
         const selected = getSelectedTotal();
         const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-        const targetBayar = Math.max(selected.total - returAmount, 0);
+        const targetBayar = selected.total - returAmount;
         const returDipakai = Math.min(returAmount, selected.payNowTotal);
         const kebutuhanCashTitip = Math.max(selected.payNowTotal - returDipakai, 0);
 
@@ -1728,8 +1799,14 @@ $(document).ready(function () {
             return false;
         }
 
+        const selectedReturn = syncSelectedReturns();
         const selectedReturnId = String($('#return_id').val() || '').trim();
         const direction = getSelectedOpeningDirection();
+
+        if (selectedReturn.invalid) {
+            alert('Nominal Retur yang dipakai harus lebih dari Rp 0,00 dan tidak boleh melebihi Sisa Retur.');
+            e.preventDefault(); return false;
+        }
 
         if (
             direction.hasNegativeOpening &&
@@ -1809,9 +1886,17 @@ $(document).ready(function () {
             }
         });
         $('.js-pay-now').each(function () {
-            $(this).val(
-                String($(this).val() || '').replace(/\./g, '')
-            );
+            $(this).val(String($(this).val() || '').replace(/\./g, ''));
+        });
+        $('.return-use-row').each(function () {
+            const row = $(this);
+            const checked = row.find('.js-select-return').is(':checked');
+            if (!checked) {
+                row.find('input[name^="returns["]').prop('disabled', true);
+            } else {
+                row.find('input[name^="returns["]').prop('disabled', false);
+                row.find('.js-return-use').val(parseNumber(row.find('.js-return-use').val()));
+            }
         });
         return true;
     });

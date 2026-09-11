@@ -15,11 +15,13 @@
  * - Titip Used mengikuti tanggal pemakaian detail_bayar.date_created (fallback head_bayar).
  * - Titip masuk tidak mengurangi piutang.
  * - Nilai Penjualan invoice dihitung ulang mengikuti cetak_invoice.php (shipping × harga SO).
- * - Sisa = Awal + Penjualan - Retur Effect - Cash - Titip Used.
+ * - Retur masuk kolom PENJUALAN dengan nilai minus.
+ * - Pemakaian Retur masuk kolom PEMBAYARAN dengan nilai minus.
+ * - Sisa = Awal + Penjualan - Pembayaran - Titip Used.
  * - Retur historis <= opening_date boleh tampil, tetapi effect SISA = 0 karena sudah masuk snapshot.
  * - Kolom PEMBAYARAN memakai nilai GROSS bayar_amount seperti ledger lama; bagian titip dikompensasikan oleh mutasi TITIP_USED negatif.
  * - TOTAL hanya menjumlah mutasi efektif setelah snapshot; histori yang tampil sebelum snapshot tidak ikut footer.
- * - PAYMENT_RETURN adalah baris audit/link dan tidak mengubah SISA lagi.
+ * - PAYMENT_RETURN mengubah SISA sesuai nilai pembayaran Retur (negatif).
  * - PAYMENT_OPENING wajib tampil sebagai mutasi pembayaran Saldo Awal.
  * - Nilai Penjualan mengikuti det_invoice resmi; tidak dihitung ulang dari SO/Shipping.
  */
@@ -414,7 +416,7 @@ if ($customer_id !== '') {
 
             UNION ALL
 
-            /* RETUR */
+            /* RETUR = PENJUALAN MINUS */
             SELECT
                 hri.return_date,
                 COALESCE(hri.shipping_no,''),
@@ -422,30 +424,14 @@ if ($customer_id !== '') {
                 '',
                 'RETURN',
                 0,
-                0 AS penjualan,
-                CASE
+                -1 * (CASE
                     WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
                       OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
                     THEN COALESCE(hri.grand_total,0)
                     ELSE COALESCE(hri.return_amount,0)
-                END AS retur,
-                CASE
-                    /*
-                     * Retur sampai/sama dengan tanggal snapshot sudah terkandung
-                     * dalam customer_opening_balance. Bila periode filter meliputi
-                     * tanggal tersebut, baris tetap tampil untuk histori tetapi
-                     * tidak mengubah running SISA lagi.
-                     */
-                    WHEN ({$returnHistoricalCondition})
-                    THEN 0
-                    ELSE
-                        CASE
-                            WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
-                              OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
-                            THEN COALESCE(hri.grand_total,0)
-                            ELSE COALESCE(hri.return_amount,0)
-                        END
-                END AS retur_effect_piutang,
+                END) AS penjualan,
+                0 AS retur,
+                0 AS retur_effect_piutang,
                 0 AS pembayaran,
                 0 AS payment_effect_piutang,
                 0 AS titip,
@@ -458,10 +444,10 @@ if ($customer_id !== '') {
 
             UNION ALL
 
-            /* PEMBAYARAN / REFUND RETUR STANDALONE
-             * detail_bayar payment_source=RETURN menyimpan link return_id,
-             * sedangkan nominal detail_bayar bisa 0. Nominal diambil langsung
-             * dari head_retur_invoice agar transaksi tetap tampil.
+            /* PEMBAYARAN RETUR = PEMBAYARAN MINUS
+             * Untuk data baru, bayar_amount menyimpan nominal Retur yang benar-benar
+             * dipakai (negatif), sehingga mendukung multi-retur dan parsial.
+             * Data legacy dengan bayar_amount=0 memakai nilai penuh Retur sebagai fallback.
              */
             SELECT
                 hb.bayar_date,
@@ -474,12 +460,25 @@ if ($customer_id !== '') {
                 0 AS retur,
                 0 AS retur_effect_piutang,
                 CASE
-                    WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
-                      OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
-                    THEN COALESCE(hri.grand_total,0)
-                    ELSE COALESCE(hri.return_amount,0)
+                    WHEN ABS(COALESCE(db.bayar_amount,0)) > 0.0001
+                        THEN -1 * ABS(COALESCE(db.bayar_amount,0))
+                    ELSE -1 * (CASE
+                        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+                          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total,0)
+                        ELSE COALESCE(hri.return_amount,0)
+                    END)
                 END AS pembayaran,
-                0 AS payment_effect_piutang,
+                CASE
+                    WHEN ABS(COALESCE(db.bayar_amount,0)) > 0.0001
+                        THEN -1 * ABS(COALESCE(db.bayar_amount,0))
+                    ELSE -1 * (CASE
+                        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+                          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total,0)
+                        ELSE COALESCE(hri.return_amount,0)
+                    END)
+                END AS payment_effect_piutang,
                 0 AS titip,
                 0 AS titip_effect_piutang,
                 'PAYMENT_RETURN',25,COALESCE(hb.bayar_no,'')
@@ -734,7 +733,7 @@ if ($customer_id !== '') {
              * titip used: effect negatif -> menambah kembali SISA karena sudah
              * termasuk di pembayaran gross.
              */
-            $runningSaldo += $penjualan - $returEffect - $paymentEffect - $titipEffect;
+            $runningSaldo += $penjualan - $paymentEffect - $titipEffect;
             $row['sisa'] = $runningSaldo;
         }
 
@@ -750,7 +749,6 @@ if ($customer_id !== '') {
          */
         if (!$historicalOnly) {
             $total_penjualan += $penjualan;
-            $total_retur += $retur;
             $total_pembayaran += $pembayaran;
 
             if ($rowType === 'TITIP_IN') {
@@ -875,12 +873,12 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:9px;color:#000;margin:0;pa
 <tr>
 <td class="label">Saldo Awal</td><td class="money">Rp <?= h(formatMoney($saldo_awal)) ?></td>
 <td class="label">Penjualan</td><td class="money">Rp <?= h(formatMoney($total_penjualan)) ?></td>
-<td class="label">Retur</td><td class="money text-retur">- Rp <?= h(formatMoney($total_retur)) ?></td>
+<td class="label">Pembayaran</td><td class="money">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
 </tr>
 <tr>
-<td class="label">Pembayaran Cash</td><td class="money">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
 <td class="label">Titip Terpakai</td><td class="money text-titip">Rp <?= h(formatMoney($total_titip_terpakai)) ?></td>
 <td class="label">Saldo Akhir</td><td class="money">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
+<td colspan="2"></td>
 </tr>
 <tr>
 <td class="label">Titip Masuk Periode</td><td class="money text-titip">Rp <?= h(formatMoney($total_titip_masuk)) ?></td>
@@ -890,7 +888,14 @@ body{font-family:Arial,Helvetica,sans-serif;font-size:9px;color:#000;margin:0;pa
 </table>
 <table class="detail-table">
 <thead><tr>
-<th style="width:10%">SALDO AWAL</th><th style="width:8%">TANGGAL</th><th style="width:14%">SHIPPING NO.</th><th style="width:10%">NO. RETUR</th><th style="width:10%">NO. BAYAR</th><th style="width:10%">PENJUALAN</th><th style="width:9%">RETUR</th><th style="width:10%">PEMBAYARAN</th><th style="width:9%">TITIP</th><th style="width:10%">SISA</th>
+<th style="width:11%">SALDO AWAL</th>
+<th style="width:9%">TANGGAL</th>
+<th style="width:18%">FAKTUR</th>
+<th style="width:14%">NO. BAYAR</th>
+<th style="width:12%">PENJUALAN</th>
+<th style="width:12%">PEMBAYARAN</th>
+<th style="width:11%">TITIP</th>
+<th style="width:13%">SISA</th>
 </tr></thead>
 <tbody>
 <?php foreach ($rows as $row): ?>
@@ -900,24 +905,21 @@ $isOpening=$rowType==='OPENING_ROW';
 $isReturn=(float)($row['retur']??0)>0;
 $isTitip=abs((float)($row['titip']??0))>0.0001;
 $paymentSource=strtoupper(trim((string)($row['payment_source']??'')));
-if($isOpening){$shippingDisplay='Saldo Awal';}
-elseif($isReturn){$shippingDisplay='Retur';}
-elseif($paymentSource==='RETURN'){$shippingDisplay='Bayar Retur';}
+if($isOpening){$shippingDisplay='';}
+elseif($rowType==='RETURN' || $paymentSource==='RETURN'){$shippingDisplay=(string)($row['return_id']??'');}
 elseif($rowType==='TITIP_USED'){$sn=trim((string)($row['shipping_no']??''));$shippingDisplay=$sn!==''?'Titip-'.$sn:'Titip';}
 elseif($rowType==='TITIP_IN'){$shippingDisplay='Titip';}
 elseif($paymentSource==='OPENING'){$shippingDisplay='Saldo Awal';}
 else{$shippingDisplay=(string)($row['shipping_no']??'');}
-$bayarDisplay=formatBayarWithRetur($row['bayar_no']??'',$row['return_id']??'');
+$bayarDisplay=(string)($row['bayar_no']??'');
 ?>
 <?php $isHistoricalRow = !empty($row['historical_only']); ?>
 <tr class="<?= $isOpening?'opening-row':($isHistoricalRow?'historical-row':($isReturn?'return-row':'')) ?>">
 <td class="money-cell"><?= $isOpening ? 'Rp '.h(formatMoney($saldo_awal)) : '' ?></td>
 <td class="text-center"><?= h(formatDateDisplay($row['trans_date']??'')) ?></td>
 <td><?= h($shippingDisplay) ?></td>
-<td class="text-center text-retur"><?= h($row['return_id']??'') ?></td>
 <td class="text-center"><?= h($bayarDisplay) ?></td>
-<td class="money-cell"><?php if(abs((float)($row['penjualan']??0))>0.0001): ?>Rp <?= h(formatMoney($row['penjualan'])) ?><?php endif; ?></td>
-<td class="money-cell text-retur"><?php if((float)($row['retur']??0)>0.0001): ?>- Rp <?= h(formatMoney($row['retur'])) ?><?php endif; ?></td>
+<td class="money-cell"><?php $sv=(float)($row['penjualan']??0); if(abs($sv)>0.0001): ?><?= $sv<0?'- ':'' ?>Rp <?= h(formatMoney(abs($sv))) ?><?php endif; ?></td>
 <td class="money-cell"><?php $pv=(float)($row['pembayaran']??0); if(abs($pv)>0.0001): ?><?= $pv<0?'- ':'' ?>Rp <?= h(formatMoney(abs($pv))) ?><?php endif; ?></td>
 <td class="money-cell text-titip"><?php $tv=(float)($row['titip']??0); if(abs($tv)>0.0001): ?><?= $tv<0?'- ':'' ?>Rp <?= h(formatMoney(abs($tv))) ?><?php endif; ?></td>
 <td class="money-cell text-bold">
@@ -930,10 +932,9 @@ Rp <?= h(formatMoney($row['sisa'])) ?>
 </tr>
 <?php endforeach; ?>
 <tr class="summary-row">
-<td colspan="5" class="text-right">TOTAL MUTASI PERIODE</td>
-<td class="money-cell">Rp <?= h(formatMoney($total_penjualan)) ?></td>
-<td class="money-cell text-retur">- Rp <?= h(formatMoney($total_retur)) ?></td>
-<td class="money-cell">Rp <?= h(formatMoney($total_pembayaran)) ?></td>
+<td colspan="4" class="text-right">TOTAL MUTASI PERIODE</td>
+<td class="money-cell"><?= $total_penjualan<0?'- ':'' ?>Rp <?= h(formatMoney(abs($total_penjualan))) ?></td>
+<td class="money-cell"><?= $total_pembayaran<0?'- ':'' ?>Rp <?= h(formatMoney(abs($total_pembayaran))) ?></td>
 <td class="money-cell text-titip"><?php $net=$total_titip_masuk-$total_titip_terpakai; ?><?= $net<0?'- ':'' ?>Rp <?= h(formatMoney(abs($net))) ?></td>
 <td class="money-cell">Rp <?= h(formatMoney($saldo_akhir)) ?></td>
 </tr>
@@ -942,4 +943,3 @@ Rp <?= h(formatMoney($row['sisa'])) ?>
 </div>
 </body>
 </html>
-s

@@ -137,23 +137,40 @@ if (!$currentDetails) {
 
 /*
 |--------------------------------------------------------------------------
-| RETUR STANDALONE EXISTING
+| RETUR EXISTING - SUPPORT MULTI + PARSIAL
 |--------------------------------------------------------------------------
-| Save terbaru menyimpan return_id hanya pada detail pertama.
-| Untuk kompatibilitas data lama, ambil return_id non-empty pertama dari
-| seluruh detail pembayaran.
+| Model baru menyimpan setiap pemakaian Retur sebagai detail_bayar:
+| payment_source='RETURN', return_id terisi, bayar_amount NEGATIF.
+|
+| Kompatibilitas data lama:
+| bila transaksi lama hanya menyimpan return_id pada detail non-RETURN,
+| currentLegacyReturnIds akan dipertahankan dan pada form edit dianggap
+| memakai nominal Retur yang masih dapat direkonstruksi dari master Retur.
 |--------------------------------------------------------------------------
 */
-$currentReturnId = '';
+$currentReturnUsage = [];
+$currentLegacyReturnIds = [];
 
 foreach ($currentDetails as $detail) {
-    $candidateReturnId = trim((string)($detail['return_id'] ?? ''));
-
-    if ($candidateReturnId !== '') {
-        $currentReturnId = $candidateReturnId;
-        break;
+    $rid = trim((string)($detail['return_id'] ?? ''));
+    if ($rid === '') continue;
+    $src = strtoupper(trim((string)($detail['payment_source'] ?? 'INVOICE')));
+    if ($src === 'RETURN') {
+        $amt = abs((float)($detail['bayar_amount'] ?? 0));
+        if ($amt > 0.01) {
+            $currentReturnUsage[$rid] = ($currentReturnUsage[$rid] ?? 0) + $amt;
+        } else {
+            /* Legacy RETURN row: return_id ada tetapi bayar_amount masih 0. */
+            $currentLegacyReturnIds[$rid] = true;
+        }
+    } else {
+        $currentLegacyReturnIds[$rid] = true;
     }
 }
+$currentReturnId = implode(',', array_unique(array_merge(
+    array_keys($currentReturnUsage),
+    array_keys($currentLegacyReturnIds)
+)));
 
 /*
 |--------------------------------------------------------------------------
@@ -438,9 +455,10 @@ if ($stmt) {
 
 /*
 |--------------------------------------------------------------------------
-| RETUR AKTIF CUSTOMER
+| RETUR AKTIF CUSTOMER - SUPPORT MULTI + PARSIAL
 |--------------------------------------------------------------------------
-| Retur tidak lagi terikat Invoice / Shipping yang dicentang.
+| Availability saat edit = nilai Retur - pemakaian oleh bayar_no LAIN.
+| Pemakaian oleh bayar_no yang sedang diedit otomatis ditambahkan kembali.
 |--------------------------------------------------------------------------
 */
 $returnOptions = [];
@@ -453,44 +471,62 @@ $stmt = mysqli_prepare(
         hri.return_date,
         hri.return_amount,
         hri.grand_total,
+        hri.invoice_no,
+        hri.shipping_no,
+        hri.reason_return,
         CASE
             WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
               OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
                 THEN COALESCE(hri.grand_total, 0)
             ELSE COALESCE(hri.return_amount, 0)
-        END AS effective_return_amount,
-        hri.reason_return
+        END AS effective_return_amount
      FROM head_retur_invoice hri
      WHERE hri.customer_id = ?
        AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
-
-       /*
-        * Saat edit:
-        * - retur yang sedang dipakai bayar_no ini tetap ditampilkan;
-        * - retur yang dipakai pembayaran lain tidak ditampilkan.
-        */
-       AND NOT EXISTS (
-           SELECT 1
-           FROM detail_bayar db_used
-           WHERE TRIM(COALESCE(db_used.return_id, '')) = TRIM(hri.return_id)
-             AND db_used.bayar_no <> ?
-       )
-
-     ORDER BY hri.return_date DESC, hri.return_id DESC"
+     ORDER BY hri.return_date ASC, hri.return_id ASC"
 );
-
-mysqli_stmt_bind_param($stmt, 'ss', $customerId, $bayarNo);
+mysqli_stmt_bind_param($stmt, 's', $customerId);
 mysqli_stmt_execute($stmt);
 $res = mysqli_stmt_get_result($stmt);
 
 while ($ret = mysqli_fetch_assoc($res)) {
-    $returnOptions[] = $ret;
+    $rid = trim((string)$ret['return_id']);
+    $face = (float)($ret['effective_return_amount'] ?? 0);
 
-    if ((string)$ret['return_id'] === $currentReturnId) {
-        $currentReturnAmount = (float)($ret['effective_return_amount'] ?? 0);
+    $stmtUse = mysqli_prepare($conn, "SELECT
+        COALESCE(SUM(CASE
+            WHEN UPPER(COALESCE(NULLIF(TRIM(payment_source),''),'INVOICE'))='RETURN'
+                THEN ABS(COALESCE(bayar_amount,0))
+            ELSE 0 END),0) AS used_new,
+        MAX(CASE
+            WHEN UPPER(COALESCE(NULLIF(TRIM(payment_source),''),'INVOICE'))<>'RETURN'
+              OR ABS(COALESCE(bayar_amount,0))<=0.0001
+                THEN 1 ELSE 0 END) AS legacy_used
+        FROM detail_bayar
+        WHERE TRIM(COALESCE(return_id,''))=TRIM(?)
+          AND bayar_no<>?");
+    mysqli_stmt_bind_param($stmtUse,'ss',$rid,$bayarNo);
+    mysqli_stmt_execute($stmtUse);
+    $useRow = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtUse));
+    mysqli_stmt_close($stmtUse);
+
+    $usedOther = (float)($useRow['used_new'] ?? 0);
+    $legacyUsedOther = (int)($useRow['legacy_used'] ?? 0) > 0;
+    $available = $legacyUsedOther ? 0.0 : max($face - $usedOther, 0);
+
+    $currentUse = (float)($currentReturnUsage[$rid] ?? 0);
+    if ($currentUse <= 0.01 && isset($currentLegacyReturnIds[$rid])) {
+        $currentUse = min($face, $available > 0 ? $available : $face);
+    }
+
+    if ($available > 0.01 || $currentUse > 0.01) {
+        $ret['used_other'] = $usedOther;
+        $ret['available_amount'] = max($available, $currentUse);
+        $ret['current_use'] = $currentUse;
+        $returnOptions[] = $ret;
+        $currentReturnAmount += $currentUse;
     }
 }
-
 mysqli_stmt_close($stmt);
 
 /*
@@ -552,6 +588,7 @@ $saldoTitipAvailable =
 .invoice-pay-table tr.selected-row td{background:#eaf7ef}
 .money{text-align:right}.pay-now-input{width:125px!important;text-align:right;font-weight:700;border:1px solid #8fb6e8!important;background:#fffdf2!important}.pay-now-input:disabled{background:#f1f3f5!important;color:#999}.text-center{text-align:center}.row-checkbox{width:16px;height:16px}
 .return-select{min-width:210px}
+.return-use-table{width:100%;border-collapse:collapse;font-size:10px}.return-use-table th,.return-use-table td{border:1px solid #d3d3d3;padding:5px}.return-use-table th{background:#e9ecef;color:#2b4c7e}.return-use-input{width:120px!important;text-align:right}.return-use-row.selected-row td{background:#fff3cd}
 .warning-box{display:none;margin-top:6px;padding:7px;border-radius:3px;font-size:11px;font-weight:bold}
 .warning-danger{display:block;background:#f8d7da;color:#842029;border:1px solid #f5c2c7}
 .warning-info{display:block;background:#fff3cd;color:#664d03;border:1px solid #ffecb5}
@@ -759,58 +796,51 @@ $saldoTitipAvailable =
 </div>
 
 <div class="form-section">
-    <div class="form-section-title">3. Retur Customer (Opsional)</div>
+    <div class="form-section-title">3. Retur Customer (Opsional - Bisa Multi & Parsial)</div>
     <div class="form-section-body">
-        <div class="form-grid-2">
-            <div class="ff">
-                <label>No. Retur</label>
-                <select name="return_id" id="return_id">
-                    <option value="">-- Tidak Ada / Pilih No. Retur --</option>
-                    <?php foreach ($returnOptions as $ret): ?>
-                        <option
-                            value="<?= h($ret['return_id']) ?>"
-                            data-return-amount="<?= h($ret['effective_return_amount']) ?>"
-                            data-reason-return="<?= h($ret['reason_return']) ?>"
-                            <?= $currentReturnId === (string)$ret['return_id'] ? 'selected' : '' ?>
-                        >
-                            <?= h(
-                                $ret['return_id'] .
-                                ' | ' .
-                                formatDateDisplay($ret['return_date']) .
-                                ' | Rp ' .
-                                formatMoney($ret['effective_return_amount']) .
-                                ((string)($ret['reason_return'] ?? '') !== ''
-                                    ? ' | ' . $ret['reason_return']
-                                    : '')
-                            ) ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
+        <input type="hidden" name="return_id" id="return_id" value="<?= h($currentReturnId) ?>">
+        <input type="hidden" name="retur_invoice" id="retur_invoice" value="<?= h($currentReturnAmount) ?>">
 
-            <div class="ff">
-                <label>Nilai Retur Terpilih</label>
-                <input type="text"
-                       id="retur_amount_display"
-                       class="readonly-highlight"
-                       value="Rp <?= h(formatMoney($currentReturnAmount)) ?>"
-                       readonly>
-                <input type="hidden"
-                       name="retur_invoice"
-                       id="retur_invoice"
-                       value="<?= h($currentReturnAmount) ?>">
+        <div class="invoice-table-wrap" style="max-height:280px;">
+            <table class="return-use-table">
+                <thead><tr>
+                    <th>Pilih</th><th>No. Retur</th><th>Tanggal</th><th>Nilai Retur</th>
+                    <th>Dipakai Pembayaran Lain</th><th>Sisa Tersedia</th><th>Dipakai Sekarang</th><th>Alasan</th>
+                </tr></thead>
+                <tbody>
+                <?php foreach ($returnOptions as $ri => $ret): ?>
+                    <?php $curUse=(float)($ret['current_use'] ?? 0); $checked=$curUse>0.01; ?>
+                    <tr class="return-use-row <?= $checked ? 'selected-row' : '' ?>"
+                        data-return-id="<?= h($ret['return_id']) ?>"
+                        data-available="<?= h($ret['available_amount']) ?>">
+                        <td class="text-center">
+                            <input type="checkbox" class="row-checkbox js-select-return"
+                                   name="returns[<?= $ri ?>][selected]" value="1" <?= $checked?'checked':'' ?>>
+                            <input type="hidden" name="returns[<?= $ri ?>][return_id]" value="<?= h($ret['return_id']) ?>">
+                        </td>
+                        <td><strong><?= h($ret['return_id']) ?></strong></td>
+                        <td><?= h(formatDateDisplay($ret['return_date'])) ?></td>
+                        <td class="money">- Rp <?= h(formatMoney($ret['effective_return_amount'])) ?></td>
+                        <td class="money">Rp <?= h(formatMoney($ret['used_other'])) ?></td>
+                        <td class="money"><strong>Rp <?= h(formatMoney($ret['available_amount'])) ?></strong></td>
+                        <td class="money"><input type="text" class="return-use-input js-return-use"
+                            name="returns[<?= $ri ?>][use_amount]"
+                            value="<?= h(formatMoney($curUse)) ?>" <?= $checked?'':'disabled' ?>></td>
+                        <td><?= h($ret['reason_return']) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <div class="form-grid-2" style="margin-top:10px;">
+            <div class="ff"><label>Total Nilai Retur Terpilih</label>
+                <input type="text" id="retur_amount_display" class="readonly-highlight"
+                       value="<?= $currentReturnAmount>0.01 ? '- Rp ' : 'Rp ' ?><?= h(formatMoney($currentReturnAmount)) ?>" readonly>
             </div>
-
-            <div class="ff field-full">
-                <div id="returnInfo"
-                     class="warning-box warning-info"
-                     style="<?= $currentReturnId !== '' ? 'display:block;' : 'display:none;' ?>">
-                    <?php if ($currentReturnId !== ''): ?>
-                        Retur terpilih:
-                        <strong><?= h($currentReturnId) ?></strong>
-                    <?php endif; ?>
-                </div>
+            <div class="ff"><label>Jumlah Retur Dipilih</label>
+                <input type="text" id="return_count_display" class="readonly-highlight" value="0 retur" readonly>
             </div>
+            <div class="ff field-full"><div id="returnInfo" class="warning-box warning-info" style="display:none;"></div></div>
         </div>
     </div>
 </div>
@@ -925,6 +955,39 @@ function formatRupiah(value) {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     });
+}
+
+/*
+ * Format nominal signed untuk field seperti TOTAL SETELAH RETUR.
+ * Contoh:
+ *   940000  -> Rp 940.000,00
+ *  -940000  -> - Rp 940.000,00
+ */
+function formatSignedRupiah(value) {
+    value = Math.round(parseFloat(value) || 0);
+
+    if (value < 0) {
+        return '- Rp ' + formatRupiah(Math.abs(value));
+    }
+
+    return 'Rp ' + formatRupiah(value);
+}
+
+function syncSelectedReturns() {
+    let total=0, count=0, invalid=false; const ids=[];
+    $('.return-use-row').each(function(){
+        const row=$(this), checked=row.find('.js-select-return').is(':checked');
+        if(!checked) return;
+        const available=parseFloat(row.data('available'))||0;
+        const used=parseNumber(row.find('.js-return-use').val());
+        if(used<=0.01 || used>available+0.01) invalid=true;
+        total += Math.max(used,0); count++; ids.push(String(row.data('return-id')||''));
+    });
+    $('#return_id').val(ids.filter(Boolean).join(','));
+    $('#retur_invoice').val(total);
+    $('#retur_amount_display').val((total>0.01?'- Rp ':'Rp ')+formatRupiah(total));
+    $('#return_count_display').val(count+' retur');
+    return {total,count,invalid,ids};
 }
 
 function selectedOpeningDirection() {
@@ -1085,7 +1148,12 @@ function syncCashFromPayNow() {
 function checkNominal() {
     const selected = selectedSummary();
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-    const target = Math.max(selected.total - returAmount, 0);
+    /*
+     * TOTAL SETELAH RETUR boleh negatif.
+     * Contoh retur-only Rp940.000 tanpa tagihan:
+     * 0 - 940.000 = -940.000
+     */
+    const target = selected.total - returAmount;
     const returDipakai = Math.min(returAmount, selected.payNowTotal);
     const kebutuhanCashTitip = Math.max(
         selected.payNowTotal - returDipakai,
@@ -1102,7 +1170,7 @@ function checkNominal() {
     $('#selected_total').val(selected.total);
     $('#selected_total_display').val('Rp ' + formatRupiah(selected.total));
     $('#net_payable').val(target);
-    $('#net_payable_display').val('Rp ' + formatRupiah(target));
+    $('#net_payable_display').val(formatSignedRupiah(target));
     $('#selected_count_label').text(selected.count + ' dipilih');
     const selectedReturnId = String($('#return_id').val() || '').trim();
     const transactionTotal =
@@ -1259,27 +1327,20 @@ $(document).ready(function () {
         checkNominal();
     });
 
-    $('#return_id').on('change', function () {
-        const opt = $(this).find(':selected');
-        const returnId = $(this).val() || '';
-        const amount = parseFloat(opt.attr('data-return-amount')) || 0;
-        const reason = opt.attr('data-reason-return') || '';
+    $(document).on('change', '.js-select-return', function(){
+        const row=$(this).closest('.return-use-row');
+        const input=row.find('.js-return-use');
+        const available=parseFloat(row.data('available'))||0;
+        if($(this).is(':checked')) { row.addClass('selected-row'); input.prop('disabled',false); if(parseNumber(input.val())<=0.01) input.val(formatRupiah(available)); }
+        else { row.removeClass('selected-row'); input.prop('disabled',true).val('0,00'); }
+        syncSelectedReturns(); syncCashFromPayNow(); checkNominal();
+    });
 
-        $('#retur_invoice').val(amount);
-        $('#retur_amount_display').val('Rp ' + formatRupiah(amount));
-
-        const info = $('#returnInfo');
-        if (!returnId) {
-            info.hide().html('');
-        } else {
-            let html = 'Retur terpilih: <strong>' + returnId + '</strong> | Rp ' + formatRupiah(amount);
-            if (reason) html += ' | ' + reason;
-            info.removeClass('warning-danger warning-ok').addClass('warning-info').html(html).show();
-        }
-
-        capPayNowAfterReturn();
-        syncCashFromPayNow();
-        checkNominal();
+    $(document).on('input keyup', '.js-return-use', function(){ syncSelectedReturns(); syncCashFromPayNow(); checkNominal(); });
+    $(document).on('blur', '.js-return-use', function(){
+        const row=$(this).closest('.return-use-row'); const available=parseFloat(row.data('available'))||0;
+        let v=parseNumber($(this).val()); if(v<0)v=Math.abs(v); if(v>available)v=available;
+        $(this).val(formatRupiah(v)); syncSelectedReturns(); syncCashFromPayNow(); checkNominal();
     });
 
     $('#pakai_titip').on('change', function () {
@@ -1317,7 +1378,7 @@ $(document).ready(function () {
         const selected = selectedSummary();
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-        const target = Math.max(selected.total - returAmount, 0);
+        const target = selected.total - returAmount;
         const returDipakai = Math.min(returAmount, selected.payNowTotal);
         const kebutuhanCashTitip = Math.max(
             selected.payNowTotal - returDipakai,
@@ -1326,8 +1387,14 @@ $(document).ready(function () {
         const cash = parseNumber($('#nominal_bayar').val());
         const titip = $('#pakai_titip').is(':checked') ? parseNumber($('#nominal_titip').val()) : 0;
         const total = cash + titip;
+        const selectedReturn = syncSelectedReturns();
         const selectedReturnId = String($('#return_id').val() || '').trim();
         const direction = selectedOpeningDirection();
+
+        if (selectedReturn.invalid) {
+            alert('Nominal Retur yang dipakai harus lebih dari Rp 0,00 dan tidak boleh melebihi Sisa Retur.');
+            e.preventDefault(); return false;
+        }
 
         if (direction.hasNegativeOpening && (titip > 0.01 || selectedReturnId !== '')) {
             alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip atau Retur Customer.');
@@ -1390,15 +1457,17 @@ $(document).ready(function () {
                 $row.find('.js-pay-now').prop('disabled', false);
             }
         });
-        $('.js-pay-now').each(function () {
-            $(this).val(
-                String($(this).val() || '').replace(/\./g, '')
-            );
+        $('.js-pay-now').each(function () { $(this).val(String($(this).val() || '').replace(/\./g, '')); });
+        $('.return-use-row').each(function(){
+            const row=$(this), checked=row.find('.js-select-return').is(':checked');
+            if(!checked) row.find('input[name^="returns["]').prop('disabled',true);
+            else { row.find('input[name^="returns["]').prop('disabled',false); row.find('.js-return-use').val(parseNumber(row.find('.js-return-use').val())); }
         });
 
         return true;
     });
 
+    syncSelectedReturns();
     checkNominal();
 });
 $(document).on('input', '.js-pay-now', function () {

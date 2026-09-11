@@ -766,153 +766,55 @@ function getCustomerMasterForPayment(
 function validateSelectedReturnByCustomer(
     mysqli $conn,
     string $returnId,
-    string $customerId
-): float {
-    if ($returnId === '') {
-        return 0.0;
-    }
+    string $customerId,
+    float $requestedUse
+): array {
+    $requestedUse = roundPaymentMoney($requestedUse);
 
     /*
-     * Lock master retur terlebih dahulu.
-     * Ini penting agar dua user tidak bisa memakai return_id
-     * yang sama secara bersamaan.
+     * Validasi hanya parameter Retur yang sedang diperiksa.
+     * Jangan memakai $validatedReturns di dalam function ini karena variabel
+     * tersebut milik scope proses utama dan belum tersedia di scope function.
+     *
+     * Bug sebelumnya:
+     * empty($validatedReturns) selalu TRUE di sini, sehingga setiap Retur
+     * yang valid tetap ditolak dengan pesan:
+     * "No. Retur / nominal Retur yang dipakai tidak valid."
      */
-    $stmt = mysqli_prepare(
-        $conn,
-        "
-        SELECT
-            return_id,
-            return_amount,
-            grand_total,
-            invoice_no,
-            shipping_no,
-            customer_id,
-            CASE
-                WHEN UPPER(COALESCE(invoice_no, '')) LIKE '%CP-MCP%'
-                  OR UPPER(COALESCE(shipping_no, '')) LIKE '%CP-MCP%'
-                    THEN COALESCE(grand_total, 0)
-                ELSE COALESCE(return_amount, 0)
-            END AS effective_return_amount
-        FROM head_retur_invoice
-        WHERE
-            return_id = ?
-            AND customer_id = ?
-            AND LOWER(
-                COALESCE(
-                    status,
-                    'Open'
-                )
-            ) <> 'cancelled'
-        LIMIT 1
-        FOR UPDATE
-        "
-    );
-
-    if (!$stmt) {
-        throw new Exception(
-            'Gagal prepare validasi retur: ' .
-            mysqli_error($conn)
-        );
+    if ($returnId === '' || $requestedUse <= 0.0001) {
+        throw new Exception('No. Retur / nominal Retur yang dipakai tidak valid.');
     }
 
-    mysqli_stmt_bind_param(
-        $stmt,
-        'ss',
-        $returnId,
-        $customerId
-    );
-
+    $stmt = mysqli_prepare($conn, "SELECT return_id, return_amount, grand_total, invoice_no, shipping_no, customer_id,
+        CASE WHEN UPPER(COALESCE(invoice_no,'')) LIKE '%CP-MCP%' OR UPPER(COALESCE(shipping_no,'')) LIKE '%CP-MCP%'
+             THEN COALESCE(grand_total,0) ELSE COALESCE(return_amount,0) END AS effective_return_amount
+        FROM head_retur_invoice
+        WHERE return_id=? AND customer_id=? AND LOWER(COALESCE(status,'Open'))<>'cancelled'
+        LIMIT 1 FOR UPDATE");
+    mysqli_stmt_bind_param($stmt,'ss',$returnId,$customerId);
     mysqli_stmt_execute($stmt);
+    $row=mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+    if(!$row) throw new Exception('No. Retur '.$returnId.' tidak ditemukan, cancelled, atau bukan milik customer pembayaran.');
 
-    $row = mysqli_fetch_assoc(
-        mysqli_stmt_get_result($stmt)
-    );
+    $face=roundPaymentMoney((float)($row['effective_return_amount']??0));
+    if($face<=0.0001) throw new Exception('Nilai No. Retur '.$returnId.' tidak valid atau Rp 0,00.');
 
+    /* Legacy link non-RETURN dianggap sudah memakai retur penuh. */
+    $stmt=mysqli_prepare($conn,"SELECT
+        COALESCE(SUM(CASE WHEN UPPER(COALESCE(NULLIF(TRIM(payment_source),''),'INVOICE'))='RETURN' THEN ABS(COALESCE(bayar_amount,0)) ELSE 0 END),0) AS used_new,
+        MAX(CASE WHEN UPPER(COALESCE(NULLIF(TRIM(payment_source),''),'INVOICE'))<>'RETURN' OR ABS(COALESCE(bayar_amount,0))<=0.0001 THEN 1 ELSE 0 END) AS legacy_used
+        FROM detail_bayar WHERE TRIM(COALESCE(return_id,''))=TRIM(?) FOR UPDATE");
+    mysqli_stmt_bind_param($stmt,'s',$returnId);
+    mysqli_stmt_execute($stmt);
+    $u=mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
 
-    if (!$row) {
-        throw new Exception(
-            'No. Retur ' .
-            $returnId .
-            ' tidak ditemukan, sudah cancelled, atau bukan milik customer yang dipilih.'
-        );
-    }
+    $available=((int)($u['legacy_used']??0)>0) ? 0.0 : max($face-(float)($u['used_new']??0),0);
+    $available=roundPaymentMoney($available);
+    if($requestedUse>$available+0.01) throw new Exception('Pemakaian Retur '.$returnId.' melebihi sisa Retur. Sisa: Rp '.number_format($available,2,',','.'));
 
-    /*
-     * Proteksi server-side:
-     * return_id yang sudah pernah tersimpan di detail_bayar
-     * tidak boleh digunakan kembali.
-     *
-     * Karena row head_retur_invoice di atas sudah FOR UPDATE,
-     * transaksi lain yang mencoba return_id sama akan menunggu
-     * sampai transaksi ini commit/rollback, lalu pengecekan ini
-     * akan membaca hasil terbaru.
-     */
-    $stmtUsed = mysqli_prepare(
-        $conn,
-        "
-        SELECT
-            bayar_no
-        FROM detail_bayar
-        WHERE
-            TRIM(
-                COALESCE(
-                    return_id,
-                    ''
-                )
-            ) = TRIM(?)
-        LIMIT 1
-        "
-    );
-
-    if (!$stmtUsed) {
-        throw new Exception(
-            'Gagal prepare pengecekan penggunaan retur: ' .
-            mysqli_error($conn)
-        );
-    }
-
-    mysqli_stmt_bind_param(
-        $stmtUsed,
-        's',
-        $returnId
-    );
-
-    mysqli_stmt_execute($stmtUsed);
-
-    $usedRow = mysqli_fetch_assoc(
-        mysqli_stmt_get_result($stmtUsed)
-    );
-
-    mysqli_stmt_close($stmtUsed);
-
-    if ($usedRow) {
-        throw new Exception(
-            'No. Retur ' .
-            $returnId .
-            ' sudah pernah digunakan pada pembayaran ' .
-            (string)($usedRow['bayar_no'] ?? '') .
-            ' dan tidak dapat digunakan kembali.'
-        );
-    }
-
-    $returnAmount =
-        roundPaymentMoney(
-            (float)(
-                $row['effective_return_amount']
-                ?? 0
-            )
-        );
-
-    if ($returnAmount <= 0.0001) {
-        throw new Exception(
-            'Nilai No. Retur ' .
-            $returnId .
-            ' tidak valid atau Rp 0,00.'
-        );
-    }
-
-    return $returnAmount;
+    return ['return_id'=>$returnId,'face_amount'=>$face,'use_amount'=>$requestedUse,'available_before'=>$available,'available_after'=>roundPaymentMoney(max($available-$requestedUse,0))];
 }
 
 function updateInvoicePaymentStatus(
@@ -1069,13 +971,8 @@ $customerIdPosted =
         )
     );
 
-$returnId =
-    trim(
-        (string)(
-            $_POST['return_id']
-            ?? ''
-        )
-    );
+$postedReturns = $_POST['returns'] ?? [];
+if (!is_array($postedReturns)) { $postedReturns = []; }
 
 
 $nominalBayar =
@@ -1137,6 +1034,17 @@ $remarks =
 $postedItems =
     $_POST['items']
     ?? [];
+$selectedReturnPosted = [];
+foreach ($postedReturns as $retItem) {
+    if (!is_array($retItem) || !isset($retItem['selected']) || (string)$retItem['selected'] !== '1') continue;
+    $rid = trim((string)($retItem['return_id'] ?? ''));
+    $use = roundPaymentMoney(parseNumber($retItem['use_amount'] ?? 0));
+    if ($rid === '' || $use <= 0.0001) continue;
+    if (isset($selectedReturnPosted[$rid])) {
+        redirectWithAlert('error','No. Retur terpilih ganda: '.$rid,'add_bayar');
+    }
+    $selectedReturnPosted[$rid] = $use;
+}
 
 $username =
     (string)(
@@ -1332,7 +1240,7 @@ foreach (
 
 if (
     !$selectedPosted &&
-    $returnId === ''
+    !$selectedReturnPosted
 ) {
     redirectWithAlert(
         'error',
@@ -1388,6 +1296,7 @@ try {
      * Bukan lagi per Invoice / Shipping.
      */
     $selectedReturnAmount = 0.0;
+    $validatedReturns = [];
 
     foreach (
         $selectedPosted
@@ -1577,7 +1486,7 @@ try {
         }
     }
 
-    if ($hasNegativeOpening && $returnId !== '') {
+    if ($hasNegativeOpening && !empty($selectedReturnPosted)) {
         throw new Exception(
             'Saldo Awal (-) / Kredit tidak boleh digabung dengan Retur Customer.'
         );
@@ -1615,13 +1524,10 @@ try {
     | - belum dipakai pada pembayaran lain
     |--------------------------------------------------------------------------
     */
-    if ($returnId !== '') {
-        $selectedReturnAmount =
-            validateSelectedReturnByCustomer(
-                $conn,
-                $returnId,
-                $customerId
-            );
+    foreach ($selectedReturnPosted as $rid => $requestedUse) {
+        $validated = validateSelectedReturnByCustomer($conn, $rid, $customerId, $requestedUse);
+        $validatedReturns[$rid] = $validated;
+        $selectedReturnAmount += (float)$validated['use_amount'];
     }
 
     $selectedTotal = roundPaymentMoney($selectedTotal);
@@ -1712,7 +1618,7 @@ try {
         !$isNegativeOpeningStandalone &&
         $requestedPaymentTotal <= 0.0001 &&
         $netPayable > 0.0001 &&
-        $returnId === ''
+        empty($validatedReturns)
     ) {
         throw new Exception(
             'Nominal pembayaran harus lebih dari Rp 0,00.'
@@ -1727,7 +1633,7 @@ try {
     if (
         !$isNegativeOpeningStandalone &&
         $netPayable <= 0.0001 &&
-        $returnId === ''
+        empty($validatedReturns)
     ) {
         throw new Exception(
             'Pembayaran Rp 0,00 hanya dapat disimpan jika No. Retur dipilih.'
@@ -1740,10 +1646,7 @@ try {
      * titip, dan detail_bayar.bayar_amount tetap Rp 0,00 supaya retur tidak
      * pernah terhitung sebagai penerimaan uang.
      */
-    $storedTotalBayar =
-        empty($validItems) && $returnId !== ''
-            ? $selectedReturnAmount
-            : $totalBayar;
+    $storedTotalBayar = $totalBayar;
 
     /*
     |--------------------------------------------------------------------------
@@ -1906,6 +1809,9 @@ try {
     $remainingOpeningCreditForPayment =
         roundPaymentMoney($remainingOpeningCreditForPayment);
 
+    /* Retur mengurangi kebutuhan uang nyata, tetapi bayar_amount Invoice tetap GROSS. */
+    $remainingReturnCreditForCash = roundPaymentMoney($returnAppliedToPayment);
+
     $stmtDetail =
         mysqli_prepare(
             $conn,
@@ -1945,13 +1851,6 @@ try {
     }
 
     $affectedInvoices = [];
-
-    /*
-     * Karena schema existing menyimpan return_id di detail_bayar,
-     * return_id standalone disimpan SATU KALI saja pada detail pertama.
-     * Detail berikutnya dikosongkan supaya tidak terjadi duplikasi Retur.
-     */
-    $returnStored = false;
 
     foreach (
         $validItems
@@ -2015,35 +1914,24 @@ try {
                 throw new Exception('Nilai Bayar Sekarang per item tidak valid.');
             }
 
-            $detailReturnApplied = 0.0;
-
-            if (!$returnStored && $returnId !== '') {
-                $detailReturnApplied = min(
-                    $selectedReturnAmount,
-                    $requestedDetailSettlement,
-                    $sisaBefore
-                );
-            }
-
             /*
-             * bayar_amount tetap merepresentasikan settlement invoice setelah
-             * retur. Kredit opening tidak dikurangkan dari bayar_amount karena
-             * kredit tersebut harus ikut menutup balance invoice.
+             * bayar_amount Invoice tetap sebesar settlement GROSS agar status
+             * invoice lunas/partial tetap benar. Retur hanya mengurangi kebutuhan
+             * Cash/Titip dan dicatat pada detail RETURN terpisah dengan nilai minus.
              */
-            $detailAmount = max(
-                $requestedDetailSettlement - $detailReturnApplied,
-                0
-            );
+            $detailAmount = roundPaymentMoney($requestedDetailSettlement);
+            $detailReturnApplied = min($remainingReturnCreditForCash, $detailAmount);
+            $remainingReturnCreditForCash -= $detailReturnApplied;
+            if (abs($remainingReturnCreditForCash) < 0.0001) $remainingReturnCreditForCash = 0;
 
-            $detailAmount = roundPaymentMoney($detailAmount);
-
+            $afterReturnNeeded = max($detailAmount - $detailReturnApplied, 0);
             $detailOpeningCreditApplied = min(
                 $remainingOpeningCreditForPayment,
-                $detailAmount
+                $afterReturnNeeded
             );
 
             $moneyNeeded = max(
-                $detailAmount - $detailOpeningCreditApplied,
+                $afterReturnNeeded - $detailOpeningCreditApplied,
                 0
             );
 
@@ -2096,16 +1984,7 @@ try {
         }
 
         $detailRemarks = $remarks;
-
         $detailReturnId = '';
-
-        if (
-            !$returnStored &&
-            $returnId !== ''
-        ) {
-            $detailReturnId = $returnId;
-            $returnStored = true;
-        }
 
         /*
          * Normalisasi nominal sebelum INSERT agar tidak ada pecahan .50
@@ -2162,26 +2041,24 @@ try {
     }
 
     /*
-     * Retur standalone tanpa invoice/shipping.
-     * invoice_no dan shipping_no sengaja kosong agar TIDAK terhubung
-     * ke dokumen CP-MCP asal retur.
+     * PEMAKAIAN RETUR - satu baris per Retur terpilih.
+     * bayar_amount disimpan NEGATIF sesuai rule Kartu Piutang Finance.
+     * Contoh: R09JUL/26 dipakai 38.280 => pembayaran -38.280.
+     * invoice_amount menyimpan nilai master Retur dan sisa_after menyimpan
+     * sisa Retur setelah pemakaian sehingga mudah diaudit.
      */
-    if (
-        empty($validItems) &&
-        $returnId !== ''
-    ) {
+    foreach ($validatedReturns as $retUse) {
         $blankInvoiceNo = '';
         $blankShippingNo = '';
         $blankInvoiceDate = null;
-        $zeroAmount = 0.0;
-
-        $returnOnlyRemarks =
-            $remarks !== ''
-                ? $remarks
-                : 'Retur Customer Standalone';
-
         $blankOpeningId = null;
         $returnPaymentSource = 'RETURN';
+        $detailReturnId = (string)$retUse['return_id'];
+        $returnFaceAmount = roundPaymentMoney((float)$retUse['face_amount']);
+        $returnPayAmount = -1 * roundPaymentMoney((float)$retUse['use_amount']);
+        $returnSisaAfter = roundPaymentMoney((float)$retUse['available_after']);
+        $zeroAmount = 0.0;
+        $returnOnlyRemarks = $remarks !== '' ? $remarks : 'Pemakaian Retur Customer';
 
         mysqli_stmt_bind_param(
             $stmtDetail,
@@ -2191,22 +2068,17 @@ try {
             $blankShippingNo,
             $blankOpeningId,
             $returnPaymentSource,
-            $returnId,
+            $detailReturnId,
             $blankInvoiceDate,
+            $returnFaceAmount,
             $zeroAmount,
             $zeroAmount,
-            $zeroAmount,
-            $zeroAmount,
-            $zeroAmount,
+            $returnPayAmount,
+            $returnSisaAfter,
             $returnOnlyRemarks,
             $username
         );
-
-        mysqli_stmt_execute(
-            $stmtDetail
-        );
-
-        $returnStored = true;
+        mysqli_stmt_execute($stmtDetail);
     }
 
     mysqli_stmt_close(
@@ -2301,15 +2173,8 @@ try {
             ',',
             '.'
         ) .
-        ($returnId !== ''
-            ? ' | Retur ' . $returnId .
-              ' Rp ' .
-              number_format(
-                  $selectedReturnAmount,
-                  2,
-                  ',',
-                  '.'
-              )
+        (!empty($validatedReturns)
+            ? ' | Retur dipakai ' . count($validatedReturns) . ' item Rp ' . number_format($selectedReturnAmount, 2, ',', '.')
             : '') .
         ' | Total Bayar Rp ' .
         number_format(
