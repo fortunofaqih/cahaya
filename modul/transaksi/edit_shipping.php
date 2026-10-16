@@ -47,11 +47,14 @@ $query_detail = mysqli_query($conn, "
     SELECT 
         ds.*,
         COALESCE(dso.quantity, 0) AS order_qty,
-        COALESCE(dso.quantity_pack, 0) AS order_qty_pack
+        COALESCE(dso.quantity_pack, 0) AS order_qty_pack,
+        COALESCE(NULLIF(mi.inventory_name, ''), ds.inventory_name) AS current_inventory_name
     FROM det_shipping ds
     LEFT JOIN detail_sales_order dso 
         ON dso.order_no = '$detail_order_no'
        AND dso.inventory_id = ds.inventory_id
+    LEFT JOIN m_inventory mi
+        ON mi.inventory_id = ds.inventory_id
     WHERE ds.shipping_no = '$shipping_no'
     ORDER BY ds.id ASC
 ");
@@ -642,10 +645,10 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                             <td class="ln-cell" style="text-align:center; font-weight:bold; color:#888;"><?= $index + 1 ?></td>
                             <td>
                                 <input type="text" name="inventory_id[]" class="inv-id" value="<?= h($detail['inventory_id'] ?? '') ?>" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">
-                                <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="<?= h($detail['inventory_name'] ?? '') ?>">
+                                <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="<?= h($detail['current_inventory_name'] ?? $detail['inventory_name'] ?? '') ?>">
                                 <input type="hidden" name="detail_id[]" value="<?= h($detail['id'] ?? '') ?>">
                             </td>
-                            <td><input type="text" class="inv-name-display" value="<?= h($detail['inventory_name'] ?? '') ?>" readonly style="background:#f1f3f5;"></td>
+                            <td><input type="text" class="inv-name-display" value="<?= h($detail['current_inventory_name'] ?? $detail['inventory_name'] ?? '') ?>" readonly style="background:#f1f3f5;"></td>
                             <td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="<?= h(number_format((float)($detail['qty_shipping'] ?? 0), 4, '.', '')) ?>" style="text-align:right;"></td>
                             <td><select name="uom_shipping[]" class="inv-uom-select" data-selected="<?= h($detail['uom_shipping'] ?? '') ?>" style="width:100%;"></select></td>
                             <td><input type="number" step="0.0001" name="qty_pack_shipping[]" class="qty-pack-shipping" value="<?= h(number_format((float)($detail['qty_pack_shipping'] ?? 0), 4, '.', '')) ?>" style="text-align:right;"></td>

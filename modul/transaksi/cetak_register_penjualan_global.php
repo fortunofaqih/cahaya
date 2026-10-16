@@ -38,11 +38,51 @@ function classifyCategoryR($inventoryName){
     $n = strtoupper(trim((string)$inventoryName));
     if($n==='') return 'LAIN LAIN';
 
+    /*
+     * LAIN LAIN pada Register Penjualan Global adalah ringkasan seluruh
+     * kategori yang ditampilkan di Register Penjualan Global Detail:
+     *
+     * HD, HD WARNA, HD KRESEK, HD SABLON, PP SABLON,
+     * TALI KG, TALI LOS, BAHAN, TERPAL, BOX, SEDOTAN, dan LAIN-LAIN detail.
+     *
+     * Karena itu kategori detail harus diprioritaskan sebelum PP/PE global.
+     * Contoh penting: "PP SABLON" harus masuk LAIN LAIN, bukan PP.
+     */
+    if(strpos($n,'SEDOTAN')!==false) return 'LAIN LAIN';
+
+    if(
+        preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n) &&
+        strpos($n,'SABLON')!==false
+    ) return 'LAIN LAIN';
+
+    if(
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n)
+    ) return 'LAIN LAIN';
+
+    if(
+        strpos($n,'TALI')!==false &&
+        (
+            preg_match('/(^|[^A-Z])KG([^A-Z]|$)/',$n) ||
+            strpos($n,'LOS')!==false
+        )
+    ) return 'LAIN LAIN';
+
+    if(preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/',$n)) return 'LAIN LAIN';
+    if(strpos($n,'TERPAL')!==false) return 'LAIN LAIN';
+    if(preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/',$n)) return 'LAIN LAIN';
+
+    /*
+     * Kategori utama Register Penjualan Global tetap seperti existing.
+     */
     if(preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n) && strpos($n,'WARNA')!==false) return 'PE WARNA';
     if(strpos($n,'KERTAS')!==false) return 'KERTAS';
     if(preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n)) return 'PP';
     if(preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n)) return 'PE';
 
+    /*
+     * Inventory di luar kategori utama di atas adalah LAIN-LAIN detail
+     * (contoh: ONGKOS, PELET, dan kategori detail lainnya).
+     */
     return 'LAIN LAIN';
 }
 function emptyCatR(){ return ['qty'=>0.0,'qty_kg'=>0.0,'rp'=>0.0]; }
@@ -126,6 +166,23 @@ SELECT
     CASE
         WHEN COALESCE(ds.subtotal,0)<>0
             THEN ABS(COALESCE(ds.subtotal,0))
+
+        /*
+         * Tambahan untuk item detail tanpa Qty (contoh ONGKOS):
+         * nilai tetap mempunyai basis alokasi dari price_unit / price.
+         * Rule existing selain kondisi ini tidak diubah.
+         */
+        WHEN COALESCE(ds.qty_shipping,0)=0
+         AND COALESCE(ds.qty_pack_shipping,0)=0
+         AND COALESCE(ds.qty_detail_shipping,0)=0
+            THEN ABS(
+                CASE
+                    WHEN COALESCE(dso.price_unit,0)<>0 THEN COALESCE(dso.price_unit,0)
+                    WHEN COALESCE(dso.price,0)<>0 THEN COALESCE(dso.price,0)
+                    ELSE 0
+                END
+            )
+
         WHEN COALESCE(dso.price,0)<>0
             THEN ABS(
                 COALESCE(dso.price,0) *
@@ -264,6 +321,93 @@ foreach($shippingGroups as $key=>$ship){
         $grand[$g]['rp'] += $rows[$key][$g]['rp'];
     }
 }
+
+/*
+ * KOREKSI INVOICE
+ * ------------------------------------------------------------
+ * Source of truth: invoice_correction.
+ *
+ * Rule:
+ * - correction_amount sudah signed NEGATIF;
+ * - Qty dan Qty KG selalu 0 karena koreksi adalah mutasi nilai;
+ * - PP/KERTAS/PE/PE WARNA masuk ke kolom utama masing-masing;
+ * - kategori detail (HD, TALI, BAHAN, TERPAL, BOX, SEDOTAN, ONGKOS, dll)
+ *   masuk ke LAIN LAIN, mengikuti rule existing Register Penjualan Global;
+ * - invoice_no / shipping_no memakai referensi koreksi bila diisi;
+ * - customer_name diambil dari m_customer;
+ * - hanya status Active dan correction_date dalam periode filter.
+ */
+$sqlCorrection = "
+    SELECT
+        ic.correction_id,
+        ic.correction_no,
+        ic.correction_date,
+        ic.customer_id,
+        COALESCE(mc.customer, ic.customer_id) AS customer_name,
+        COALESCE(ic.invoice_no,'') AS invoice_no,
+        COALESCE(ic.shipping_no,'') AS shipping_no,
+        UPPER(TRIM(COALESCE(ic.category,''))) AS category,
+        COALESCE(ic.correction_amount,0) AS correction_amount
+    FROM invoice_correction ic
+    LEFT JOIN m_customer mc
+        ON mc.customer_id COLLATE utf8mb4_general_ci
+         = ic.customer_id COLLATE utf8mb4_general_ci
+    WHERE ic.correction_date BETWEEN ? AND ?
+      AND LOWER(COALESCE(ic.status,'Active'))='active'
+";
+
+if ($sort === 'invoice_no') {
+    $sqlCorrection .= " ORDER BY ic.invoice_no " . $orderDirection . ", ic.correction_date ASC, ic.correction_id ASC ";
+} else {
+    $sqlCorrection .= " ORDER BY ic.shipping_no " . $orderDirection . ", ic.correction_date ASC, ic.correction_id ASC ";
+}
+
+$stmtCorrection = mysqli_prepare($conn, $sqlCorrection);
+if(!$stmtCorrection){
+    die('SQL Koreksi Invoice Register Penjualan Global Error: '.h(mysqli_error($conn)));
+}
+mysqli_stmt_bind_param($stmtCorrection,'ss',$startDate,$endDate);
+mysqli_stmt_execute($stmtCorrection);
+$resCorrection = mysqli_stmt_get_result($stmtCorrection);
+
+while($corr = mysqli_fetch_assoc($resCorrection)){
+    $rawCat = strtoupper(trim((string)($corr['category'] ?? '')));
+
+    if(in_array($rawCat, ['PP','KERTAS','PE','PE WARNA'], true)){
+        $g = $rawCat;
+    } else {
+        $g = 'LAIN LAIN';
+    }
+
+    $amount = (float)($corr['correction_amount'] ?? 0);
+
+    /*
+     * Key khusus supaya tidak bertabrakan dengan invoice/shipping normal
+     * atau koreksi lain dengan referensi yang sama/kosong.
+     */
+    $key = 'CORRECTION|' . (int)$corr['correction_id'];
+
+    $rows[$key] = [
+        'shipping_no' => (string)($corr['shipping_no'] ?? ''),
+        'invoice_no' => (string)($corr['invoice_no'] ?? ''),
+        'customer_name' => (string)($corr['customer_name'] ?? ''),
+        'total' => $amount,
+        'penjualan' => $amount,
+        'PP' => emptyCatR(),
+        'KERTAS' => emptyCatR(),
+        'PE' => emptyCatR(),
+        'PE WARNA' => emptyCatR(),
+        'LAIN LAIN' => emptyCatR()
+    ];
+
+    $rows[$key][$g]['rp'] = $amount;
+
+    $grand['total'] += $amount;
+    $grand['penjualan'] += $amount;
+    $grand[$g]['rp'] += $amount;
+}
+
+mysqli_stmt_close($stmtCorrection);
 $cats=['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
 ?>
 <!DOCTYPE html>
@@ -272,32 +416,35 @@ $cats=['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
 <meta charset="UTF-8">
 <title>Register Penjualan Global</title>
 <style>
-@page{size:A3 landscape;margin:6mm}
-*{box-sizing:border-box}
+/* Kertas Continuous Form A3 (14 7/8 x 11 inci) */
+@page{size:14.875in 11in;margin:6mm}
+*{box-sizing:border-box;
+    
+    padding: 2mm;}
 body{margin:0;padding:12px;background:#eef1f5;color:#000;font-family:Arial,Helvetica,sans-serif}
-.toolbar{display:flex;justify-content:flex-end;gap:8px;max-width:410mm;margin:0 auto 10px}
+.toolbar{display:flex;justify-content:flex-end;gap:8px;max-width:1600px;margin:0 auto 10px}
 .btn{display:inline-flex;align-items:center;justify-content:center;padding:9px 18px;border:0;border-radius:5px;color:#fff;font-size:13px;font-weight:bold;text-decoration:none;cursor:pointer}
 .btn-back{background:#6c757d}.btn-print{background:#198754}
 .screen-scroll{width:100%;overflow-x:auto;padding-bottom:10px}
-.print-wrap{width:400mm;min-width:400mm;margin:0 auto;padding:5mm;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.12)}
-.title{text-align:center;font-size:16px;font-weight:bold;margin-bottom:2px}
-.period{text-align:center;font-size:12px;font-weight:bold;margin-bottom:5px}
-.printed{text-align:right;font-size:8px;margin-bottom:3px}
-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:6.8px}
-th,td{border:1px solid #000;padding:2px;vertical-align:middle;white-space:nowrap}
+.print-wrap{width:100%;max-width:1800px;margin:0 auto;padding:5mm;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.12)}
+.title{text-align:center;font-size:22px;font-weight:bold;margin-bottom:4px}
+.period{text-align:center;font-size:16px;font-weight:bold;margin-bottom:7px}
+.printed{text-align:right;font-size:11px;margin-bottom:4px}
+table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px}
+th,td{border:1px solid #000;padding:4px;vertical-align:middle;white-space:nowrap}
 th{text-align:center;font-weight:bold;background:#f1f1f1}
-.shipping-col,.invoice-col{width:31mm}.customer-col{width:43mm;overflow:hidden;text-overflow:ellipsis}
-.main-money-col{width:28mm}.sub-qty-col{width:14mm}.sub-money-col{width:24mm}
+.shipping-col,.invoice-col{width:25mm}.customer-col{width:30mm;overflow:hidden;text-overflow:ellipsis}
+.main-money-col{width:28mm}.sub-qty-col{width:10mm}.sub-money-col{width:70mm}
 .money-cell,.qty-cell{text-align:right;font-variant-numeric:tabular-nums}
 tfoot td{font-weight:bold;background:#f1f1f1}
 @media print{
  body{margin:0;padding:0;background:#fff}
  .no-print{display:none!important}
  .screen-scroll{overflow:visible;padding:0}
- .print-wrap{width:100%;min-width:0;margin:0;padding:0;box-shadow:none}
- .title{font-size:11pt}.period{font-size:9pt}
- table{font-size:5.7pt}
- th,td{padding:.7mm .5mm}
+ .print-wrap{width:360mm;min-width:360mm;max-width:none;margin:0;padding:0;box-shadow:none}
+ .title{font-size:10pt}.period{font-size:8pt}
+ table{font-size:5.1pt}
+ th,td{padding:.6mm .45mm}
  thead{display:table-header-group}tfoot{display:table-footer-group}
  tr{page-break-inside:avoid}
 }

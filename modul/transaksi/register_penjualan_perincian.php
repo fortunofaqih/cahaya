@@ -42,7 +42,7 @@ function fmtDateR($d) {
     }
 
     $t = strtotime($d);
-    return $t ? date('d-m-Y', $t) : '';
+    return $t ? date('d-M-Y', $t) : '';
 }
 
 function fmtMoneyR($v) {
@@ -59,32 +59,95 @@ function classifyCategoryR($inventoryName) {
     $n = strtoupper(trim((string)$inventoryName));
     if ($n === '') return null;
 
+    /*
+     * KHUSUS BAHAN
+     * Disamakan dengan Register Penjualan Global Detail.
+     *
+     * Contoh:
+     * LLDPE RESIN TITANVENE LL0209 SC
+     */
+    if (
+        strpos($n, 'RESIN') !== false ||
+        strpos($n, 'LLDPE') !== false
+    ) {
+        return 'BAHAN';
+    }
+
     if (strpos($n, 'SEDOTAN') !== false) return 'SEDOTAN';
 
+    // PP SABLON adalah bagian Perincian Lain Lain, bukan PP utama.
+    if (
+        preg_match('/(^|[^A-Z])PP([^A-Z]|$)/', $n) &&
+        strpos($n, 'SABLON') !== false
+    ) return 'PP SABLON';
+
     // Nama normal.
-    if (preg_match('/(^|[^A-Z])PE([^A-Z]|$)/', $n) && strpos($n, 'WARNA') !== false) return 'PE WARNA';
+    if (
+        preg_match('/(^|[^A-Z])PE([^A-Z]|$)/', $n) &&
+        strpos($n, 'WARNA') !== false
+    ) return 'PE WARNA';
+
     if (strpos($n, 'KERTAS') !== false) return 'KERTAS';
+
     if (preg_match('/(^|[^A-Z])PP([^A-Z]|$)/', $n)) return 'PP';
+
     if (preg_match('/(^|[^A-Z])PE([^A-Z]|$)/', $n)) return 'PE';
 
-    // Nama legacy / CP-MCP sering tanpa spasi, contoh:
-    // 0.03X17X100MPP  -> PP
-    // 66X530MPEMULSA... -> PE
+    // Nama legacy / CP-MCP sering tanpa spasi
     if (strpos($n, 'MPP') !== false) return 'PP';
     if (strpos($n, 'MPE') !== false) return 'PE';
-    if (preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n) && strpos($n, 'WARNA') !== false) return 'HD WARNA';
-    if (preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n) && strpos($n, 'KRESEK') !== false) return 'HD KRESEK';
-    if (preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n) && strpos($n, 'SABLON') !== false) return 'HD SABLON';
-    if (strpos($n, 'TALI') !== false && preg_match('/(^|[^A-Z])KG([^A-Z]|$)/', $n)) return 'TALI KG';
-    if (strpos($n, 'TALI') !== false && strpos($n, 'LOS') !== false) return 'TALI LOS';
-    if (preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/', $n)) return 'BAHAN';
+
+    if (
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n) &&
+        strpos($n, 'WARNA') !== false
+    ) return 'HD WARNA';
+
+    if (
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n) &&
+        strpos($n, 'KRESEK') !== false
+    ) return 'HD KRESEK';
+
+    if (
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n) &&
+        strpos($n, 'SABLON') !== false
+    ) return 'HD SABLON';
+
+    if (
+        strpos($n, 'TALI') !== false &&
+        preg_match('/(^|[^A-Z])KG([^A-Z]|$)/', $n)
+    ) return 'TALI KG';
+
+    if (
+        strpos($n, 'TALI') !== false &&
+        strpos($n, 'LOS') !== false
+    ) return 'TALI LOS';
+
+    // Rule BAHAN existing tetap dipertahankan
+    if (
+        preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/', $n)
+    ) return 'BAHAN';
+
     if (strpos($n, 'TERPAL') !== false) return 'TERPAL';
-    if (preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/', $n)) return 'BOX';
-    if (preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n)) return 'HD';
-    return null;
+
+    if (
+        preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/', $n)
+    ) return 'BOX';
+
+    if (
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/', $n)
+    ) return 'HD';
+
+    // Semua kategori lain masuk LAIN-LAIN
+    return 'LAIN-LAIN';
 }
 
 $today = date('Y-m-d');
+
+/*
+ * FILTER TANGGAL:
+ * GET dikirim sebagai Y-m-d supaya query BETWEEN selalu menerima format
+ * database yang konsisten. Tampilan user tetap d-M-Y melalui altInput.
+ */
 
 $startDate = parseDateR(
     $_GET['start_date'] ?? '',
@@ -124,12 +187,14 @@ $detailCategories = [
     'HD WARNA',
     'HD KRESEK',
     'HD SABLON',
+    'PP SABLON',
     'TALI KG',
     'TALI LOS',
     'BAHAN',
     'TERPAL',
     'BOX',
-    'SEDOTAN'
+    'SEDOTAN',
+    'LAIN-LAIN'
 ];
 
 $allCategories = array_merge($mainCategories, $detailCategories);
@@ -165,6 +230,19 @@ SELECT
     END AS row_qty,
     CASE
         WHEN COALESCE(ds.subtotal,0) <> 0 THEN ABS(COALESCE(ds.subtotal,0))
+
+        /* Khusus item tanpa Qty seperti ONGKOS: gunakan nilai tagihan sebagai basis. */
+        WHEN COALESCE(ds.qty_shipping,0)=0
+         AND COALESCE(ds.qty_pack_shipping,0)=0
+         AND COALESCE(ds.qty_detail_shipping,0)=0
+            THEN ABS(
+                CASE
+                    WHEN COALESCE(dso.price_unit,0)<>0 THEN COALESCE(dso.price_unit,0)
+                    WHEN COALESCE(dso.price,0)<>0 THEN COALESCE(dso.price,0)
+                    ELSE 0
+                END
+            )
+
         WHEN COALESCE(dso.price,0) <> 0 THEN ABS(
             COALESCE(dso.price,0) *
             CASE
@@ -268,6 +346,58 @@ foreach ($shippingGroups as $ship) {
         $summary[$catsInShipping[0]]['rp'] += $invoiceSubtotal;
     }
 }
+
+/*
+ * KOREKSI INVOICE
+ * ------------------------------------------------------------
+ * Source of truth: invoice_correction.
+ *
+ * Rule:
+ * - correction_amount sudah tersimpan signed NEGATIF;
+ * - correction_date mengikuti filter periode register;
+ * - hanya status Active;
+ * - category menentukan baris Register Perincian;
+ * - koreksi hanya mengubah nilai Rp, TIDAK mengubah Quantum/Qty;
+ * - kategori ONGKOS dipetakan ke LAIN-LAIN agar mengikuti struktur
+ *   Register Perincian existing yang tidak memiliki baris ONGKOS tersendiri.
+ */
+$sqlCorrection = "
+    SELECT
+        UPPER(TRIM(COALESCE(category,''))) AS category,
+        COALESCE(SUM(COALESCE(correction_amount,0)),0) AS correction_total
+    FROM invoice_correction
+    WHERE correction_date BETWEEN ? AND ?
+      AND LOWER(COALESCE(status,'Active')) = 'active'
+    GROUP BY UPPER(TRIM(COALESCE(category,'')))
+";
+
+$stmtCorrection = mysqli_prepare($conn, $sqlCorrection);
+if (!$stmtCorrection) {
+    die('SQL Koreksi Invoice Register Penjualan Perincian Error: ' . h(mysqli_error($conn)));
+}
+mysqli_stmt_bind_param($stmtCorrection, 'ss', $startDate, $endDate);
+mysqli_stmt_execute($stmtCorrection);
+$resCorrection = mysqli_stmt_get_result($stmtCorrection);
+
+while ($corr = mysqli_fetch_assoc($resCorrection)) {
+    $corrCat = strtoupper(trim((string)($corr['category'] ?? '')));
+
+    /*
+     * ONGKOS mengikuti rule existing Register Perincian:
+     * kategori non-utama ditampung dalam LAIN-LAIN.
+     */
+    if ($corrCat === 'ONGKOS') {
+        $corrCat = 'LAIN-LAIN';
+    }
+
+    if ($corrCat === '' || !isset($summary[$corrCat])) {
+        continue;
+    }
+
+    $summary[$corrCat]['rp'] += (float)($corr['correction_total'] ?? 0);
+}
+
+mysqli_stmt_close($stmtCorrection);
 
 /*
  * RETUR pada periode yang sama.
@@ -380,7 +510,7 @@ $detailGroups = [
     ],
     [
         'label' => 'JUMLAH BAHAN / SABLON',
-        'cats'  => ['BAHAN', 'HD SABLON']
+        'cats'  => ['BAHAN', 'HD SABLON', 'PP SABLON']
     ],
     [
         'label' => 'JUMLAH TERPAL',
@@ -393,6 +523,10 @@ $detailGroups = [
     [
         'label' => 'JUMLAH SEDOTAN',
         'cats'  => ['SEDOTAN']
+    ],
+    [
+        'label' => 'JUMLAH LAIN-LAIN',
+        'cats'  => ['LAIN-LAIN']
     ],
 ];
 
@@ -546,6 +680,66 @@ body {
     font-weight: 700;
 }
 
+
+.screen-toolbar {
+    margin-bottom: 12px;
+    padding: 12px;
+    border: 1px solid #d8dee6;
+    border-radius: 6px;
+    background: #f8f9fa;
+}
+.toolbar-title {
+    margin-bottom: 10px;
+    padding: 10px 14px;
+    border-radius: 5px;
+    color: #fff;
+    background: linear-gradient(135deg,#1e3c72,#2a5298);
+    font-size: 15px;
+    font-weight: 700;
+}
+.toolbar-filter {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 8px;
+    align-items: end;
+}
+.filter-item label {
+    display:block;
+    margin-bottom:3px;
+    color:#0d6efd;
+    font-size:10px;
+    font-weight:700;
+    text-transform:uppercase;
+}
+.filter-item input {
+    width:100%;
+    padding:6px 8px;
+    border:1px solid #ced4da;
+    border-radius:3px;
+    font-size:11px;
+}
+.toolbar-actions {
+    display:flex;
+    gap:6px;
+}
+.btn-filter {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    min-height:30px;
+    padding:6px 12px;
+    border:0;
+    border-radius:3px;
+    color:#fff;
+    font-size:11px;
+    font-weight:bold;
+    text-decoration:none;
+    cursor:pointer;
+}
+.btn-dark{background:#212529}
+.btn-secondary{background:#6c757d}
+.btn-success{background:#198754}
+
 @media print {
     /*
      * Sembunyikan seluruh elemen halaman aplikasi, termasuk:
@@ -572,7 +766,7 @@ body {
         padding: 0 !important;
     }
 
-    .print-action {
+    .screen-toolbar {
         display: none !important;
     }
 
@@ -597,14 +791,32 @@ body {
 
 <body>
 
-<div class="print-action">
-    <button
-        type="button"
-        class="print-btn"
-        onclick="window.print()"
-    >
-        Print
-    </button>
+<div class="screen-toolbar">
+    <div class="toolbar-title">Register Penjualan Perincian</div>
+
+    <form method="GET" action="index.php" class="toolbar-filter">
+        <input type="hidden" name="page" value="register_penjualan_perincian">
+
+        <div class="filter-item">
+            <label>Start Date</label>
+            <input type="text" name="start_date" class="date-picker" value="<?= h($startDate) ?>" autocomplete="off">
+        </div>
+
+        <div class="filter-item">
+            <label>End Date</label>
+            <input type="text" name="end_date" class="date-picker" value="<?= h($endDate) ?>" autocomplete="off">
+        </div>
+
+        <div class="toolbar-actions">
+            <button type="submit" class="btn-filter btn-dark">Search</button>
+            <a class="btn-filter btn-secondary" href="index.php?page=register_penjualan_perincian">Reset</a>
+            <a class="btn-filter btn-success"
+               target="_blank"
+               href="modul/transaksi/cetak_register_penjualan_perincian.php?start_date=<?= urlencode($startDate) ?>&end_date=<?= urlencode($endDate) ?>">
+                Cetak
+            </a>
+        </div>
+    </form>
 </div>
 
 <div id="printArea">
@@ -701,7 +913,7 @@ body {
                 </tr>
             <?php endif; ?>
 
-            <!-- Grand Total Perincian = Penjualan + Retur (retur sebagai minus) -->
+            <!-- Grand Total Perincian = Penjualan + Koreksi Invoice + Retur (retur sebagai minus) -->
             <tr class="grand-perincian">
                 <td style="text-align:right;">GRAND TOTAL PERINCIAN</td>
                 <td class="text-right">
@@ -775,10 +987,21 @@ body {
 </div>
 </div>
 
+
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script>
-window.addEventListener('load', function () {
-    window.print();
-});
+if (typeof flatpickr !== 'undefined') {
+    flatpickr('.date-picker', {
+        dateFormat: 'Y-m-d',
+        altInput: true,
+        altFormat: 'd-M-Y',
+        allowInput: true,
+        disableMobile: true
+    });
+}
 </script>
 
 </body>

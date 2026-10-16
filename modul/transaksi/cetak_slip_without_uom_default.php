@@ -600,7 +600,7 @@ $maxRowSlots = 10;
 
         .qty-col-2 {
             left: 23mm;
-            width: 15mm;
+            width: 16mm;
             text-align: center;
         }
 

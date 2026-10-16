@@ -6,6 +6,14 @@
  */
 
 // modul/transaksi/add_bayar.php
+//
+// CUT-OFF PIUTANG:
+// - Cutoff resmi = 31-Jul-2026.
+// - Invoice dengan invoice_date <= 31-Jul-2026 sudah masuk Opening Balance,
+//   sehingga TIDAK boleh muncul sebagai pilihan Invoice baru di Add Bayar.
+// - Invoice normal yang selectable mulai 01-Aug-2026.
+// - Opening Balance / Titip mengikuti rule existing.
+// - Retur <= 31-Jul-2026 sudah masuk Opening Balance dan tidak boleh dipilih lagi.
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -192,6 +200,13 @@ $sqlShipping = "
             ON di.invoice_no = hi.invoice_no
 
         WHERE COALESCE(TRIM(di.shipping_no), '') <> ''
+
+          /*
+           * CUT-OFF 31-Jul-2026:
+           * invoice Juli dan sebelumnya sudah tercakup di Opening Balance.
+           * Karena itu invoice baru yang boleh dipilih mulai 01-Aug-2026.
+           */
+          AND hi.invoice_date >= '2026-08-01'
 
           /*
            * CP-MCP adalah dokumen internal untuk kebutuhan Sales Return,
@@ -511,6 +526,7 @@ $sqlReturnList = "
         FROM head_retur_invoice hri
         WHERE LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
           AND COALESCE(hri.customer_id, '') <> ''
+          AND hri.return_date >= '2026-08-01'
     ) src
     WHERE GREATEST(src.effective_return_amount - src.used_amount, 0) > 0.01
     ORDER BY src.return_date ASC, src.return_id ASC
@@ -1261,6 +1277,7 @@ function getSelectedOpeningDirection() {
 function getSelectedTotal() {
     let total = 0;
     let payNowTotal = 0;
+    let absolutePayNowTotal = 0;
     let count = 0;
     let invalidPayNow = false;
     let positiveTotal = 0;
@@ -1298,6 +1315,7 @@ function getSelectedTotal() {
 
         total += signedSisa;
         payNowTotal += payNow;
+        absolutePayNowTotal += Math.abs(payNow);
         count++;
 
         if (isNegativeOpening) {
@@ -1322,6 +1340,7 @@ function getSelectedTotal() {
     return {
         total,
         payNowTotal,
+        absolutePayNowTotal,
         count,
         invalidPayNow,
         positiveTotal,
@@ -1343,15 +1362,15 @@ function refreshPaymentCalculation(resetCash = true) {
     const direction = getSelectedOpeningDirection();
 
     if (direction.hasNegativeOpening) {
+        /*
+         * Saldo Awal (-) / Kredit BOLEH digabung dengan Retur Customer.
+         * Titip tetap tidak boleh digabung dengan Saldo Awal (-).
+         */
         $('#pakai_titip').prop('checked', false).prop('disabled', true);
         $('#nominal_titip').prop('disabled', true).val('0,00');
-        $('#return_id').val('').prop('disabled', true);
-        $('.return-use-row:visible').removeClass('selected-row').each(function(){
-            $(this).find('.js-select-return').prop('checked', false).prop('disabled', true);
-            $(this).find('.js-return-use').prop('disabled', true).val('0,00');
-        });
-        syncSelectedReturns();
-        $('#returnInfo').hide().html('');
+
+        $('#return_id').prop('disabled', false);
+        $('.return-use-row:visible .js-select-return').prop('disabled', false);
     } else {
         $('#pakai_titip').prop('disabled', false);
         $('#return_id').prop('disabled', false);
@@ -1378,7 +1397,7 @@ function refreshPaymentCalculation(resetCash = true) {
 
     if (resetCash) {
         const paymentRequested = selected.payNowTotal;
-        const returDipakai = Math.min(returAmount, paymentRequested);
+        const returDipakai = Math.min(returAmount, Math.max(paymentRequested, 0));
         const kebutuhanCashTitip = Math.max(paymentRequested - returDipakai, 0);
 
         if ($('#pakai_titip').is(':checked')) {
@@ -1409,7 +1428,7 @@ function checkNominal() {
     const payNowTotal = selected.payNowTotal;
     const returAmount = parseFloat($('#retur_invoice').val()) || 0;
     const target = selectedTotal - returAmount;
-    const returDipakai = Math.min(returAmount, payNowTotal);
+    const returDipakai = Math.min(returAmount, Math.max(payNowTotal, 0));
     const kebutuhanCashTitip = Math.max(payNowTotal - returDipakai, 0);
 
     const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
@@ -1784,7 +1803,7 @@ $(document).ready(function () {
         const saldoTitip = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
         const targetBayar = selected.total - returAmount;
-        const returDipakai = Math.min(returAmount, selected.payNowTotal);
+        const returDipakai = Math.min(returAmount, Math.max(selected.payNowTotal, 0));
         const kebutuhanCashTitip = Math.max(selected.payNowTotal - returDipakai, 0);
 
         const nominalCash = parseNumber($('#nominal_bayar').val());
@@ -1810,9 +1829,9 @@ $(document).ready(function () {
 
         if (
             direction.hasNegativeOpening &&
-            ($('#pakai_titip').is(':checked') || selectedReturnId !== '')
+            $('#pakai_titip').is(':checked')
         ) {
-            alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip atau Retur Customer.');
+            alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip Customer.');
             e.preventDefault();
             return false;
         }
@@ -1855,8 +1874,17 @@ $(document).ready(function () {
             return false;
         }
 
+        /*
+         * Jangan memakai payNowTotal signed/net untuk menentukan apakah user
+         * mengisi Bayar Sekarang.
+         *
+         * Contoh valid:
+         * Invoice          +2.595.000
+         * Saldo Awal (-)   -2.595.000
+         * Net                       0
+         */
         if (
-            selected.payNowTotal <= 0.01 &&
+            selected.absolutePayNowTotal <= 0.01 &&
             targetBayar > 0.01 &&
             selectedReturnId === ''
         ) {

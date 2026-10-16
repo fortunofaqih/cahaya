@@ -325,6 +325,22 @@ switch ($page) {
     case 'cetak_register_penjualan_dinamis':
         include 'modul/transaksi/cetak_register_penjualan_dinamis.php';
         break;
+    case 'koreksi_invoice':
+        include 'modul/transaksi/koreksi_invoice.php';
+        break;
+    case 'save_koreksi_invoice':
+        include 'modul/transaksi/save_koreksi_invoice.php';
+        break;
+    case 'edit_koreksi_invoice':
+        include 'modul/transaksi/edit_koreksi_invoice.php';
+        break;
+    case 'delete_koreksi_invoice':
+        include 'modul/transaksi/delete_koreksi_invoice.php';
+        break;
+    case 'diagnostic_aging_piutang_rev6_6_customer':
+        include 'modul/transaksi/diagnostic_aging_piutang_rev6_6_customer.php';
+        break;
+    
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';

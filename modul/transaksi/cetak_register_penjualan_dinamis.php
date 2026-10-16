@@ -43,29 +43,87 @@ function classifyCategoryDinamisR($inventoryName){
     $n=strtoupper(trim((string)$inventoryName));
     if($n==='') return 'LAIN LAIN';
 
+    /*
+     * KHUSUS BAHAN
+     * Disamakan dengan Register Global Detail / Register Perincian.
+     *
+     * Contoh:
+     * LLDPE RESIN TITANVENE LL0209 SC
+     */
+    if(
+        strpos($n,'RESIN')!==false ||
+        strpos($n,'LLDPE')!==false
+    ){
+        return 'BAHAN';
+    }
+
+    // ============================
+    // RULE EXISTING DI BAWAH INI
+    // JANGAN DIUBAH
+    // ============================
+
     // SEDOTAN diprioritaskan agar "SEDOTAN BAHAN" tetap masuk SEDOTAN.
     if(strpos($n,'SEDOTAN')!==false) return 'SEDOTAN';
 
-    if(preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n) && strpos($n,'WARNA')!==false) return 'PE WARNA';
+    if(
+        preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n) &&
+        strpos($n,'WARNA')!==false
+    ) return 'PE WARNA';
+
     if(strpos($n,'KERTAS')!==false) return 'KERTAS';
 
-    if(preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n) && strpos($n,'SABLON')!==false) return 'PP SABLON';
+    if(
+        preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n) &&
+        strpos($n,'SABLON')!==false
+    ) return 'PP SABLON';
+
     if(preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n)) return 'PP';
 
-    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) && strpos($n,'WARNA')!==false) return 'HD WARNA';
-    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) && strpos($n,'KRESEK')!==false) return 'HD KRESEK';
-    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) && strpos($n,'SABLON')!==false) return 'HD SABLON';
+    if(
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) &&
+        strpos($n,'WARNA')!==false
+    ) return 'HD WARNA';
 
-    if(strpos($n,'TALI')!==false && preg_match('/(^|[^A-Z])KG([^A-Z]|$)/',$n)) return 'TALI KG';
-    if(strpos($n,'TALI')!==false && strpos($n,'LOS')!==false) return 'TALI LOS';
+    if(
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) &&
+        strpos($n,'KRESEK')!==false
+    ) return 'HD KRESEK';
 
-    if(preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/',$n)) return 'BAHAN';
+    if(
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n) &&
+        strpos($n,'SABLON')!==false
+    ) return 'HD SABLON';
+
+    if(
+        strpos($n,'TALI')!==false &&
+        preg_match('/(^|[^A-Z])KG([^A-Z]|$)/',$n)
+    ) return 'TALI KG';
+
+    if(
+        strpos($n,'TALI')!==false &&
+        strpos($n,'LOS')!==false
+    ) return 'TALI LOS';
+
+    // Rule BAHAN existing tetap dipertahankan
+    if(
+        preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/',$n)
+    ) return 'BAHAN';
+
     if(strpos($n,'TERPAL')!==false) return 'TERPAL';
-    if(preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/',$n)) return 'BOX';
-    if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n)) return 'HD';
-    if(preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n)) return 'PE';
 
-    return 'LAIN LAIN';
+    if(
+        preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/',$n)
+    ) return 'BOX';
+
+    if(
+        preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n)
+    ) return 'HD';
+
+    if(
+        preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n)
+    ) return 'PE';
+
+    return 'LAIN LAIN DETAIL';
 }
 function emptyCatR(){ return ['qty'=>0.0,'qty_kg'=>0.0,'rp'=>0.0]; }
 
@@ -82,6 +140,25 @@ $allCats = [
 
 // Default awal mengikuti Register Penjualan Global existing.
 $defaultCats = ['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
+
+/*
+ * LAIN LAIN pada Register Penjualan Dinamis harus sama maknanya dengan
+ * LAIN LAIN pada Register Penjualan Global:
+ * yaitu ringkasan seluruh isi Register Penjualan Global Detail.
+ *
+ * LAIN LAIN DETAIL adalah kategori internal untuk ONGKOS, PELET, dll.
+ * Tidak ditampilkan sebagai checkbox terpisah.
+ */
+$detailCatsForLainLain = [
+    'HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON',
+    'TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN',
+    'LAIN LAIN DETAIL'
+];
+
+$allocationCats = array_values(array_unique(array_merge(
+    $allCats,
+    ['LAIN LAIN DETAIL']
+)));
 
 /*
 |--------------------------------------------------------------------------
@@ -209,6 +286,21 @@ SELECT
         WHEN COALESCE(ds.subtotal,0)<>0
             THEN ABS(COALESCE(ds.subtotal,0))
 
+        /*
+         * Tambahan untuk item tanpa Qty seperti ONGKOS.
+         * Tetap punya basis alokasi dari price_unit / price.
+         */
+        WHEN COALESCE(ds.qty_shipping,0)=0
+         AND COALESCE(ds.qty_pack_shipping,0)=0
+         AND COALESCE(ds.qty_detail_shipping,0)=0
+            THEN ABS(
+                CASE
+                    WHEN COALESCE(dso.price_unit,0)<>0 THEN COALESCE(dso.price_unit,0)
+                    WHEN COALESCE(dso.price,0)<>0 THEN COALESCE(dso.price,0)
+                    ELSE 0
+                END
+            )
+
         WHEN COALESCE(dso.price,0)<>0
             THEN ABS(
                 COALESCE(dso.price,0) *
@@ -304,7 +396,7 @@ mysqli_stmt_close($stmt);
 foreach($shippingGroups as $key=>$ship){
     $allCategoryData=[];
 
-    foreach($allCats as $cat){
+    foreach($allocationCats as $cat){
         $allCategoryData[$cat]=emptyCatR();
     }
 
@@ -313,7 +405,7 @@ foreach($shippingGroups as $key=>$ship){
 
     foreach($ship['items'] as $it){
         $g=$it['category'];
-        if(!isset($allCategoryData[$g])) $g='LAIN LAIN';
+        if(!isset($allCategoryData[$g])) $g='LAIN LAIN DETAIL';
 
         $allCategoryData[$g]['qty'] += $it['qty'];
         $allCategoryData[$g]['qty_kg'] += $it['qty_kg'];
@@ -346,6 +438,23 @@ foreach($shippingGroups as $key=>$ship){
     }elseif(!empty($catsInShipping)){
         // Safety fallback bila seluruh basis harga kosong/0.
         $allCategoryData[$catsInShipping[0]]['rp'] += $ship['penjualan'];
+    }
+
+    /*
+     * Sinkronisasi LAIN LAIN dengan Register Penjualan Global:
+     * LAIN LAIN = jumlah seluruh kategori Register Penjualan Global Detail.
+     *
+     * Kategori detail individual tetap tersedia untuk checkbox dinamis.
+     * Ini hanya membuat checkbox LAIN LAIN menjadi kolom ringkasan.
+     */
+    $allCategoryData['LAIN LAIN'] = emptyCatR();
+
+    foreach($detailCatsForLainLain as $detailCat){
+        if(!isset($allCategoryData[$detailCat])) continue;
+
+        $allCategoryData['LAIN LAIN']['qty'] += $allCategoryData[$detailCat]['qty'];
+        $allCategoryData['LAIN LAIN']['qty_kg'] += $allCategoryData[$detailCat]['qty_kg'];
+        $allCategoryData['LAIN LAIN']['rp'] += $allCategoryData[$detailCat]['rp'];
     }
 
     /*
@@ -390,6 +499,149 @@ foreach($shippingGroups as $key=>$ship){
         $grand[$cat]['rp'] += $rows[$key][$cat]['rp'];
     }
 }
+
+/*
+ * KOREKSI INVOICE
+ * --------------------------------------------------------------------------
+ * Source of truth: invoice_correction.
+ *
+ * Rule mengikuti Register Penjualan Dinamis existing:
+ * - correction_amount sudah signed NEGATIF;
+ * - Qty dan Qty KG selalu 0 karena koreksi adalah mutasi nilai;
+ * - kategori utama PP/KERTAS/PE/PE WARNA masuk langsung ke kategorinya;
+ * - kategori detail HD/.../SEDOTAN tetap masuk kategori detail masing-masing;
+ * - kategori detail juga ikut membentuk LAIN LAIN sebagai ringkasan,
+ *   sama seperti rule existing Register Penjualan Global;
+ * - ONGKOS diperlakukan sebagai LAIN LAIN DETAIL;
+ * - baris hanya tampil bila kategori koreksi relevan dengan checkbox yang dipilih;
+ * - TOTAL/PENJUALAN dihitung satu kali per koreksi, walaupun detail + LAIN LAIN
+ *   sama-sama sedang dipilih.
+ */
+$sqlCorrection = "
+    SELECT
+        ic.correction_id,
+        ic.correction_no,
+        ic.correction_date,
+        ic.customer_id,
+        COALESCE(mc.customer, ic.customer_id) AS customer_name,
+        COALESCE(ic.invoice_no,'') AS invoice_no,
+        COALESCE(ic.shipping_no,'') AS shipping_no,
+        UPPER(TRIM(COALESCE(ic.category,''))) AS category,
+        COALESCE(ic.correction_amount,0) AS correction_amount
+    FROM invoice_correction ic
+    LEFT JOIN m_customer mc
+        ON mc.customer_id COLLATE utf8mb4_general_ci
+         = ic.customer_id COLLATE utf8mb4_general_ci
+    WHERE ic.correction_date BETWEEN ? AND ?
+      AND LOWER(COALESCE(ic.status,'Active'))='active'
+";
+
+if ($sort === 'invoice_no') {
+    $sqlCorrection .= " ORDER BY ic.invoice_no " . $orderDirection . ", ic.correction_date ASC, ic.correction_id ASC ";
+} else {
+    $sqlCorrection .= " ORDER BY ic.shipping_no " . $orderDirection . ", ic.correction_date ASC, ic.correction_id ASC ";
+}
+
+$stmtCorrection = mysqli_prepare($conn,$sqlCorrection);
+if(!$stmtCorrection){
+    die('SQL Koreksi Invoice Register Penjualan Dinamis Error: '.h(mysqli_error($conn)));
+}
+mysqli_stmt_bind_param($stmtCorrection,'ss',$startDate,$endDate);
+mysqli_stmt_execute($stmtCorrection);
+$resCorrection = mysqli_stmt_get_result($stmtCorrection);
+
+while($corr=mysqli_fetch_assoc($resCorrection)){
+    $rawCat = strtoupper(trim((string)($corr['category'] ?? '')));
+
+    /*
+     * Mapping kategori koreksi ke kategori internal Dinamis.
+     */
+    if($rawCat === 'ONGKOS'){
+        $corrCat = 'LAIN LAIN DETAIL';
+    } elseif(in_array($rawCat, $allocationCats, true)) {
+        $corrCat = $rawCat;
+    } else {
+        $corrCat = 'LAIN LAIN DETAIL';
+    }
+
+    $amount = (float)($corr['correction_amount'] ?? 0);
+
+    /*
+     * Bentuk data seluruh kategori dahulu, sama seperti invoice normal.
+     */
+    $allCategoryData = [];
+    foreach($allocationCats as $cat){
+        $allCategoryData[$cat] = emptyCatR();
+    }
+
+    if(!isset($allCategoryData[$corrCat])){
+        $corrCat = 'LAIN LAIN DETAIL';
+    }
+
+    $allCategoryData[$corrCat]['rp'] = $amount;
+
+    /*
+     * LAIN LAIN adalah ringkasan seluruh kategori detail.
+     * Jadi koreksi HD/BAHAN/TALI/ONGKOS/dll otomatis ikut LAIN LAIN.
+     */
+    $allCategoryData['LAIN LAIN'] = emptyCatR();
+    foreach($detailCatsForLainLain as $detailCat){
+        if(!isset($allCategoryData[$detailCat])) continue;
+
+        $allCategoryData['LAIN LAIN']['qty'] += $allCategoryData[$detailCat]['qty'];
+        $allCategoryData['LAIN LAIN']['qty_kg'] += $allCategoryData[$detailCat]['qty_kg'];
+        $allCategoryData['LAIN LAIN']['rp'] += $allCategoryData[$detailCat]['rp'];
+    }
+
+    /*
+     * Hormati checkbox user: jangan tampilkan koreksi bila tidak ada kategori
+     * yang dipilih yang relevan dengan koreksi tersebut.
+     */
+    $hasSelectedData = false;
+    foreach($selectedCats as $cat){
+        if(
+            abs((float)($allCategoryData[$cat]['qty'] ?? 0)) > 0.000001 ||
+            abs((float)($allCategoryData[$cat]['qty_kg'] ?? 0)) > 0.000001 ||
+            abs((float)($allCategoryData[$cat]['rp'] ?? 0)) > 0.000001
+        ){
+            $hasSelectedData = true;
+            break;
+        }
+    }
+
+    if(!$hasSelectedData){
+        continue;
+    }
+
+    $key = 'CORRECTION|' . (int)$corr['correction_id'];
+
+    $rows[$key] = [
+        'shipping_no' => (string)($corr['shipping_no'] ?? ''),
+        'invoice_no' => (string)($corr['invoice_no'] ?? ''),
+        'customer_name' => (string)($corr['customer_name'] ?? ''),
+        'total' => $amount,
+        'penjualan' => $amount,
+    ];
+
+    foreach($selectedCats as $cat){
+        $rows[$key][$cat] = $allCategoryData[$cat];
+    }
+
+    /*
+     * Grand TOTAL/PENJUALAN hanya sekali per koreksi.
+     * Grand kategori mengikuti setiap kolom yang memang sedang ditampilkan.
+     */
+    $grand['total'] += $amount;
+    $grand['penjualan'] += $amount;
+
+    foreach($selectedCats as $cat){
+        $grand[$cat]['qty'] += $rows[$key][$cat]['qty'];
+        $grand[$cat]['qty_kg'] += $rows[$key][$cat]['qty_kg'];
+        $grand[$cat]['rp'] += $rows[$key][$cat]['rp'];
+    }
+}
+
+mysqli_stmt_close($stmtCorrection);
 
 
 $totalColumns = 5 + (count($selectedCats) * 3);

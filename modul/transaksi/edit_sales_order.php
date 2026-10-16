@@ -45,7 +45,39 @@ if (empty($no_po) && !empty($head['po'])) {
     $no_po = $head['po'];
 }
 
-// Ambil data detail untuk ditampilkan (readonly)
+// PERBAIKAN NO PO: periksa pemakaian oleh SO lain dan jumlah header PO.
+// Ini hanya preview. Nomor final wajib divalidasi ulang saat Update.
+$po_so_count = 0;
+$po_hed_count = 0;
+$po_needs_repair = false;
+$po_suggestion = '';
+if ($no_po !== '') {
+    $poEsc = mysqli_real_escape_string($conn, $no_po);
+    $checkSO = mysqli_query($conn, "SELECT COUNT(*) AS n FROM head_sales_order WHERE po = '$poEsc'");
+    if ($checkSO) $po_so_count = (int)(mysqli_fetch_assoc($checkSO)['n'] ?? 0);
+    $checkHed = mysqli_query($conn, "SELECT COUNT(*) AS n FROM hed_po WHERE no_po = '$poEsc'");
+    if ($checkHed) $po_hed_count = (int)(mysqli_fetch_assoc($checkHed)['n'] ?? 0);
+    $po_needs_repair = ($po_so_count > 1 || $po_hed_count > 1);
+    if ($po_needs_repair) {
+        $poYear = preg_match('~/PO/([0-9]{4})$~', $no_po, $poMatch)
+            ? $poMatch[1] : date('Y');
+        $yearEsc = mysqli_real_escape_string($conn, $poYear);
+        $qMaxPO = mysqli_query($conn, "SELECT COALESCE(MAX(nomor),0) AS max_num FROM (
+            SELECT CAST(SUBSTRING_INDEX(no_po, '/', 1) AS UNSIGNED) AS nomor
+              FROM hed_po WHERE no_po REGEXP '^[0-9]+/PO/{$yearEsc}$'
+            UNION ALL
+            SELECT CAST(SUBSTRING_INDEX(po, '/', 1) AS UNSIGNED) AS nomor
+              FROM head_sales_order WHERE po REGEXP '^[0-9]+/PO/{$yearEsc}$'
+            UNION ALL
+            SELECT CAST(SUBSTRING_INDEX(no_po, '/', 1) AS UNSIGNED) AS nomor
+              FROM det_po WHERE no_po REGEXP '^[0-9]+/PO/{$yearEsc}$'
+        ) AS used_po");
+        if ($qMaxPO) {
+            $po_suggestion = str_pad((string)((int)(mysqli_fetch_assoc($qMaxPO)['max_num'] ?? 0) + 1), 3, '0', STR_PAD_LEFT) . '/PO/' . $poYear;
+        }
+    }
+}
+
 // Ambil data detail untuk ditampilkan (readonly)
 $q_det = mysqli_query($conn, "
     SELECT d.*, 
@@ -153,7 +185,6 @@ if ($uom_q) {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/select2/4.1.0-rc.0/js/select2.min.js"></script>
 
 <style>
-/* ... semua style sama dengan add_sales_order.php ... */
 :root {
     --bg-base     : #f0f2f5;
     --bg-panel    : #ffffff;
@@ -412,7 +443,6 @@ if ($uom_q) {
     <div class="so-body">
     <form method="POST" action="index.php?page=update_sales_order" id="formEditSO">
         <input type="hidden" name="order_no" value="<?= htmlspecialchars($order_no) ?>">
-         <input type="hidden" name="no_po" value="<?= htmlspecialchars($no_po) ?>">
         <!-- 3 PANEL ROW (sama seperti sebelumnya) -->
         <div class="panel-row">
             <!-- PANEL 1: Order Information -->
@@ -429,8 +459,18 @@ if ($uom_q) {
                     </div>
                     <div class="ff">
                         <label>No. PO</label>
-                        <input type="text" name="no_po" value="<?= htmlspecialchars($no_po) ?>" style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
-                        <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO tidak dapat diubah</small>
+                        <input type="text" name="no_po" value="<?= htmlspecialchars($no_po) ?>" readonly style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                        <?php if ($po_needs_repair): ?>
+                        <input type="hidden" name="repair_duplicate_po" value="1">
+                        <div style="margin-top:5px;padding:7px;background:#fff3cd;color:#664d03;border:1px solid #ffc107;font-size:10px;line-height:1.5;">
+                            <strong>Nomor PO kembar terdeteksi!</strong><br>
+                            Dipakai <?= $po_so_count ?> Sales Order dan <?= $po_hed_count ?> header PO.
+                            <?php if ($po_suggestion !== ''): ?><br>Perkiraan nomor pengganti: <strong><?= htmlspecialchars($po_suggestion) ?></strong>.<?php endif; ?>
+                            <br>Nomor final ditentukan ulang saat klik Update. Header/detail PO lama yang tidak dapat diidentifikasi tidak akan dihapus otomatis.
+                        </div>
+                        <?php else: ?>
+                        <small style="display:block;color:#6c757d;font-size:9px;margin-top:2px;">Nomor PO tidak dapat diubah (unik).</small>
+                        <?php endif; ?>
                     </div>
                     <div class="ff">
                         <label>Marketing</label>
@@ -803,6 +843,8 @@ function getUomFactor(inventoryId, unit) {
 function isSpecialInventory(inventoryName) {
     return inventoryName.includes("PE ROLL STOKAN SSB") || 
            inventoryName.includes("PP ROLL BOLA") ||
+		   inventoryName.includes("PP ROLL MCP") ||
+           inventoryName.includes("PP ROLL CAHAYA LUMBA") ||
            inventoryName.includes("PE ROLL KAYU MAS");
 }
 
@@ -828,19 +870,12 @@ function getPriceFormulaFactor(row) {
 // ============================================================
 // FUNGSI PRICE
 // ============================================================
+// [PERUBAHAN] Semua inventory: price-unit & price editable
 function updatePriceUnitReadonly(row) {
     var $row = $(row);
-    var isSpecial = isSpecialInventory($row.find('.inv-name-hidden').val() || '');
-    var priceUnitInput = $row.find('.price-unit');
-    
-    if (isSpecial) {
-        priceUnitInput.prop('readonly', false);
-        priceUnitInput.css('background', '#ffffff');
-    } else {
-        priceUnitInput.prop('readonly', true);
-        priceUnitInput.css('background', '#f1f3f5');
-        priceUnitInput.val('0');
-    }
+    // Semua inventory: price-unit & price editable
+    $row.find('.price-unit').prop('readonly', false).css('background', '#ffffff');
+    $row.find('.price').prop('readonly', false).css('background', '#ffffff');
 }
 
 function calculatePriceFromPriceUnit(row) {
@@ -1730,51 +1765,38 @@ $(document).ready(function() {
         });
     });
 
-    // Price Unit input
-    //$(document).on('input', '.price-unit', function() {
-        //var tr = $(this).closest('tr')[0];
-        //if (isSpecialInventory($(tr).find('.inv-name-hidden').val() || '')) {
-          //  this.value = formatRupiahTyping(this.value);
-          //  this.selectionStart = this.selectionEnd = this.value.length;
-          //  calculatePriceFromPriceUnit(tr);
-       // }
-    //});
-	// Price Unit input - PERBAIKAN
-	// Price Unit input
-$(document).on('input', '.price-unit', function() {
-    var tr = $(this).closest('tr')[0];
-    var inventoryName = $(tr).find('.inv-name-hidden').val() || '';
-    
-    if (isSpecialInventory(inventoryName)) {
-        // Format input Rupiah
+    // ============================================================
+    // [PERUBAHAN] EVENT PRICE UNIT
+    // Format Rupiah selalu jalan untuk semua inventory.
+    // Kalkulasi tetap HANYA untuk special inventory (rumus tidak diubah).
+    // ============================================================
+    $(document).on('input', '.price-unit', function() {
+        var tr = $(this).closest('tr')[0];
+        var inventoryName = $(tr).find('.inv-name-hidden').val() || '';
+        
+        // Format Rupiah selalu jalan (semua inventory)
         this.value = formatRupiahTyping(this.value);
         this.selectionStart = this.selectionEnd = this.value.length;
         
-        var priceUnit = parseRupiah(this.value);
-        var factor = getPriceFormulaFactor(tr); // (t × 10 × l) / divisor
-        var qtyPack = parseFloat($(tr).find('.qty-pack').val()) || 0;
-        
-        console.log('=== DEBUG ===');
-        console.log('Inventory:', inventoryName);
-        console.log('Price Unit:', priceUnit);
-        console.log('Factor:', factor);
-        console.log('Qty Pack:', qtyPack);
-        
-        if (priceUnit > 0 && factor > 0) {
-            // Price = factor × price_unit
-            var price = factor * priceUnit;
-            console.log('Price:', price);
-            $(tr).find('.price').val(formatRupiahInput(price));
+        // Kalkulasi HANYA untuk special inventory (rumus tidak diubah)
+        if (isSpecialInventory(inventoryName)) {
+            var priceUnit = parseRupiah(this.value);
+            var factor = getPriceFormulaFactor(tr);
+            var qtyPack = parseFloat($(tr).find('.qty-pack').val()) || 0;
             
-            // Subtotal = Price × Qty Pack
-            var subtotal = price * qtyPack;
-            console.log('Subtotal:', subtotal);
-            $(tr).find('.subtotal').val(formatRupiahInput(subtotal));
+            if (priceUnit > 0 && factor > 0) {
+                // Price = factor × price_unit
+                var price = factor * priceUnit;
+                $(tr).find('.price').val(formatRupiahInput(price));
+                
+                // Subtotal = Price × Qty Pack
+                var subtotal = price * qtyPack;
+                $(tr).find('.subtotal').val(formatRupiahInput(subtotal));
+            }
+            
+            calculateGrandTotal();
         }
-        
-        calculateGrandTotal();
-    }
-});
+    });
 
     // Price input
     $(document).on('input', '.price', function() {
@@ -1782,16 +1804,9 @@ $(document).on('input', '.price-unit', function() {
         this.value = formatRupiahTyping(this.value);
         this.selectionStart = this.selectionEnd = this.value.length;
         
-        if (isSpecialInventory($(tr).find('.inv-name-hidden').val() || '')) {
-            var priceUnit = parseRupiah($(tr).find('.price-unit').val());
-            if (priceUnit === 0) {
-                calculatePriceUnitFromPrice(tr);
-            } else {
-                calculateRow(tr);
-            }
-        } else {
-            calculateRow(tr);
-        }
+        // Sama dengan Add Sales Order: input Price hanya memperbarui subtotal.
+        // Price Unit tidak dihitung ulang dari Price.
+        calculateRow(tr);
     });
 
     // Down Payment input
@@ -1861,11 +1876,4 @@ $(document).on('input', '.price-unit', function() {
         return true;
     });
 });
-console.log('=== DATA FROM PHP ===');
-console.log('existingDetails:', existingDetails);
-if (existingDetails && existingDetails.length > 0) {
-    console.log('p:', existingDetails[0].p);
-    console.log('l:', existingDetails[0].l);
-    console.log('t:', existingDetails[0].t);
-}
 </script>

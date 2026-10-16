@@ -177,13 +177,28 @@ $sql = "
         SELECT
             di_calc.invoice_no,
             ROUND(COALESCE(SUM(
-                COALESCE(ds_calc.qty_pack_shipping, 0) *
                 CASE
-                    WHEN COALESCE(dso_calc.price, 0) > 0
-                        THEN COALESCE(dso_calc.price, 0)
-                    WHEN COALESCE(dso_calc.quantity_pack, 0) > 0
-                        THEN COALESCE(dso_calc.subtotal, 0) / NULLIF(dso_calc.quantity_pack, 0)
-                    ELSE 0
+                    /* KHUSUS ONGKOS TANPA QTY: Price Unit menjadi nilai tagihan. */
+                    WHEN UPPER(COALESCE(ds_calc.inventory_name, '')) LIKE '%ONGKOS%'
+                     AND COALESCE(ds_calc.qty_shipping, 0) = 0
+                     AND COALESCE(ds_calc.qty_pack_shipping, 0) = 0
+                     AND COALESCE(ds_calc.qty_detail_shipping, 0) = 0
+                        THEN CASE
+                            WHEN COALESCE(dso_calc.price_unit, 0) > 0
+                                THEN COALESCE(dso_calc.price_unit, 0)
+                            WHEN COALESCE(dso_calc.price, 0) > 0
+                                THEN COALESCE(dso_calc.price, 0)
+                            ELSE 0
+                        END
+                    ELSE
+                        COALESCE(ds_calc.qty_pack_shipping, 0) *
+                        CASE
+                            WHEN COALESCE(dso_calc.price, 0) > 0
+                                THEN COALESCE(dso_calc.price, 0)
+                            WHEN COALESCE(dso_calc.quantity_pack, 0) > 0
+                                THEN COALESCE(dso_calc.subtotal, 0) / NULLIF(dso_calc.quantity_pack, 0)
+                            ELSE 0
+                        END
                 END
             ), 0), 0) AS invoice_total_calc
         FROM det_invoice di_calc
@@ -233,12 +248,27 @@ $detailSql = "
             ELSE 0
         END AS invoice_price,
         (
-            COALESCE(ds.qty_pack_shipping, 0) *
             CASE
-                WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
-                WHEN COALESCE(dso.quantity_pack, 0) > 0
-                    THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
-                ELSE 0
+                /* KHUSUS ONGKOS TANPA QTY: Price Unit menjadi nilai tagihan. */
+                WHEN UPPER(COALESCE(ds.inventory_name, '')) LIKE '%ONGKOS%'
+                 AND COALESCE(ds.qty_shipping, 0) = 0
+                 AND COALESCE(ds.qty_pack_shipping, 0) = 0
+                 AND COALESCE(ds.qty_detail_shipping, 0) = 0
+                    THEN CASE
+                        WHEN COALESCE(dso.price_unit, 0) > 0
+                            THEN COALESCE(dso.price_unit, 0)
+                        WHEN COALESCE(dso.price, 0) > 0
+                            THEN COALESCE(dso.price, 0)
+                        ELSE 0
+                    END
+                ELSE
+                    COALESCE(ds.qty_pack_shipping, 0) *
+                    CASE
+                        WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+                        WHEN COALESCE(dso.quantity_pack, 0) > 0
+                            THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                        ELSE 0
+                    END
             END
         ) AS invoice_subtotal,
         ds.remarks_inventory_shipping

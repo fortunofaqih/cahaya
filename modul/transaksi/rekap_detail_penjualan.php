@@ -225,8 +225,8 @@ function pageUrl($p){
     <div class="col-xl-4 col-md-6"><label class="form-label">Customer</label><select name="customer_id" id="customer_id_filter" class="form-select form-select-sm"><option value="">-- Semua Customer --</option><?php foreach($customers as $x):?><option value="<?=h($x['customer_id'])?>" <?=$customerId===(string)$x['customer_id']?'selected':''?>><?=h($x['customer_name'])?> | <?=h($x['customer_id'])?></option><?php endforeach;?></select></div>
     <div class="col-xl-4 col-md-12"><div class="rdp-actions"><button class="btn btn-sm btn-primary"><i class="fa fa-search"></i> Tampilkan</button>
     <a href="index.php?page=rekap_detail_penjualan" class="btn btn-sm btn-outline-secondary"><i class="fa fa-rotate-left"></i> Reset</a>
-     <a
-    href="index.php?page=cetak_rekap_detail_penjualan&start_date=<?= urlencode($startRaw) ?>&end_date=<?= urlencode($endRaw) ?>&customer_id=<?= urlencode($customerId) ?>"
+<a
+    href="modul/transaksi/cetak_rekap_detail_penjualan.php?start_date=<?= urlencode($startRaw) ?>&end_date=<?= urlencode($endRaw) ?>&customer_id=<?= urlencode($customerId) ?>"
     target="_blank"
     class="btn btn-sm btn-success"
 >

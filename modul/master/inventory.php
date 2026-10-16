@@ -946,10 +946,10 @@ function generateInventoryId($conn, $inventory_name, $type) {
                     
                     <div id="detail" class="spec-content">
                         <table class="spec-table"><tr><td><b>Merk</b></td><td><input type="text" name="merk" id="form_merk"></td></tr>
-                        <tr><td><b>P (Panjang)</b></td><td><input type="number" step="0.001" name="p" id="form_p" value="0.000"></td></tr>
-                        <tr><td><b>L (Lebar)</b></td><td><input type="number" step="0.001" name="l" id="form_l" value="0.000"></td></tr>
-                        <tr><td><b>T (Tebal)</b></td><td><input type="number" step="0.001" name="t" id="form_t" value="0.000"></td></tr>
-                        <tr><td><b>P2</b></td><td><input type="number" step="0.001" name="p2" id="form_p2" value="0.000"></td></tr>
+                        <tr><td><b>P (Panjang)</b></td><td><input type="number" step="0.0001" name="p" id="form_p" value="0.0000"></td></tr>
+                        <tr><td><b>L (Lebar)</b></td><td><input type="number" step="0.0001" name="l" id="form_l" value="0.0000"></td></tr>
+                        <tr><td><b>T (Tebal)</b></td><td><input type="number" step="0.0001" name="t" id="form_t" value="0.0000"></td></tr>
+                        <tr><td><b>P2</b></td><td><input type="number" step="0.0001" name="p2" id="form_p2" value="0.0000"></td></tr>
 
                         <tr><td><b>Tebal</b></td><td><input type="number" step="0.0001" name="tebal" id="form_tebal" value="0.0000"></td></tr>
                         <tr><td><b>Ukuran</b></td><td><input type="text" name="ukuran" id="form_ukuran"></td></tr>

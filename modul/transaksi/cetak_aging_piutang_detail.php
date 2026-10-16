@@ -1,13 +1,25 @@
 <?php
 /*
+ * REV7 TAHAP 1
+ * Fokus revisi:
+ * 1. Payment September+ terhadap invoice <= baseline mengikuti bucket invoice
+ *    yang dipilih, bukan otomatis bucket tertua.
+ * 2. RETURN yang berpasangan dengan INVOICE pada bayar_no yang sama tidak
+ *    membentuk residual bucket +/- palsu.
+ *
+ * Formula 1, rollover existing, query penjualan, dan tampilan TIDAK diubah.
+ */
+/*
  * modul/transaksi/cetak_aging_piutang_detail.php
  *
  * RULE FINAL AGING PIUTANG - STRICT MONTHLY CARRY-FORWARD:
  * 1. Customer yang tampil WAJIB masih ada dan aktif di m_customer.
- * 2. SALDO AWAL bulan berjalan = posisi piutang sampai H-1 bulan laporan.
- *    Bucket opening TIDAK dihitung dari opening_date. Bucket berasal dari snapshot
- *    customer_opening_balance_bucket dan digulirkan bulan demi bulan.
- *    customer_opening_balance hanya merupakan base migrasi, bukan mutasi bulanan.
+ * 2. CUT-OFF GLOBAL = 31-Jul-2026.
+ *    customer_opening_balance adalah SNAPSHOT resmi saldo per 31-Jul-2026,
+ *    bukan adjustment yang dijumlahkan lagi dengan transaksi Juli.
+ *    SALDO AWAL Agustus = opening_balance snapshot 31-Jul-2026.
+ *    SALDO AWAL bulan berikutnya = snapshot cutoff + mutasi efektif setelah
+ *    cutoff sampai akhir bulan sebelumnya.
  * 3. TRANSAKSI SEBELUM BULAN FILTER tidak boleh tampil ulang pada kolom bulan berjalan:
  *      - invoice sebelum startDate -> bagian dari SALDO AWAL;
  *      - pembayaran sebelum startDate -> bagian dari SALDO AWAL;
@@ -15,21 +27,24 @@
  *      - retur sebelum startDate -> bagian dari SALDO AWAL.
  * 4. Kolom PENJUALAN hanya memuat invoice pada bulan yang difilter
  *    (dikurangi retur bulan berjalan sesuai rule laporan yang sudah digunakan).
- * 5. Kolom BAYAR hanya memuat pembayaran cash/transfer pada bulan yang difilter.
- * 6. Kolom TITIP hanya memuat titip yang DIPAKAI pada bulan yang difilter.
- *    Titip-used bulan sebelumnya tidak tampil lagi karena efeknya sudah masuk
- *    Saldo Akhir bulan sebelumnya dan otomatis menjadi Saldo Awal bulan ini.
- * 7. Untuk customer yang memiliki opening balance:
- *      - invoice dengan invoice_date <= opening_date sudah tercakup pada opening;
- *      - hanya mutasi setelah opening_date yang dihitung lagi.
- * 8. Untuk customer TANPA opening balance, histori sebelum startDate tetap
- *    dihitung sebagai carry-forward SALDO AWAL, bukan dipindahkan ke Penjualan.
+ * 5. Kolom BAYAR hanya memuat pembayaran efektif pada bulan yang difilter.
+ *    payment_source=OPENING / opening_id>0 hanya efektif bila
+ *    detail_bayar.opening_effect_piutang=1, mengikuti Kartu Piutang.
+ * 6. Kolom TITIP memuat PERUBAHAN saldo titip carry-forward bulan filter:
+ *      saldo titip akhir bulan - saldo titip awal bulan.
+ *    Titip bulan sebelumnya yang habis dipakai bulan ini tampil negatif.
+ *    Titip yang masuk dan habis dipakai dalam bulan yang sama net menjadi 0.
+ * 7. Invoice/Retur/Pembayaran <= 31-Jul-2026 tidak dihitung ulang karena
+ *    sudah tercakup dalam snapshot opening_balance.
+ * 8. Histori setelah cutoff tetapi sebelum startDate menjadi carry-forward
+ *    SALDO AWAL bulan berikutnya.
  * 9. Invoice / Shipping CP-MCP tidak masuk Penjualan/Pembayaran normal.
  * 10. Retur CP-MCP tetap dihitung standalone memakai grand_total;
  *     retur normal memakai return_amount.
  * 11. Retur normal mengurangi outstanding invoice terkait.
- *     Retur standalone/CP-MCP tidak membuat Bayar negatif sintetis.
- *     Retur yang belum digunakan masuk bucket LEBIH sebagai credit balance.
+ *     Pemakaian Retur (payment_source=RETURN) masuk BAYAR sebagai nilai negatif.
+ *     Data baru memakai bayar_amount; data legacy 0 fallback ke nilai master Retur.
+ *     Sisa Retur yang belum digunakan tetap menjadi credit balance.
  * 12. Titip yang belum digunakan masuk bucket LEBIH sebagai credit balance.
  *     Titip yang sudah digunakan tetap tampil di kolom TITIP.
  * 12. Rumus wajib balance:
@@ -40,6 +55,10 @@
  *     customer_opening_balance hanya base migrasi/snapshot historis bila memang tersedia.
  * 14. Nilai invoice resmi mengikuti det_invoice.total, fallback det_invoice.subtotal.
  *     Aging tidak menghitung ulang harga dari SO/Shipping.
+ * 15. Koreksi Invoice memakai invoice_correction sebagai source of truth:
+ *     - sebelum bulan filter menjadi carry-forward SALDO AWAL;
+ *     - dalam bulan filter masuk PENJUALAN signed (minus);
+ *     - tidak memiliki due_date, sehingga komposisi bucket diselesaikan oleh FINAL RESIDUAL LEBIH.
  */
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -107,6 +126,13 @@ function initAmountRow()
         'b_61_90' => 0.0,
         'b_lebih' => 0.0,
         'belum_jatuh_tempo' => 0.0,
+
+        /* Bucket invoice setelah migration baseline; Formula 1 tidak memakai field ini. */
+        'post_base_b_1_30' => 0.0,
+        'post_base_b_31_60' => 0.0,
+        'post_base_b_61_90' => 0.0,
+        'post_base_b_lebih' => 0.0,
+        'post_base_bjt' => 0.0,
     ];
 }
 
@@ -258,7 +284,16 @@ function simulateOpeningBuckets(
      * akan salah mulai September karena pembayaran Agustus seharusnya terjadi
      * SEBELUM rollover Agustus -> September.
      */
-    $cursor = new DateTime(date('Y-m-01', strtotime($bucketDate . ' +1 month')));
+    /*
+     * FIX MIGRATION BASELINE AKHIR BULAN:
+     * Normalisasi bucket_date ke tanggal 1 terlebih dahulu, BARU maju 1 bulan.
+     * Contoh 31-Aug-2026 tidak boleh dihitung langsung '+1 month' karena PHP
+     * dapat overflow ke Oktober dan melewatkan rollover September.
+     *
+     * Rule rollover bucket existing TIDAK diubah.
+     */
+    $cursor = new DateTime(date('Y-m-01', strtotime($bucketDate)));
+    $cursor->modify('+1 month');
     $lastMonth = new DateTime(date('Y-m-01', strtotime($asOfDate)));
 
     while ($cursor <= $lastMonth) {
@@ -276,10 +311,53 @@ function simulateOpeningBuckets(
     return $bucket;
 }
 
+
+/* ============================================================
+ * HELPER MIGRATION BASELINE BUCKET
+ * ============================================================ */
+function sumMigrationBucketBaseline(array $row): float
+{
+    return
+        (float)($row['b_1_30'] ?? 0)
+        + (float)($row['b_31_60'] ?? 0)
+        + (float)($row['b_61_90'] ?? 0)
+        + (float)($row['b_lebih'] ?? 0)
+        + (float)($row['belum_jatuh_tempo'] ?? 0);
+}
+
+function makeMigrationBucketSeed(array $row): array
+{
+    return [
+        'bucket_date' => (string)($row['baseline_date'] ?? $row['bucket_date'] ?? ''),
+        'b_1_30' => (float)($row['b_1_30'] ?? 0),
+        'b_31_60' => (float)($row['b_31_60'] ?? 0),
+        'b_61_90' => (float)($row['b_61_90'] ?? 0),
+        'b_lebih' => (float)($row['b_lebih'] ?? 0),
+        'belum_jatuh_tempo' => (float)($row['belum_jatuh_tempo'] ?? 0),
+    ];
+}
+
 $bulan = (int)($_GET['bulan'] ?? date('n'));
 $tahun = (int)($_GET['tahun'] ?? date('Y'));
 $filterBy = trim((string)($_GET['filter_by'] ?? 'semua'));
 $filterValue = trim((string)($_GET['filter_value'] ?? ''));
+
+/*
+ * CUT-OFF RESMI MIGRASI
+ * ------------------------------------------------------------
+ * Semua posisi sampai dengan 31-Jul-2026 dianggap sudah terkandung di
+ * customer_opening_balance. Mutasi efektif Aging dimulai 01-Aug-2026.
+ */
+$cutoffDate = '2026-07-31';
+$postCutoffDate = '2026-08-01';
+
+/* ============================================================
+ * MIGRATION BASELINE KHUSUS BUCKET AGING
+ * Closing 31-Aug-2026 menjadi source of truth 5 bucket saja.
+ * TIDAK dipakai untuk Awal / Penjualan / Bayar / Titip / Akhir.
+ * ============================================================ */
+$bucketBaselineDate = '2026-08-31';
+$bucketPostBaselineDate = '2026-09-01';
 
 if ($bulan < 1 || $bulan > 12) {
     $bulan = (int)date('n');
@@ -415,7 +493,7 @@ $sqlOpening = "
     WHERE 1=1
 ";
 
-$openingParams = [$previousDate];
+$openingParams = [$cutoffDate];
 $openingTypes = 's';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -457,6 +535,14 @@ while ($op = mysqli_fetch_assoc($resOpening)) {
 }
 mysqli_stmt_close($stmtOpening);
 
+/*
+ * OPENING SNAPSHOT
+ * ------------------------------------------------------------
+ * Rule lama yang menjumlah seluruh customer_opening_balance sebagai manual
+ * adjustment dinonaktifkan. Snapshot cutoff sudah dipilih pada $openingMap.
+ * Tidak ada SUM opening_balance tambahan setelah ini.
+ */
+$manualOpeningBeforeMap = [];
 
 /* ============================================================
  * 2A. BUCKET OPENING MIGRASI (OPSIONAL TAPI DIREKOMENDASIKAN)
@@ -490,6 +576,50 @@ if ($openingBucketTableAvailable) {
     }
 }
 
+
+/* ============================================================
+ * 2B. MIGRATION BASELINE BUCKET 31-AUG-2026
+ * ============================================================
+ * KHUSUS komposisi 5 bucket. Formula 1 tidak membaca tabel ini.
+ */
+$bucketBaselineMap = [];
+$bucketBaselineTableAvailable = tableExists($conn, 'aging_bucket_migration_baseline');
+
+if ($bucketBaselineTableAvailable) {
+    $sqlBucketBaseline = "
+        SELECT baseline_id, customer_id, baseline_date,
+               b_1_30, b_31_60, b_61_90, b_lebih, belum_jatuh_tempo
+        FROM aging_bucket_migration_baseline
+        WHERE baseline_date = ?
+    ";
+
+    $stmtBucketBaseline = mysqli_prepare($conn, $sqlBucketBaseline);
+    mysqli_stmt_bind_param($stmtBucketBaseline, 's', $bucketBaselineDate);
+    mysqli_stmt_execute($stmtBucketBaseline);
+    $resBucketBaseline = mysqli_stmt_get_result($stmtBucketBaseline);
+
+    while ($bb = mysqli_fetch_assoc($resBucketBaseline)) {
+        $cid = trim((string)($bb['customer_id'] ?? ''));
+        if ($cid === '' || !isset($masterCustomers[$cid])) {
+            continue;
+        }
+
+        $bucketBaselineMap[$cid] = [
+            'baseline_id' => (int)($bb['baseline_id'] ?? 0),
+            'customer_id' => $cid,
+            'baseline_date' => (string)($bb['baseline_date'] ?? ''),
+            'bucket_date' => (string)($bb['baseline_date'] ?? ''),
+            'b_1_30' => (float)($bb['b_1_30'] ?? 0),
+            'b_31_60' => (float)($bb['b_31_60'] ?? 0),
+            'b_61_90' => (float)($bb['b_61_90'] ?? 0),
+            'b_lebih' => (float)($bb['b_lebih'] ?? 0),
+            'belum_jatuh_tempo' => (float)($bb['belum_jatuh_tempo'] ?? 0),
+        ];
+    }
+
+    mysqli_stmt_close($stmtBucketBaseline);
+}
+
 /* Adjustment migrasi dipakai hanya bila angka program lama memang tidak
  * mempunyai transaksi ekuivalen di database baru. Adjustment bulan lalu
  * otomatis ikut carry-forward ke Saldo Awal bulan berikutnya.
@@ -502,7 +632,8 @@ if ($adjustmentTableAvailable) {
         SELECT period_date, customer_id, awal_adjust, penjualan_adjust,
                bayar_adjust, titip_adjust, opening_payment_adjust
         FROM aging_migration_adjustment
-        WHERE period_date <= '{$safeEnd}'
+        WHERE period_date >= '2026-08-01'
+          AND period_date <= '{$safeEnd}'
     ";
     $resAdj = mysqli_query($conn, $sqlAdj);
     while ($ad = mysqli_fetch_assoc($resAdj)) {
@@ -535,7 +666,8 @@ if ($adjustmentTableAvailable) {
     $sqlAdjTimeline = "
         SELECT period_date, customer_id, opening_payment_adjust
         FROM aging_migration_adjustment
-        WHERE period_date <= '{$safeEndTimeline}'
+        WHERE period_date >= '2026-08-01'
+          AND period_date <= '{$safeEndTimeline}'
           AND ABS(COALESCE(opening_payment_adjust,0)) > 0
     ";
     $resAdjTimeline = mysqli_query($conn, $sqlAdjTimeline);
@@ -561,14 +693,13 @@ if ($adjustmentTableAvailable) {
  * TIDAK lagi dipakai untuk membuang histori customer yang tidak mempunyai
  * customer_opening_balance.
  *
- * Rule normal:
- * - customer dengan opening manual: snapshot menjadi base; transaksi setelah
- *   opening_date yang digulirkan;
- * - customer tanpa opening manual: seluruh histori transaksi menjadi dasar
- *   carry-forward otomatis.
+ * Rule cutoff terbaru:
+ * - snapshot resmi berasal dari customer_opening_balance <=31-Jul-2026;
+ * - transaksi <=31-Jul-2026 tidak dihitung ulang;
+ * - hanya transaksi >=01-Aug-2026 yang membentuk carry-forward berikutnya.
  *
- * Dengan demikian saldo akhir Juli otomatis menjadi saldo awal Agustus,
- * saldo akhir Agustus menjadi saldo awal September, dan seterusnya.
+ * Dengan demikian saldo akhir Agustus otomatis menjadi saldo awal September,
+ * saldo akhir September menjadi saldo awal Oktober, dan seterusnya.
  */
 $migrationCutoff = $globalOpeningCutoff !== ''
     ? $globalOpeningCutoff
@@ -591,6 +722,8 @@ foreach ($masterCustomers as $cid => $m) {
     $calc[$cid] = [
         'pre_invoice' => 0.0,
         'period_invoice' => 0.0,
+        'pre_invoice_correction' => 0.0,
+        'period_invoice_correction' => 0.0,
         'pre_cash' => 0.0,
         'pre_titip' => 0.0,
         'period_cash' => 0.0,
@@ -607,6 +740,7 @@ foreach ($masterCustomers as $cid => $m) {
         'credit_b_61_90' => 0.0,
         'credit_b_lebih' => 0.0,
         'credit_bjt' => 0.0,
+        'unused_titip_cutoff' => 0.0,
         'unused_titip_before' => 0.0,
         'unused_titip_end' => 0.0,
         'b_1_30' => 0.0,
@@ -628,15 +762,22 @@ foreach ($masterCustomers as $cid => $m) {
  * Outstanding per invoice:
  * invoice_calc - cash - titip_used - retur_linked_invoice.
  *
- * Bucket memakai umur lewat jatuh tempo, tetapi lebar bucket mengikuti
- * jumlah hari kalender aktual:
- * contoh Agustus 2026 => 1-31, 32-62, 63-92, >92.
+ * RULE BUCKET FINAL:
+ * Umur piutang dihitung dari BERAPA HARI invoice sudah melewati due_date
+ * sampai tanggal akhir laporan ($asOfDate), BUKAN berdasarkan bulan invoice.
+ *
+ *   <= 0 hari  = BELUM JATUH TEMPO
+ *   1 - 30     = 1-30 HARI
+ *   31 - 60    = 31-60 HARI
+ *   61 - 90    = 61-90 HARI
+ *   > 90       = LEBIH
+ *
+ * Batas bucket sengaja FIX 30/60/90. Jangan mengikuti jumlah hari kalender
+ * bulan (31/30/28), karena nama dan definisi laporan adalah umur tunggakan.
  */
-$bucket1Days = (int)date('t', strtotime($startDate));
-$prevMonthStart = date('Y-m-01', strtotime($startDate . ' -1 month'));
-$prev2MonthStart = date('Y-m-01', strtotime($startDate . ' -2 month'));
-$bucket2Limit = $bucket1Days + (int)date('t', strtotime($prevMonthStart));
-$bucket3Limit = $bucket2Limit + (int)date('t', strtotime($prev2MonthStart));
+$bucket1Limit = 30;
+$bucket2Limit = 60;
+$bucket3Limit = 90;
 
 $sqlInvoiceAgg = "
 WITH latest_opening AS (
@@ -760,11 +901,12 @@ inv_base AS (
         ON pi.invoice_no = hi.invoice_no
     LEFT JOIN return_inv ri
         ON ri.invoice_no = hi.invoice_no
-    WHERE hi.invoice_date <= ?
+    WHERE hi.invoice_date >= '2026-08-01'
+      AND hi.invoice_date <= ?
       AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
 ";
 
-$invoiceAggParams = [$previousDate, $endDate, $endDate, $endDate, $endDate];
+$invoiceAggParams = [$cutoffDate, $endDate, $endDate, $endDate, $endDate];
 $invoiceAggTypes = 'sssss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -784,19 +926,15 @@ if ($filterBy === 'grup' && $filterValue !== '') {
 $sqlInvoiceAgg .= "
 ),
 eligible AS (
+    /*
+     * Semua invoice riil tetap dihitung.
+     * Manual opening adalah adjustment tambahan dan tidak menjadi boundary
+     * yang menghapus invoice sebelum opening_date.
+     */
     SELECT
         *,
         (gross - paid_total - return_total) AS outstanding
     FROM inv_base
-    WHERE
-        (
-            opening_date IS NOT NULL
-            AND invoice_date > opening_date
-        )
-        OR
-        (
-            opening_date IS NULL
-        )
 )
 SELECT
     customer_id,
@@ -812,21 +950,19 @@ SELECT
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) > {$bucket2Limit}
-         AND DATEDIFF(?, due_date) <= {$bucket3Limit}
+         AND DATEDIFF(?, due_date) BETWEEN 61 AND {$bucket3Limit}
         THEN outstanding ELSE 0 END
     ) AS b_61_90,
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) > {$bucket1Days}
-         AND DATEDIFF(?, due_date) <= {$bucket2Limit}
+         AND DATEDIFF(?, due_date) BETWEEN 31 AND {$bucket2Limit}
         THEN outstanding ELSE 0 END
     ) AS b_31_60,
 
     SUM(CASE
         WHEN outstanding > 0
-         AND DATEDIFF(?, due_date) BETWEEN 1 AND {$bucket1Days}
+         AND DATEDIFF(?, due_date) BETWEEN 1 AND {$bucket1Limit}
         THEN outstanding ELSE 0 END
     ) AS b_1_30,
 
@@ -839,6 +975,17 @@ FROM eligible
 GROUP BY customer_id
 ";
 
+/*
+ * Placeholder setelah CTE inv_base:
+ * 1 = pre_invoice startDate
+ * 2 = period_invoice startDate, endDate
+ * 1 = b_lebih asOfDate
+ * 1 = b_61_90 asOfDate
+ * 1 = b_31_60 asOfDate
+ * 1 = b_1_30 asOfDate
+ * 1 = belum_jatuh_tempo asOfDate
+ * Total = 8 placeholder.
+ */
 $invoiceAggParams[] = $startDate;
 $invoiceAggParams[] = $startDate;
 $invoiceAggParams[] = $endDate;
@@ -847,9 +994,7 @@ $invoiceAggParams[] = $asOfDate;
 $invoiceAggParams[] = $asOfDate;
 $invoiceAggParams[] = $asOfDate;
 $invoiceAggParams[] = $asOfDate;
-$invoiceAggParams[] = $asOfDate;
-$invoiceAggParams[] = $asOfDate;
-$invoiceAggTypes .= 'ssssssssss';
+$invoiceAggTypes .= 'ssssssss';
 
 $stmtInvoiceAgg = mysqli_prepare($conn, $sqlInvoiceAgg);
 mysqli_stmt_bind_param($stmtInvoiceAgg, $invoiceAggTypes, ...$invoiceAggParams);
@@ -868,11 +1013,456 @@ while ($r = mysqli_fetch_assoc($resInvoiceAgg)) {
 mysqli_stmt_close($stmtInvoiceAgg);
 
 /* ============================================================
+ * 3A. BUCKET INVOICE POST MIGRATION BASELINE
+ * ============================================================
+ * Clone query invoice production agar seluruh rule pay_inv / retur / titip /
+ * filter tetap IDENTIK. Satu-satunya perubahan adalah boundary invoice untuk
+ * komposisi bucket: 01-Aug-2026 -> 01-Sep-2026.
+ *
+ * pre_invoice / period_invoice dari query clone DIABAIKAN.
+ */
+if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
+    /*
+     * Jangan clone query dengan str_replace boundary secara implisit.
+     * Buat boundary post-baseline eksplisit pada copy query production.
+     *
+     * Tujuan:
+     * - invoice <= 31-Aug tetap diwakili migration baseline;
+     * - invoice >= 01-Sep dihitung per invoice dari gross - payment invoice
+     *   terkait - retur invoice terkait;
+     * - bucket tetap memakai due_date production.
+     *
+     * Ini penting untuk payment yang menunjuk invoice tertentu. Contoh AR PLASTIK:
+     * payment September ke invoice Agustus tidak boleh mengurangi invoice
+     * September lain yang belum jatuh tempo.
+     */
+    $sqlInvoiceBucketPostBaseline = $sqlInvoiceAgg;
+    $postBoundaryNeedle = "hi.invoice_date >= '2026-08-01'";
+    $postBoundaryReplacement = "hi.invoice_date >= '" . $bucketPostBaselineDate . "'";
+
+    if (strpos($sqlInvoiceBucketPostBaseline, $postBoundaryNeedle) !== false) {
+        $sqlInvoiceBucketPostBaseline = str_replace(
+            $postBoundaryNeedle,
+            $postBoundaryReplacement,
+            $sqlInvoiceBucketPostBaseline
+        );
+    }
+
+    $stmtInvoiceBucketPostBaseline = mysqli_prepare($conn, $sqlInvoiceBucketPostBaseline);
+    mysqli_stmt_bind_param(
+        $stmtInvoiceBucketPostBaseline,
+        $invoiceAggTypes,
+        ...$invoiceAggParams
+    );
+    mysqli_stmt_execute($stmtInvoiceBucketPostBaseline);
+    $resInvoiceBucketPostBaseline = mysqli_stmt_get_result($stmtInvoiceBucketPostBaseline);
+
+    while ($r = mysqli_fetch_assoc($resInvoiceBucketPostBaseline)) {
+        $cid = trim((string)($r['customer_id'] ?? ''));
+        if (!isset($calc[$cid])) {
+            continue;
+        }
+
+        $calc[$cid]['post_base_b_1_30'] = (float)($r['b_1_30'] ?? 0);
+        $calc[$cid]['post_base_b_31_60'] = (float)($r['b_31_60'] ?? 0);
+        $calc[$cid]['post_base_b_61_90'] = (float)($r['b_61_90'] ?? 0);
+        $calc[$cid]['post_base_b_lebih'] = (float)($r['b_lebih'] ?? 0);
+        $calc[$cid]['post_base_bjt'] = (float)($r['belum_jatuh_tempo'] ?? 0);
+    }
+
+    mysqli_stmt_close($stmtInvoiceBucketPostBaseline);
+
+    /*
+     * REV7 TAHAP 2 - SOURCE-AWARE RECOVERY POST-BASELINE
+     * ----------------------------------------------------------
+     * Rule existing 3A di atas TETAP menjadi source utama.
+     * Recovery ini HANYA aktif bila seluruh post_base_* customer = 0.
+     *
+     * Tujuan:
+     * - invoice setelah migration baseline dihitung PER INVOICE;
+     * - payment hanya mengurangi invoice_no yang benar-benar dipilih;
+     * - retur hanya mengurangi invoice_no sumber retur;
+     * - outstanding diklasifikasikan memakai due_date invoice tersebut.
+     *
+     * Dengan demikian payment/retur invoice historical tidak boleh memakan
+     * invoice September lain yang belum jatuh tempo.
+     * Formula 1 / rollover / baseline / renderer TIDAK diubah.
+     */
+    $sqlPostBaseRecovery = "
+        WITH invoice_calc_recovery AS (
+            SELECT
+                di.invoice_no,
+                ROUND(
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN COALESCE(di.total, 0) > 0
+                                    THEN COALESCE(di.total, 0)
+                                ELSE COALESCE(di.subtotal, 0)
+                            END
+                        ),
+                        0
+                    ),
+                    0
+                ) AS gross
+            FROM det_invoice di
+            GROUP BY di.invoice_no
+        ),
+        pay_inv_recovery AS (
+            SELECT
+                db.invoice_no,
+                SUM(
+                    CASE
+                        WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+                          OR (
+                                LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+                            AND COALESCE(TRIM(db.return_id), '') <> ''
+                          )
+                        THEN 0
+                        ELSE
+                            CASE
+                                WHEN hb.bayar_date <= ? THEN
+                                    CASE
+                                        WHEN COALESCE(db.cash_amount, 0) > 0
+                                            THEN COALESCE(db.cash_amount, 0)
+                                        ELSE GREATEST(
+                                            COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
+                                            0
+                                        )
+                                    END
+                                ELSE 0
+                            END
+                            +
+                            CASE
+                                WHEN COALESCE(tu.titip_date, hb.bayar_date) <= ?
+                                    THEN COALESCE(db.titip_amount, 0)
+                                ELSE 0
+                            END
+                    END
+                ) AS paid_total
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no = db.bayar_no
+            LEFT JOIN (
+                SELECT
+                    ref_no AS bayar_no,
+                    customer_id,
+                    MIN(titip_date) AS titip_date
+                FROM detail_titip
+                WHERE UPPER(COALESCE(transaction_type,'')) = 'PAKAI'
+                  AND COALESCE(ref_no,'') <> ''
+                GROUP BY ref_no, customer_id
+            ) tu
+                ON tu.bayar_no = db.bayar_no
+               AND tu.customer_id = hb.customer_id
+            WHERE COALESCE(db.invoice_no, '') <> ''
+              AND UPPER(COALESCE(db.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
+            GROUP BY db.invoice_no
+        ),
+        return_inv_recovery AS (
+            SELECT
+                hri.invoice_no,
+                SUM(COALESCE(hri.return_amount, 0)) AS return_total
+            FROM head_retur_invoice hri
+            WHERE hri.return_date <= ?
+              AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+              AND COALESCE(hri.invoice_no, '') <> ''
+              AND UPPER(COALESCE(hri.invoice_no, '')) NOT LIKE '%CP-MCP%'
+              AND UPPER(COALESCE(hri.shipping_no, '')) NOT LIKE '%CP-MCP%'
+            GROUP BY hri.invoice_no
+        ),
+        post_invoice_recovery AS (
+            SELECT
+                hi.customer_id,
+                hi.invoice_no,
+                hi.invoice_date,
+                DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days, 0) DAY) AS due_date,
+                COALESCE(ic.gross, 0) AS gross,
+                COALESCE(pi.paid_total, 0) AS paid_total,
+                COALESCE(ri.return_total, 0) AS return_total,
+                (
+                    COALESCE(ic.gross, 0)
+                    - COALESCE(pi.paid_total, 0)
+                    - COALESCE(ri.return_total, 0)
+                ) AS outstanding
+            FROM head_invoice hi
+            INNER JOIN m_customer mc
+                ON mc.customer_id = hi.customer_id
+               AND COALESCE(mc.is_active, 'Checked') = 'Checked'
+            LEFT JOIN invoice_calc_recovery ic
+                ON ic.invoice_no = hi.invoice_no
+            LEFT JOIN pay_inv_recovery pi
+                ON pi.invoice_no = hi.invoice_no
+            LEFT JOIN return_inv_recovery ri
+                ON ri.invoice_no = hi.invoice_no
+            WHERE hi.invoice_date >= ?
+              AND hi.invoice_date <= ?
+              AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
+    ";
+
+    $postRecoveryParams = [
+        $endDate,
+        $endDate,
+        $endDate,
+        $bucketPostBaselineDate,
+        $endDate
+    ];
+    $postRecoveryTypes = 'sssss';
+
+    if ($filterBy === 'grup' && $filterValue !== '') {
+        $sqlPostBaseRecovery .= " AND COALESCE(mc.area_code, '') = ? ";
+        $postRecoveryParams[] = $filterValue;
+        $postRecoveryTypes .= 's';
+    } elseif ($filterBy === 'kota' && $filterValue !== '') {
+        $sqlPostBaseRecovery .= " AND COALESCE(NULLIF(mc.city, ''), 'TANPA KOTA') = ? ";
+        $postRecoveryParams[] = $filterValue;
+        $postRecoveryTypes .= 's';
+    } elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
+        $sqlPostBaseRecovery .= " AND mc.customer_id = ? ";
+        $postRecoveryParams[] = $filterValue;
+        $postRecoveryTypes .= 's';
+    }
+
+    $sqlPostBaseRecovery .= "
+        )
+        SELECT
+            customer_id,
+            SUM(CASE
+                WHEN outstanding > 0
+                 AND DATEDIFF(?, due_date) BETWEEN 1 AND {$bucket1Limit}
+                THEN outstanding ELSE 0 END
+            ) AS b_1_30,
+            SUM(CASE
+                WHEN outstanding > 0
+                 AND DATEDIFF(?, due_date) BETWEEN 31 AND {$bucket2Limit}
+                THEN outstanding ELSE 0 END
+            ) AS b_31_60,
+            SUM(CASE
+                WHEN outstanding > 0
+                 AND DATEDIFF(?, due_date) BETWEEN 61 AND {$bucket3Limit}
+                THEN outstanding ELSE 0 END
+            ) AS b_61_90,
+            SUM(CASE
+                WHEN outstanding < 0 THEN outstanding
+                WHEN outstanding > 0
+                 AND DATEDIFF(?, due_date) > {$bucket3Limit}
+                THEN outstanding ELSE 0 END
+            ) AS b_lebih,
+            SUM(CASE
+                WHEN outstanding > 0
+                 AND DATEDIFF(?, due_date) <= 0
+                THEN outstanding ELSE 0 END
+            ) AS belum_jatuh_tempo
+        FROM post_invoice_recovery
+        GROUP BY customer_id
+    ";
+
+    $postRecoveryParams[] = $asOfDate;
+    $postRecoveryParams[] = $asOfDate;
+    $postRecoveryParams[] = $asOfDate;
+    $postRecoveryParams[] = $asOfDate;
+    $postRecoveryParams[] = $asOfDate;
+    $postRecoveryTypes .= 'sssss';
+
+    $stmtPostBaseRecovery = mysqli_prepare($conn, $sqlPostBaseRecovery);
+    mysqli_stmt_bind_param(
+        $stmtPostBaseRecovery,
+        $postRecoveryTypes,
+        ...$postRecoveryParams
+    );
+    mysqli_stmt_execute($stmtPostBaseRecovery);
+    $resPostBaseRecovery = mysqli_stmt_get_result($stmtPostBaseRecovery);
+
+    while ($rr = mysqli_fetch_assoc($resPostBaseRecovery)) {
+        $cid = trim((string)($rr['customer_id'] ?? ''));
+        if (!isset($calc[$cid]) || !isset($bucketBaselineMap[$cid])) {
+            continue;
+        }
+
+        $existingPostBaseTotal =
+            (float)($calc[$cid]['post_base_b_1_30'] ?? 0)
+            + (float)($calc[$cid]['post_base_b_31_60'] ?? 0)
+            + (float)($calc[$cid]['post_base_b_61_90'] ?? 0)
+            + (float)($calc[$cid]['post_base_b_lebih'] ?? 0)
+            + (float)($calc[$cid]['post_base_bjt'] ?? 0);
+
+        /*
+         * PENTING: customer yang query 3A existing-nya sudah menghasilkan
+         * bucket tidak disentuh sama sekali.
+         */
+        if (abs($existingPostBaseTotal) > 0.0001) {
+            continue;
+        }
+
+        $recoveryTotal =
+            (float)($rr['b_1_30'] ?? 0)
+            + (float)($rr['b_31_60'] ?? 0)
+            + (float)($rr['b_61_90'] ?? 0)
+            + (float)($rr['b_lebih'] ?? 0)
+            + (float)($rr['belum_jatuh_tempo'] ?? 0);
+
+        if (abs($recoveryTotal) <= 0.0001) {
+            continue;
+        }
+
+        $calc[$cid]['post_base_b_1_30'] = (float)($rr['b_1_30'] ?? 0);
+        $calc[$cid]['post_base_b_31_60'] = (float)($rr['b_31_60'] ?? 0);
+        $calc[$cid]['post_base_b_61_90'] = (float)($rr['b_61_90'] ?? 0);
+        $calc[$cid]['post_base_b_lebih'] = (float)($rr['b_lebih'] ?? 0);
+        $calc[$cid]['post_base_bjt'] = (float)($rr['belum_jatuh_tempo'] ?? 0);
+    }
+    mysqli_stmt_close($stmtPostBaseRecovery);
+
+    /*
+     * Defensive source-based fallback.
+     * ----------------------------------------------------------
+     * Bila customer mempunyai PENJUALAN invoice pada bulan laporan tetapi
+     * query post-baseline tidak menghasilkan bucket sama sekali, gunakan
+     * komposisi bucket dari query production ($c b_*), HANYA sebesar posisi
+     * invoice yang memang berasal setelah baseline.
+     *
+     * Fallback ini tidak memindahkan residual Lebih secara paksa dan tidak
+     * mengubah Formula 1. Normalnya blok ini tidak aktif; ia hanya mencegah
+     * invoice September yang valid hilang dari post_base_* akibat boundary
+     * migration. Fallback hanya dipakai bila TOTAL bucket production sama
+     * dengan period_invoice, sehingga tidak mencampur saldo historical baseline.
+     */
+    foreach ($calc as $cid => &$postCalc) {
+        if (!isset($bucketBaselineMap[$cid])) {
+            continue;
+        }
+
+        $postBucketTotal =
+            (float)($postCalc['post_base_b_1_30'] ?? 0)
+            + (float)($postCalc['post_base_b_31_60'] ?? 0)
+            + (float)($postCalc['post_base_b_61_90'] ?? 0)
+            + (float)($postCalc['post_base_b_lebih'] ?? 0)
+            + (float)($postCalc['post_base_bjt'] ?? 0);
+
+        $productionBucketTotal =
+            (float)($postCalc['b_1_30'] ?? 0)
+            + (float)($postCalc['b_31_60'] ?? 0)
+            + (float)($postCalc['b_61_90'] ?? 0)
+            + (float)($postCalc['b_lebih'] ?? 0)
+            + (float)($postCalc['belum_jatuh_tempo'] ?? 0);
+
+        $periodInvoiceForFallback = (float)($postCalc['period_invoice'] ?? 0);
+
+        if (
+            abs($postBucketTotal) <= 0.0001
+            && abs($periodInvoiceForFallback) > 0.0001
+            && abs($productionBucketTotal - $periodInvoiceForFallback) <= 0.01
+        ) {
+            $postCalc['post_base_b_1_30'] = (float)($postCalc['b_1_30'] ?? 0);
+            $postCalc['post_base_b_31_60'] = (float)($postCalc['b_31_60'] ?? 0);
+            $postCalc['post_base_b_61_90'] = (float)($postCalc['b_61_90'] ?? 0);
+            $postCalc['post_base_b_lebih'] = (float)($postCalc['b_lebih'] ?? 0);
+            $postCalc['post_base_bjt'] = (float)($postCalc['belum_jatuh_tempo'] ?? 0);
+        }
+    }
+    unset($postCalc);
+}
+
+/* ============================================================
+ * 3B. KOREKSI INVOICE
+ * ============================================================
+ * SOURCE OF TRUTH = invoice_correction.
+ *
+ * Rule sama dengan Kartu Piutang:
+ * - correction_amount disimpan signed negatif;
+ * - koreksi post-cutoff sebelum bulan filter menjadi carry-forward SALDO AWAL;
+ * - koreksi dalam bulan filter masuk PENJUALAN;
+ * - status Cancelled tidak dihitung.
+ *
+ * Koreksi tidak mempunyai due_date, sehingga tidak dipaksa ke bucket invoice.
+ * Selisih komposisi bucket otomatis ditampung oleh FINAL RESIDUAL LEBIH.
+ */
+$sqlInvoiceCorrection = "
+    SELECT
+        ic.customer_id,
+        COALESCE(SUM(CASE
+            WHEN ic.correction_date >= ?
+             AND ic.correction_date < ?
+            THEN COALESCE(ic.correction_amount,0)
+            ELSE 0
+        END),0) AS pre_invoice_correction,
+
+        COALESCE(SUM(CASE
+            WHEN ic.correction_date BETWEEN ? AND ?
+            THEN COALESCE(ic.correction_amount,0)
+            ELSE 0
+        END),0) AS period_invoice_correction
+
+    FROM invoice_correction ic
+    INNER JOIN m_customer mc
+        ON mc.customer_id = ic.customer_id
+       AND COALESCE(mc.is_active, 'Checked') = 'Checked'
+    WHERE ic.correction_date >= ?
+      AND ic.correction_date <= ?
+      AND LOWER(COALESCE(ic.status, 'Active')) = 'active'
+";
+
+$invoiceCorrectionParams = [
+    $postCutoffDate,
+    $startDate,
+    $startDate,
+    $endDate,
+    $postCutoffDate,
+    $endDate
+];
+$invoiceCorrectionTypes = 'ssssss';
+
+if ($filterBy === 'grup' && $filterValue !== '') {
+    $sqlInvoiceCorrection .= " AND COALESCE(mc.area_code, '') = ? ";
+    $invoiceCorrectionParams[] = $filterValue;
+    $invoiceCorrectionTypes .= 's';
+} elseif ($filterBy === 'kota' && $filterValue !== '') {
+    $sqlInvoiceCorrection .= " AND COALESCE(NULLIF(mc.city, ''), 'TANPA KOTA') = ? ";
+    $invoiceCorrectionParams[] = $filterValue;
+    $invoiceCorrectionTypes .= 's';
+} elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
+    $sqlInvoiceCorrection .= " AND mc.customer_id = ? ";
+    $invoiceCorrectionParams[] = $filterValue;
+    $invoiceCorrectionTypes .= 's';
+}
+
+$sqlInvoiceCorrection .= " GROUP BY ic.customer_id ";
+
+$stmtInvoiceCorrection = mysqli_prepare($conn, $sqlInvoiceCorrection);
+mysqli_stmt_bind_param(
+    $stmtInvoiceCorrection,
+    $invoiceCorrectionTypes,
+    ...$invoiceCorrectionParams
+);
+mysqli_stmt_execute($stmtInvoiceCorrection);
+$resInvoiceCorrection = mysqli_stmt_get_result($stmtInvoiceCorrection);
+
+while ($r = mysqli_fetch_assoc($resInvoiceCorrection)) {
+    $cid = trim((string)($r['customer_id'] ?? ''));
+    if (!isset($calc[$cid])) {
+        continue;
+    }
+
+    $calc[$cid]['pre_invoice_correction'] =
+        (float)($r['pre_invoice_correction'] ?? 0);
+
+    $calc[$cid]['period_invoice_correction'] =
+        (float)($r['period_invoice_correction'] ?? 0);
+}
+
+mysqli_stmt_close($stmtInvoiceCorrection);
+
+/* ============================================================
  * 4. PEMBAYARAN CASH + TITIP TERPAKAI
  * ============================================================
  * Cash mengikuti head_bayar.bayar_date.
- * Hanya pembayaran yang tanggal bayarnya berada pada bulan filter yang tampil
- * di kolom BAYAR; pembayaran bulan sebelumnya hanya mempengaruhi SALDO AWAL.
+ * Hanya pembayaran efektif terhadap piutang yang tanggal bayarnya berada pada
+ * bulan filter yang masuk kolom BAYAR.
+ * payment_source=OPENING / opening_id>0 mengikuti Kartu Piutang:
+ *   - opening_effect_piutang=0 -> histori/audit, efek BAYAR = 0;
+ *   - opening_effect_piutang=1 -> pembayaran efektif dan ikut BAYAR/carry-forward.
+ * Pembayaran bulan sebelumnya hanya mempengaruhi carry-forward SALDO AWAL.
  * Titip hanya mengurangi A/R ketika benar-benar DIPAKAI pada detail_bayar,
  * dengan tanggal efektif date_created (fallback tanggal head_bayar).
  * Titip masuk di detail_titip tidak mengurangi piutang.
@@ -909,6 +1499,7 @@ pay_base AS (
         lo.opening_balance,
         db.invoice_no,
         db.opening_id,
+        COALESCE(db.opening_effect_piutang, 0) AS opening_effect_piutang,
         UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) AS payment_source,
         hi.invoice_date AS linked_invoice_date,
                 /*
@@ -921,14 +1512,60 @@ pay_base AS (
         */
         0 AS is_legacy_target,
         CASE
+            /*
+             * RETURN adalah pembayaran signed negatif.
+             * Data baru memakai bayar_amount negatif; data legacy 0 fallback
+             * ke nilai master Retur.
+             */
             WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
-              OR (
-                    LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
-                AND COALESCE(TRIM(db.return_id), '') <> ''
-              )
+            THEN
+                CASE
+                    WHEN ABS(COALESCE(db.bayar_amount,0)) > 0.0001
+                        THEN -1 * ABS(COALESCE(db.bayar_amount,0))
+                    ELSE -1 * ABS(
+                        CASE
+                            WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+                              OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+                                THEN COALESCE(hri.grand_total,0)
+                            ELSE COALESCE(hri.return_amount,0)
+                        END
+                    )
+                END
+
+            /*
+             * LEGACY RETUR - SOURCE OF TRUTH KARTU PIUTANG
+             * Data legacy masih dapat tersimpan sebagai payment_source=INVOICE,
+             * tetapi head_bayar.keterangan='Retur' dan mempunyai return_id.
+             * Jangan hitung kembali sebagai cash payment normal.
+             */
+            WHEN LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
+              AND COALESCE(TRIM(db.return_id), '') <> ''
             THEN 0
+
+            /*
+             * SOURCE OF TRUTH KARTU PIUTANG - PAYMENT OPENING
+             * ----------------------------------------------------------
+             * Kartu Piutang tidak memakai GREATEST() untuk OPENING.
+             * Nominal opening dinormalisasi ABS(), kemudian tanda akhirnya
+             * ditentukan oleh opening_sign / opening_balance target.
+             *
+             * Ini penting untuk data migrasi yang bayar_amount-nya dapat
+             * tersimpan negatif. Dengan rule lama GREATEST(negatif,0),
+             * pembayaran opening menjadi 0 walaupun opening_effect_piutang=1.
+             */
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
+              OR COALESCE(db.opening_id, 0) > 0
+            THEN ABS(
+                CASE
+                    WHEN ABS(COALESCE(db.bayar_amount,0)) > 0.0001
+                        THEN COALESCE(db.bayar_amount,0)
+                    ELSE COALESCE(db.cash_amount,0) + COALESCE(db.titip_amount,0)
+                END
+            )
+
             WHEN COALESCE(db.cash_amount, 0) > 0
                 THEN COALESCE(db.cash_amount, 0)
+
             ELSE GREATEST(
                 COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0),
                 0
@@ -937,6 +1574,8 @@ pay_base AS (
 
         CASE
             WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+              OR UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
+              OR COALESCE(db.opening_id, 0) > 0
               OR (
                     LOWER(TRIM(COALESCE(hb.keterangan, ''))) = 'retur'
                 AND COALESCE(TRIM(db.return_id), '') <> ''
@@ -945,25 +1584,29 @@ pay_base AS (
             ELSE COALESCE(db.titip_amount, 0)
         END AS titip_raw,
 
+        /*
+         * Opening target hanya yang eksplisit.
+         * RETURN/orphan tidak boleh otomatis dianggap pembayaran opening.
+         */
         CASE
-            WHEN lo.opening_date IS NOT NULL
-             AND (
-                    UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
-                 OR COALESCE(db.opening_id, 0) > 0
-                 OR COALESCE(db.invoice_no, '') = ''
-                 OR hi.invoice_date <= lo.opening_date
-                 OR hi.invoice_no IS NULL
-             ) THEN 1
-            ELSE 0
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
+              OR COALESCE(db.opening_id, 0) > 0
+            THEN 1 ELSE 0
         END AS is_opening_target,
 
         CASE
-            WHEN lo.opening_date IS NULL
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) <> 'RETURN'
+             AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) <> 'OPENING'
+             AND COALESCE(db.opening_id,0) = 0
              AND (COALESCE(db.invoice_no, '') = '' OR hi.invoice_no IS NULL)
             THEN 1 ELSE 0
         END AS is_orphan,
 
-        CASE WHEN COALESCE(lo.opening_balance, 0) < 0 THEN -1 ELSE 1 END AS opening_sign
+        CASE
+            WHEN COALESCE(cob_target.opening_balance, lo.opening_balance, 0) < 0
+                THEN -1
+            ELSE 1
+        END AS opening_sign
 
     FROM detail_bayar db
     INNER JOIN head_bayar hb
@@ -978,6 +1621,12 @@ pay_base AS (
         ON lo.customer_id = hb.customer_id
     LEFT JOIN head_invoice hi
         ON hi.invoice_no = db.invoice_no
+    LEFT JOIN head_retur_invoice hri
+        ON TRIM(hri.return_id) = TRIM(db.return_id)
+       AND LOWER(COALESCE(hri.status,'Open')) <> 'cancelled'
+    LEFT JOIN customer_opening_balance cob_target
+        ON cob_target.opening_id = db.opening_id
+       AND cob_target.customer_id = hb.customer_id
     WHERE (
             hb.bayar_date <= ?
          OR COALESCE(tu.titip_date, hb.bayar_date) <= ?
@@ -986,7 +1635,7 @@ pay_base AS (
       AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
 ";
 
-$payAggParams = [$previousDate, $endDate, $endDate];
+$payAggParams = [$cutoffDate, $endDate, $endDate];
 $payAggTypes = 'sss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -1008,78 +1657,100 @@ $sqlPayAgg .= "
 SELECT
     customer_id,
 
+/*
+ * SOURCE OF TRUTH = KARTU PIUTANG
+ * ----------------------------------------------------------
+ * OPENING hanya memengaruhi piutang bila opening_effect_piutang = 1.
+ * OPENING dengan flag 0 tetap histori/audit dan tidak masuk Bayar efektif.
+ *
+ * Untuk OPENING negatif, opening_sign mengikuti opening_balance target
+ * sebagaimana paymentGrossExpr pada Kartu Piutang.
+ */
 SUM(CASE
-    WHEN cash_date < ?
+    WHEN cash_date >= '2026-08-01'
+     AND cash_date < ?
      AND (
-            (opening_date IS NOT NULL AND cash_date > opening_date)
-         OR (opening_date IS NULL)
-     )
-    THEN cash_raw * (
+            is_opening_target = 0
+            OR (
+                is_opening_target = 1
+                AND opening_effect_piutang = 1
+            )
+         )
+    THEN
         CASE
-            WHEN is_opening_target = 1 THEN opening_sign
-            ELSE 1
+            WHEN is_opening_target = 1
+                THEN cash_raw * opening_sign
+            ELSE cash_raw
         END
-    )
     ELSE 0
 END) AS pre_cash,
 
 SUM(CASE
-    WHEN titip_date < ?
+    WHEN titip_date >= '2026-08-01'
+     AND titip_date < ?
      AND (
-            (opening_date IS NOT NULL AND titip_date > opening_date)
-         OR (opening_date IS NULL)
-     )
-    THEN titip_raw * (
+            is_opening_target = 0
+            OR (
+                is_opening_target = 1
+                AND opening_effect_piutang = 1
+            )
+         )
+    THEN
         CASE
-            WHEN is_opening_target = 1 THEN opening_sign
-            ELSE 1
+            WHEN is_opening_target = 1
+                THEN titip_raw * opening_sign
+            ELSE titip_raw
         END
-    )
     ELSE 0
 END) AS pre_titip,
 
 SUM(CASE
     WHEN cash_date BETWEEN ? AND ?
      AND (
-            (opening_date IS NOT NULL AND cash_date > opening_date)
-         OR (opening_date IS NULL)
-     )
-    THEN cash_raw * (
+            is_opening_target = 0
+            OR (
+                is_opening_target = 1
+                AND opening_effect_piutang = 1
+            )
+         )
+    THEN
         CASE
-            WHEN is_opening_target = 1 THEN opening_sign
-            ELSE 1
+            WHEN is_opening_target = 1
+                THEN cash_raw * opening_sign
+            ELSE cash_raw
         END
-    )
     ELSE 0
 END) AS period_cash,
 
 SUM(CASE
     WHEN titip_date BETWEEN ? AND ?
      AND (
-            (opening_date IS NOT NULL AND titip_date > opening_date)
-         OR (opening_date IS NULL)
-     )
-    THEN titip_raw * (
+            is_opening_target = 0
+            OR (
+                is_opening_target = 1
+                AND opening_effect_piutang = 1
+            )
+         )
+    THEN
         CASE
-            WHEN is_opening_target = 1 THEN opening_sign
-            ELSE 1
+            WHEN is_opening_target = 1
+                THEN titip_raw * opening_sign
+            ELSE titip_raw
         END
-    )
     ELSE 0
 END) AS period_titip,
 
     SUM(CASE
-        WHEN is_opening_target = 1 THEN
+        WHEN is_opening_target = 1
+         AND opening_effect_piutang = 1 THEN
             (
                 CASE
                     WHEN cash_date <= ?
-                     AND (opening_date IS NULL OR cash_date > opening_date)
                     THEN cash_raw * opening_sign ELSE 0
                 END
                 +
                 CASE
                     WHEN titip_date <= ?
-                     AND (opening_date IS NULL OR titip_date > opening_date)
                     THEN titip_raw * opening_sign ELSE 0
                 END
             )
@@ -1171,16 +1842,20 @@ titip_use AS (
 )
 SELECT
     hb.customer_id,
+    hb.bayar_no AS payment_no,
     hb.bayar_date AS cash_date,
     COALESCE(tu.titip_date, hb.bayar_date) AS titip_date,
     lo.opening_id AS active_opening_id,
     lo.opening_date,
     lo.opening_balance,
     db.opening_id,
+    COALESCE(db.opening_effect_piutang, 0) AS opening_effect_piutang,
     db.invoice_no,
+    db.bayar_amount AS signed_bayar_amount,
     UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) AS payment_source,
     hi.invoice_no AS linked_invoice_no,
     hi.invoice_date AS linked_invoice_date,
+    COALESCE(hi.days, 0) AS linked_invoice_days,
     CASE
         WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
           OR (
@@ -1225,7 +1900,7 @@ WHERE (
   AND UPPER(COALESCE(db.shipping_no, '')) NOT LIKE '%CP-MCP%'
 ";
 
-$openingTimelineParams = [$previousDate, $endDate, $endDate];
+$openingTimelineParams = [$cutoffDate, $endDate, $endDate];
 $openingTimelineTypes = 'sss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -1260,24 +1935,51 @@ while ($pr = mysqli_fetch_assoc($resOpeningTimeline)) {
     $openingDate = (string)($pr['opening_date'] ?? '');
     $paymentSource = strtoupper(trim((string)($pr['payment_source'] ?? 'INVOICE')));
     $dbOpeningId = (int)($pr['opening_id'] ?? 0);
+    $openingEffectPiutang = (int)($pr['opening_effect_piutang'] ?? 0);
     $activeOpeningId = (int)($pr['active_opening_id'] ?? 0);
     $invoiceNo = trim((string)($pr['invoice_no'] ?? ''));
     $linkedInvoiceNo = trim((string)($pr['linked_invoice_no'] ?? ''));
     $linkedInvoiceDate = (string)($pr['linked_invoice_date'] ?? '');
 
-    $isOpeningTarget = (
+    /*
+     * SOURCE OF TRUTH = KARTU PIUTANG
+     * ----------------------------------------------------------
+     * Pembayaran yang benar-benar mengurangi snapshot opening:
+     * 1. payment_source=OPENING / opening_id eksplisit DAN
+     *    opening_effect_piutang=1; ATAU
+     * 2. pembayaran post-cutoff yang masih menunjuk invoice <=31-Jul-2026.
+     *
+     * OPENING dengan opening_effect_piutang=0 hanya histori/audit:
+     * jangan mengurangi bucket opening.
+     *
+     * Kasus (2) tetap dipertahankan untuk transaksi lama yang sudah terlanjur
+     * dibuat: invoice Juli tetap histori, tetapi pembayaran Agustus terhadap
+     * invoice tersebut tetap harus mengurangi saldo/bucket opening.
+     */
+    $isExplicitOpeningTarget = (
         $paymentSource === 'OPENING'
-        || ($dbOpeningId > 0 && $dbOpeningId === $activeOpeningId)
-        || $invoiceNo === ''
-        || $linkedInvoiceNo === ''
-        || ($linkedInvoiceDate !== '' && $openingDate !== '' && $linkedInvoiceDate <= $openingDate)
+        || $dbOpeningId > 0
     );
 
-    if (!$isOpeningTarget) {
+    $isEffectiveExplicitOpening = (
+        $isExplicitOpeningTarget
+        && $openingEffectPiutang === 1
+    );
+
+    $isCutoffInvoiceTarget = (
+        $linkedInvoiceNo !== ''
+        && $linkedInvoiceDate !== ''
+        && $linkedInvoiceDate !== '0000-00-00'
+        && $linkedInvoiceDate <= $cutoffDate
+    );
+
+    if (!$isEffectiveExplicitOpening && !$isCutoffInvoiceTarget) {
         continue;
     }
 
-    $sign = ((float)($pr['opening_balance'] ?? 0) < 0) ? -1.0 : 1.0;
+    $sign = $isEffectiveExplicitOpening
+        ? (((float)($pr['opening_balance'] ?? 0) < 0) ? -1.0 : 1.0)
+        : 1.0;
 
     $cashDate = (string)($pr['cash_date'] ?? '');
     $cashRaw = (float)($pr['cash_raw'] ?? 0);
@@ -1299,6 +2001,487 @@ while ($pr = mysqli_fetch_assoc($resOpeningTimeline)) {
 }
 mysqli_stmt_close($stmtOpeningTimeline);
 
+/* ============================================================
+ * PAYMENT TIMELINE KHUSUS MIGRATION BASELINE 31-AUG-2026
+ * ============================================================
+ * Clone query payment production agar cash/titip/RETURN memakai rule existing.
+ * INNER JOIN latest_opening diubah menjadi LEFT JOIN supaya customer yang baru
+ * bertransaksi di Agustus tetap dapat mengurangi baseline pada September+.
+ *
+ * Hanya pembayaran SETELAH 31-Aug terhadap invoice <=31-Aug yang diterapkan
+ * ke bucket baseline. Kolom BAYAR Formula 1 tetap berasal dari query existing.
+ */
+$baselinePaymentTimeline = [];
+$postBaselineLinkedPaymentTotal = [];
+
+/* REV7 TAHAP 1 - source-aware migration payment. */
+$baselineInvoicePaymentByBucket = [];
+
+/* Pasangan INVOICE + RETURN pada bayar_no yang sama. */
+$migrationPaymentPair = [];
+$migrationPairedReturnAbs = [];
+
+/*
+ * STEP 6 REV5 - SOURCE-SPECIFIC MIGRATION ADJUSTMENT
+ * Menyimpan transaksi September+ RETURN / OPENING signed yang tidak boleh
+ * membentuk credit/residual bucket baru. Formula 1 tidak diubah.
+ */
+$migrationReturnSigned = [];
+$migrationOpeningSigned = [];
+
+/*
+ * REV7 TAHAP 3 - HISTORICAL RETURN SETTLEMENT
+ * ------------------------------------------------------------
+ * Sebagian transaksi legacy RETURN setelah migration baseline hanya menjadi
+ * marker penyelesaian: bayar_amount/cash/titip = 0, sedangkan nominal aslinya
+ * berada di head_retur_invoice sebelum/hingga baseline.
+ *
+ * Referensi legacy dapat tersimpan di detail_bayar.return_id ATAU
+ * detail_bayar.shipping_no. Nominal ini hanya dipakai sebagai BATAS MAKSIMUM
+ * untuk membersihkan pasangan bucket historical negatif <-> LEBIH positif.
+ * Formula 1 tidak disentuh.
+ */
+$historicalReturnSettlementAbs = [];
+
+if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
+    $sqlBaselinePayTimeline = str_replace(
+        "INNER JOIN latest_opening lo\n    ON lo.customer_id = hb.customer_id",
+        "LEFT JOIN latest_opening lo\n    ON lo.customer_id = hb.customer_id",
+        $sqlOpeningPayTimeline
+    );
+
+    $stmtBaselineTimeline = mysqli_prepare($conn, $sqlBaselinePayTimeline);
+    mysqli_stmt_bind_param(
+        $stmtBaselineTimeline,
+        $openingTimelineTypes,
+        ...$openingTimelineParams
+    );
+    mysqli_stmt_execute($stmtBaselineTimeline);
+    $resBaselineTimeline = mysqli_stmt_get_result($stmtBaselineTimeline);
+
+    while ($pr = mysqli_fetch_assoc($resBaselineTimeline)) {
+        $cid = trim((string)($pr['customer_id'] ?? ''));
+        if ($cid === '' || !isset($bucketBaselineMap[$cid])) {
+            continue;
+        }
+
+        $paymentSource = strtoupper(trim((string)($pr['payment_source'] ?? 'INVOICE')));
+        $dbOpeningId = (int)($pr['opening_id'] ?? 0);
+        $openingEffectPiutang = (int)($pr['opening_effect_piutang'] ?? 0);
+        $linkedInvoiceNo = trim((string)($pr['linked_invoice_no'] ?? ''));
+        $linkedInvoiceDate = (string)($pr['linked_invoice_date'] ?? '');
+        $linkedInvoiceDays = (int)($pr['linked_invoice_days'] ?? 0);
+        $paymentNo = trim((string)($pr['payment_no'] ?? ''));
+        $signedBayarAmount = (float)($pr['signed_bayar_amount'] ?? 0);
+        $sourceCashDate = (string)($pr['cash_date'] ?? '');
+
+        /*
+         * REV7: catat pasangan INVOICE/RETURN dalam nomor pembayaran yang sama.
+         * Digunakan hanya untuk mencegah normalisasi RETURN ganda.
+         */
+        if (
+            $paymentNo !== ''
+            && $sourceCashDate !== ''
+            && $sourceCashDate > $bucketBaselineDate
+            && $sourceCashDate <= $endDate
+        ) {
+            if (!isset($migrationPaymentPair[$cid][$paymentNo])) {
+                $migrationPaymentPair[$cid][$paymentNo] = [
+                    'invoice' => 0.0,
+                    'return' => 0.0,
+                ];
+            }
+
+            if ($paymentSource === 'INVOICE' && $signedBayarAmount > 0.0001) {
+                $migrationPaymentPair[$cid][$paymentNo]['invoice'] += $signedBayarAmount;
+            } elseif ($paymentSource === 'RETURN' && $signedBayarAmount < -0.0001) {
+                $migrationPaymentPair[$cid][$paymentNo]['return'] += abs($signedBayarAmount);
+            }
+        }
+
+        /* REV5: catat hanya transaksi setelah migration baseline. */
+        if (
+            $sourceCashDate !== ''
+            && $sourceCashDate > $bucketBaselineDate
+            && $sourceCashDate <= $endDate
+            && $signedBayarAmount < -0.0001
+        ) {
+            if ($paymentSource === 'RETURN') {
+                $migrationReturnSigned[$cid] =
+                    (float)($migrationReturnSigned[$cid] ?? 0)
+                    + $signedBayarAmount;
+            } elseif ($paymentSource === 'OPENING' && $openingEffectPiutang === 1) {
+                $migrationOpeningSigned[$cid] =
+                    (float)($migrationOpeningSigned[$cid] ?? 0)
+                    + $signedBayarAmount;
+            }
+        }
+
+        $isEffectiveExplicitOpening = (
+            ($paymentSource === 'OPENING' || $dbOpeningId > 0)
+            && $openingEffectPiutang === 1
+        );
+
+        $isBaselineInvoiceTarget = (
+            $linkedInvoiceNo !== ''
+            && $linkedInvoiceDate !== ''
+            && $linkedInvoiceDate !== '0000-00-00'
+            && $linkedInvoiceDate <= $bucketBaselineDate
+        );
+
+        /*
+         * STEP 6 REV4:
+         * Payment yang secara eksplisit menunjuk invoice SETELAH baseline
+         * adalah payment invoice baru. Nilainya tidak boleh dipakai lagi oleh
+         * fallback periodCash untuk mengurangi historical baseline.
+         * Contoh: invoice September + payment September (ARDY).
+         */
+        $isPostBaselineInvoiceTarget = (
+            $paymentSource === 'INVOICE'
+            && $linkedInvoiceNo !== ''
+            && $linkedInvoiceDate !== ''
+            && $linkedInvoiceDate !== '0000-00-00'
+            && $linkedInvoiceDate > $bucketBaselineDate
+        );
+
+        if ($isPostBaselineInvoiceTarget) {
+            $cashDatePost = (string)($pr['cash_date'] ?? '');
+            $cashRawPost = (float)($pr['cash_raw'] ?? 0);
+            if (
+                $cashDatePost !== ''
+                && $cashDatePost > $bucketBaselineDate
+                && $cashDatePost <= $endDate
+                && $cashRawPost > 0.0001
+            ) {
+                $postBaselineLinkedPaymentTotal[$cid] =
+                    (float)($postBaselineLinkedPaymentTotal[$cid] ?? 0)
+                    + $cashRawPost;
+            }
+
+            $titipDatePost = (string)($pr['titip_date'] ?? '');
+            $titipRawPost = (float)($pr['titip_raw'] ?? 0);
+            if (
+                $titipDatePost !== ''
+                && $titipDatePost > $bucketBaselineDate
+                && $titipDatePost <= $endDate
+                && $titipRawPost > 0.0001
+            ) {
+                $postBaselineLinkedPaymentTotal[$cid] =
+                    (float)($postBaselineLinkedPaymentTotal[$cid] ?? 0)
+                    + $titipRawPost;
+            }
+        }
+
+        if (!$isEffectiveExplicitOpening && !$isBaselineInvoiceTarget) {
+            continue;
+        }
+
+        /* Explicit OPENING negatif tetap mengikuti sign snapshot existing. */
+        $sign = $isEffectiveExplicitOpening
+            ? (((float)($pr['opening_balance'] ?? 0) < 0) ? -1.0 : 1.0)
+            : 1.0;
+
+        $cashDate = (string)($pr['cash_date'] ?? '');
+        $cashRaw = (float)($pr['cash_raw'] ?? 0);
+        $titipDate = (string)($pr['titip_date'] ?? '');
+        $titipRaw = (float)($pr['titip_raw'] ?? 0);
+
+        /*
+         * REV7 TAHAP 1:
+         * Payment yang menunjuk invoice <= baseline mengikuti umur invoice
+         * tersebut pada as-of report. Explicit OPENING tetap memakai timeline
+         * existing agar rule yang sudah benar tidak berubah.
+         */
+        if ($isBaselineInvoiceTarget && $linkedInvoiceDate !== '') {
+            $dueTs = strtotime(
+                $linkedInvoiceDate . ' +' . max($linkedInvoiceDays, 0) . ' days'
+            );
+            $asOfTs = strtotime($asOfDate);
+            $diffDays = ($dueTs !== false && $asOfTs !== false)
+                ? (int)floor(($asOfTs - $dueTs) / 86400)
+                : 0;
+
+            if ($diffDays <= 0) {
+                $targetBucketKey = 'belum_jatuh_tempo';
+            } elseif ($diffDays <= $bucket1Limit) {
+                $targetBucketKey = 'b_1_30';
+            } elseif ($diffDays <= $bucket2Limit) {
+                $targetBucketKey = 'b_31_60';
+            } elseif ($diffDays <= $bucket3Limit) {
+                $targetBucketKey = 'b_61_90';
+            } else {
+                $targetBucketKey = 'b_lebih';
+            }
+
+            if (
+                $cashDate !== ''
+                && $cashDate > $bucketBaselineDate
+                && $cashDate <= $endDate
+                && $cashRaw > 0.0001
+            ) {
+                $baselineInvoicePaymentByBucket[$cid][$targetBucketKey] =
+                    (float)($baselineInvoicePaymentByBucket[$cid][$targetBucketKey] ?? 0)
+                    + $cashRaw;
+            }
+
+            if (
+                $titipDate !== ''
+                && $titipDate > $bucketBaselineDate
+                && $titipDate <= $endDate
+                && $titipRaw > 0.0001
+            ) {
+                $baselineInvoicePaymentByBucket[$cid][$targetBucketKey] =
+                    (float)($baselineInvoicePaymentByBucket[$cid][$targetBucketKey] ?? 0)
+                    + $titipRaw;
+            }
+        } else {
+            if (
+                $cashDate !== ''
+                && $cashDate > $bucketBaselineDate
+                && $cashDate <= $endDate
+                && abs($cashRaw) > 0.0001
+            ) {
+                $monthKey = date('Y-m', strtotime($cashDate));
+                $baselinePaymentTimeline[$cid][$monthKey] =
+                    (float)($baselinePaymentTimeline[$cid][$monthKey] ?? 0)
+                    + ($cashRaw * $sign);
+            }
+
+            if (
+                $titipDate !== ''
+                && $titipDate > $bucketBaselineDate
+                && $titipDate <= $endDate
+                && abs($titipRaw) > 0.0001
+            ) {
+                $monthKey = date('Y-m', strtotime($titipDate));
+                $baselinePaymentTimeline[$cid][$monthKey] =
+                    (float)($baselinePaymentTimeline[$cid][$monthKey] ?? 0)
+                    + ($titipRaw * $sign);
+            }
+        }
+    }
+
+    mysqli_stmt_close($stmtBaselineTimeline);
+}
+
+/*
+ * REV7 TAHAP 3 - ambil marker settlement RETURN historical secara eksplisit.
+ * Hanya RETURN master yang tanggal return-nya <= baseline, tetapi marker
+ * pembayarannya terjadi SETELAH baseline sampai endDate.
+ *
+ * Penting:
+ * - tidak memakai nama customer / hardcode customer_id;
+ * - tidak mengubah Penjualan/Bayar/Titip/Akhir;
+ * - return baru setelah baseline tidak masuk rule ini;
+ * - reference legacy boleh berada di db.return_id atau db.shipping_no.
+ */
+if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
+    $sqlHistoricalReturnSettlement = "
+        SELECT
+            hb.customer_id,
+            SUM(COALESCE(hri.return_amount, 0)) AS settlement_amount
+        FROM detail_bayar db
+        INNER JOIN head_bayar hb
+            ON hb.bayar_no = db.bayar_no
+        INNER JOIN m_customer mc
+            ON mc.customer_id = hb.customer_id
+           AND COALESCE(mc.is_active, 'Checked') = 'Checked'
+        INNER JOIN head_retur_invoice hri
+            ON hri.customer_id = hb.customer_id
+           AND hri.return_id = COALESCE(
+                NULLIF(TRIM(db.return_id), ''),
+                NULLIF(TRIM(db.shipping_no), '')
+           )
+        WHERE UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+          AND hb.bayar_date > ?
+          AND hb.bayar_date <= ?
+          AND hri.return_date <= ?
+          AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+          AND ABS(COALESCE(db.bayar_amount, 0)) <= 0.0001
+          AND ABS(COALESCE(db.cash_amount, 0)) <= 0.0001
+          AND ABS(COALESCE(db.titip_amount, 0)) <= 0.0001
+    ";
+
+    $historicalReturnSettlementParams = [
+        $bucketBaselineDate,
+        $endDate,
+        $bucketBaselineDate,
+    ];
+    $historicalReturnSettlementTypes = 'sss';
+
+    if ($filterBy === 'grup' && $filterValue !== '') {
+        $sqlHistoricalReturnSettlement .= " AND COALESCE(mc.area_code, '') = ? ";
+        $historicalReturnSettlementParams[] = $filterValue;
+        $historicalReturnSettlementTypes .= 's';
+    } elseif ($filterBy === 'kota' && $filterValue !== '') {
+        $sqlHistoricalReturnSettlement .= " AND COALESCE(NULLIF(mc.city, ''), 'TANPA KOTA') = ? ";
+        $historicalReturnSettlementParams[] = $filterValue;
+        $historicalReturnSettlementTypes .= 's';
+    } elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
+        $sqlHistoricalReturnSettlement .= " AND mc.customer_id = ? ";
+        $historicalReturnSettlementParams[] = $filterValue;
+        $historicalReturnSettlementTypes .= 's';
+    }
+
+    $sqlHistoricalReturnSettlement .= " GROUP BY hb.customer_id ";
+
+    $stmtHistoricalReturnSettlement = mysqli_prepare($conn, $sqlHistoricalReturnSettlement);
+    mysqli_stmt_bind_param(
+        $stmtHistoricalReturnSettlement,
+        $historicalReturnSettlementTypes,
+        ...$historicalReturnSettlementParams
+    );
+    mysqli_stmt_execute($stmtHistoricalReturnSettlement);
+    $resHistoricalReturnSettlement = mysqli_stmt_get_result($stmtHistoricalReturnSettlement);
+
+    while ($hrs = mysqli_fetch_assoc($resHistoricalReturnSettlement)) {
+        $hrsCid = trim((string)($hrs['customer_id'] ?? ''));
+        if ($hrsCid === '' || !isset($bucketBaselineMap[$hrsCid])) {
+            continue;
+        }
+        $historicalReturnSettlementAbs[$hrsCid] =
+            (float)($historicalReturnSettlementAbs[$hrsCid] ?? 0)
+            + abs((float)($hrs['settlement_amount'] ?? 0));
+    }
+    mysqli_stmt_close($stmtHistoricalReturnSettlement);
+}
+
+/*
+ * REV7 TAHAP 4 - HISTORICAL CP-MCP CREDIT AGE MAP
+ * ------------------------------------------------------------
+ * CP-MCP return yang sudah menjadi credit pada migration baseline tetap
+ * harus mempunyai umur berdasarkan return_date ketika dibawa ke September+.
+ *
+ * Nilai source memakai grand_total return master (fallback return_amount),
+ * karena CP-MCP pada rule existing menggunakan nilai dokumen, bukan selisih
+ * teknis return_amount. Reclassification final tetap dibatasi oleh LEBIH
+ * negatif yang benar-benar masih tersisa, sehingga Formula 1 tidak berubah.
+ */
+$historicalCpMcpCreditByBucket = [];
+
+if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
+    $sqlHistoricalCpMcpCredit = "
+        SELECT
+            hri.customer_id,
+            hri.return_date,
+            CASE
+                WHEN ABS(COALESCE(hri.grand_total, 0)) > 0.0001
+                    THEN ABS(COALESCE(hri.grand_total, 0))
+                ELSE ABS(COALESCE(hri.return_amount, 0))
+            END AS credit_value
+        FROM head_retur_invoice hri
+        INNER JOIN m_customer mc
+            ON mc.customer_id = hri.customer_id
+           AND COALESCE(mc.is_active, 'Checked') = 'Checked'
+        WHERE hri.return_date >= '2026-08-01'
+          AND hri.return_date <= ?
+          AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+          AND (
+                UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+             OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+          )
+    ";
+
+    $historicalCpMcpCreditParams = [$bucketBaselineDate];
+    $historicalCpMcpCreditTypes = 's';
+
+    if ($filterBy === 'grup' && $filterValue !== '') {
+        $sqlHistoricalCpMcpCredit .= " AND COALESCE(mc.area_code, '') = ? ";
+        $historicalCpMcpCreditParams[] = $filterValue;
+        $historicalCpMcpCreditTypes .= 's';
+    } elseif ($filterBy === 'kota' && $filterValue !== '') {
+        $sqlHistoricalCpMcpCredit .= " AND COALESCE(NULLIF(mc.city, ''), 'TANPA KOTA') = ? ";
+        $historicalCpMcpCreditParams[] = $filterValue;
+        $historicalCpMcpCreditTypes .= 's';
+    } elseif ($filterBy === 'pelanggan' && $filterValue !== '') {
+        $sqlHistoricalCpMcpCredit .= " AND mc.customer_id = ? ";
+        $historicalCpMcpCreditParams[] = $filterValue;
+        $historicalCpMcpCreditTypes .= 's';
+    }
+
+    $stmtHistoricalCpMcpCredit = mysqli_prepare($conn, $sqlHistoricalCpMcpCredit);
+    mysqli_stmt_bind_param(
+        $stmtHistoricalCpMcpCredit,
+        $historicalCpMcpCreditTypes,
+        ...$historicalCpMcpCreditParams
+    );
+    mysqli_stmt_execute($stmtHistoricalCpMcpCredit);
+    $resHistoricalCpMcpCredit = mysqli_stmt_get_result($stmtHistoricalCpMcpCredit);
+
+    $reportMonthTs = strtotime(date('Y-m-01', strtotime($asOfDate)));
+
+    while ($cpRow = mysqli_fetch_assoc($resHistoricalCpMcpCredit)) {
+        $cpCid = trim((string)($cpRow['customer_id'] ?? ''));
+        $cpReturnDate = (string)($cpRow['return_date'] ?? '');
+        $cpValue = abs((float)($cpRow['credit_value'] ?? 0));
+
+        if (
+            $cpCid === ''
+            || !isset($bucketBaselineMap[$cpCid])
+            || $cpReturnDate === ''
+            || $cpValue <= 0.0001
+        ) {
+            continue;
+        }
+
+        $returnMonthTs = strtotime(date('Y-m-01', strtotime($cpReturnDate)));
+        if ($reportMonthTs === false || $returnMonthTs === false) {
+            continue;
+        }
+
+        $reportYear = (int)date('Y', $reportMonthTs);
+        $reportMonth = (int)date('n', $reportMonthTs);
+        $returnYear = (int)date('Y', $returnMonthTs);
+        $returnMonth = (int)date('n', $returnMonthTs);
+        $monthDiff = (($reportYear - $returnYear) * 12) + ($reportMonth - $returnMonth);
+
+        if ($monthDiff <= 0) {
+            $cpBucketKey = 'belum_jatuh_tempo';
+        } elseif ($monthDiff === 1) {
+            $cpBucketKey = 'b_1_30';
+        } elseif ($monthDiff === 2) {
+            $cpBucketKey = 'b_31_60';
+        } elseif ($monthDiff === 3) {
+            $cpBucketKey = 'b_61_90';
+        } else {
+            $cpBucketKey = 'b_lebih';
+        }
+
+        if (!isset($historicalCpMcpCreditByBucket[$cpCid])) {
+            $historicalCpMcpCreditByBucket[$cpCid] = [
+                'b_1_30' => 0.0,
+                'b_31_60' => 0.0,
+                'b_61_90' => 0.0,
+                'b_lebih' => 0.0,
+                'belum_jatuh_tempo' => 0.0,
+            ];
+        }
+
+        $historicalCpMcpCreditByBucket[$cpCid][$cpBucketKey] += $cpValue;
+    }
+
+    mysqli_stmt_close($stmtHistoricalCpMcpCredit);
+}
+
+/*
+ * REV7 TAHAP 1:
+ * RETURN yang saling menutup dengan INVOICE pada bayar_no yang sama
+ * tidak perlu dinormalisasi lagi sebagai residual bucket.
+ */
+foreach ($migrationPaymentPair as $pairCid => $paymentRows) {
+    foreach ($paymentRows as $pair) {
+        $paired = min(
+            max((float)($pair['invoice'] ?? 0), 0.0),
+            max((float)($pair['return'] ?? 0), 0.0)
+        );
+        if ($paired > 0.0001) {
+            $migrationPairedReturnAbs[$pairCid] =
+                (float)($migrationPairedReturnAbs[$pairCid] ?? 0)
+                + $paired;
+        }
+    }
+}
+
 /* Gabungkan adjustment opening ke timeline bulan yang sama. */
 foreach ($openingAdjustmentTimeline as $cid => $months) {
     foreach ($months as $monthKey => $amount) {
@@ -1313,8 +2496,8 @@ foreach ($openingAdjustmentTimeline as $cid => $months) {
  * 4B. TITIP BELUM DIGUNAKAN -> BUCKET LEBIH
  * ============================================================
  * Rule bisnis final:
- * - Kolom TITIP tetap hanya memuat titip yang SUDAH dipakai pada bulan laporan.
  * - Saldo titip yang BELUM dipakai merupakan credit balance customer.
+ * - Kolom TITIP periode dihitung dari perubahan saldo titip awal ke akhir bulan.
  * - Credit titip tersebut ditempatkan di bucket LEBIH.
  *
  * Untuk menjaga carry-forward:
@@ -1324,6 +2507,12 @@ foreach ($openingAdjustmentTimeline as $cid => $months) {
 $sqlUnusedTitip = "
     SELECT
         dt.customer_id,
+        COALESCE(SUM(CASE
+            WHEN dt.titip_date <= ?
+            THEN COALESCE(dt.amount_in,0) - COALESCE(dt.amount_out,0)
+            ELSE 0
+        END),0) AS unused_titip_cutoff,
+
         COALESCE(SUM(CASE
             WHEN dt.titip_date <= ?
             THEN COALESCE(dt.amount_in,0) - COALESCE(dt.amount_out,0)
@@ -1342,8 +2531,8 @@ $sqlUnusedTitip = "
     WHERE dt.titip_date <= ?
 ";
 
-$unusedTitipParams = [$previousDate, $endDate, $endDate];
-$unusedTitipTypes = 'sss';
+$unusedTitipParams = [$cutoffDate, $previousDate, $endDate, $endDate];
+$unusedTitipTypes = 'ssss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
     $sqlUnusedTitip .= " AND COALESCE(mc.area_code, '') = ? ";
@@ -1380,6 +2569,10 @@ while ($ut = mysqli_fetch_assoc($resUnusedTitip)) {
      * Hanya saldo positif yang dianggap titip belum digunakan.
      * Saldo negatif tidak dipaksa menjadi credit balance.
      */
+    $calc[$cid]['unused_titip_cutoff'] = max(
+        (float)($ut['unused_titip_cutoff'] ?? 0),
+        0.0
+    );
     $calc[$cid]['unused_titip_before'] = max(
         (float)($ut['unused_titip_before'] ?? 0),
         0.0
@@ -1414,24 +2607,38 @@ WITH latest_opening AS (
         GROUP BY customer_id
     ) x ON x.opening_id = cob.opening_id
 ),
-used_return AS (
+return_usage AS (
     /*
-     * RETURN YANG BENAR-BENAR SUDAH DIGUNAKAN
-     * ----------------------------------------------------------
-     * payment_source='RETURN' hanyalah baris audit/link retur standalone.
-     * Baris tersebut TIDAK berarti nilai retur sudah dipakai untuk settlement.
-     *
-     * Retur baru dianggap terpakai bila return_id melekat pada detail pembayaran
-     * non-RETURN (mis. INVOICE) sampai akhir periode.
+     * Pemakaian Retur sampai akhir periode.
+     * - RETURN baru: jumlah ABS(bayar_amount), mendukung parsial/multi.
+     * - Legacy non-RETURN link atau RETURN bernilai 0 ditandai legacy_full=1.
      */
-    SELECT DISTINCT
-        TRIM(db.return_id) AS return_id
+    SELECT
+        TRIM(db.return_id) AS return_id,
+        SUM(
+            CASE
+                WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='RETURN'
+                 AND ABS(COALESCE(db.bayar_amount,0)) > 0.0001
+                    THEN ABS(COALESCE(db.bayar_amount,0))
+                ELSE 0
+            END
+        ) AS used_amount_new,
+        MAX(
+            CASE
+                WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))<>'RETURN'
+                  OR (
+                        UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='RETURN'
+                    AND ABS(COALESCE(db.bayar_amount,0)) <= 0.0001
+                  )
+                THEN 1 ELSE 0
+            END
+        ) AS legacy_full
     FROM detail_bayar db
     INNER JOIN head_bayar hb
         ON hb.bayar_no = db.bayar_no
     WHERE COALESCE(TRIM(db.return_id),'') <> ''
       AND hb.bayar_date <= ?
-      AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE')) <> 'RETURN'
+    GROUP BY TRIM(db.return_id)
 ),
 ret_base AS (
     SELECT
@@ -1453,19 +2660,57 @@ ret_base AS (
               OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
               OR COALESCE(hri.invoice_no, '') = ''
               OR hi_ret.invoice_no IS NULL
+              OR (
+                    hi_ret.invoice_no IS NOT NULL
+                AND hi_ret.invoice_date <= '2026-07-31'
+              )
             THEN 1 ELSE 0
         END AS is_standalone_credit,
 
         CASE
-            WHEN ur.return_id IS NULL
-             AND (
+            WHEN (
                     UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
                  OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
                  OR COALESCE(hri.invoice_no, '') = ''
                  OR hi_ret.invoice_no IS NULL
-             )
+                 OR (
+                        hi_ret.invoice_no IS NOT NULL
+                    AND hi_ret.invoice_date <= '2026-07-31'
+                    )
+                 )
+             AND (
+                    CASE
+                        WHEN COALESCE(ur.legacy_full,0)=1 THEN 0
+                        ELSE GREATEST(
+                            (
+                                CASE
+                                    WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                                      OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                                    THEN COALESCE(hri.grand_total, 0)
+                                    ELSE COALESCE(hri.return_amount, 0)
+                                END
+                            ) - COALESCE(ur.used_amount_new,0),
+                            0
+                        )
+                    END
+                 ) > 0.0001
             THEN 1 ELSE 0
         END AS is_unused_credit,
+
+        CASE
+            WHEN COALESCE(ur.legacy_full,0)=1 THEN 0
+            ELSE GREATEST(
+                (
+                    CASE
+                        WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                          OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total, 0)
+                        ELSE COALESCE(hri.return_amount, 0)
+                    END
+                ) - COALESCE(ur.used_amount_new,0),
+                0
+            )
+        END AS remaining_credit_value,
 
         CASE
             WHEN (
@@ -1484,13 +2729,14 @@ ret_base AS (
         ON lo.customer_id = hri.customer_id
     LEFT JOIN head_invoice hi_ret
         ON hi_ret.invoice_no = hri.invoice_no
-    LEFT JOIN used_return ur
+    LEFT JOIN return_usage ur
         ON ur.return_id = TRIM(hri.return_id)
-    WHERE hri.return_date <= ?
+    WHERE hri.return_date >= '2026-08-01'
+      AND hri.return_date <= ?
       AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
 ";
 
-$returnAggParams = [$previousDate, $endDate, $endDate];
+$returnAggParams = [$cutoffDate, $endDate, $endDate];
 $returnAggTypes = 'sss';
 
 if ($filterBy === 'grup' && $filterValue !== '') {
@@ -1510,19 +2756,12 @@ if ($filterBy === 'grup' && $filterValue !== '') {
 $sqlReturnAgg .= "
 ),
 applicable AS (
+    /*
+     * Semua Retur riil tetap dihitung; manual opening bukan boundary histori.
+     */
     SELECT *
     FROM ret_base
     WHERE is_legacy_target = 0
-      AND (
-            (
-                opening_date IS NOT NULL
-                AND return_date > opening_date
-            )
-            OR
-            (
-                opening_date IS NULL
-            )
-      )
 )
 SELECT
     customer_id,
@@ -1547,34 +2786,34 @@ SELECT
     SUM(CASE
         WHEN is_unused_credit = 1
          AND return_date BETWEEN ? AND ?
-        THEN return_value ELSE 0 END
+        THEN remaining_credit_value ELSE 0 END
     ) AS credit_bjt,
 
     SUM(CASE
         WHEN is_unused_credit = 1
          AND return_date >= DATE_SUB(?, INTERVAL 1 MONTH)
          AND return_date < ?
-        THEN return_value ELSE 0 END
+        THEN remaining_credit_value ELSE 0 END
     ) AS credit_b_1_30,
 
     SUM(CASE
         WHEN is_unused_credit = 1
          AND return_date >= DATE_SUB(?, INTERVAL 2 MONTH)
          AND return_date < DATE_SUB(?, INTERVAL 1 MONTH)
-        THEN return_value ELSE 0 END
+        THEN remaining_credit_value ELSE 0 END
     ) AS credit_b_31_60,
 
     SUM(CASE
         WHEN is_unused_credit = 1
          AND return_date >= DATE_SUB(?, INTERVAL 3 MONTH)
          AND return_date < DATE_SUB(?, INTERVAL 2 MONTH)
-        THEN return_value ELSE 0 END
+        THEN remaining_credit_value ELSE 0 END
     ) AS credit_b_61_90,
 
     SUM(CASE
         WHEN is_unused_credit = 1
          AND return_date < DATE_SUB(?, INTERVAL 3 MONTH)
-        THEN return_value ELSE 0 END
+        THEN remaining_credit_value ELSE 0 END
     ) AS credit_b_lebih
 FROM applicable
 GROUP BY customer_id
@@ -1656,12 +2895,17 @@ foreach ($masterCustomers as $cid => $m) {
         && (int)$openingBucketMap[$cid]['opening_id'] === (int)$openingMap[$cid]['opening_id']
     );
 
-    $openingBalance = 0.0;
-    if ($hasValidOpeningBucket) {
-        $openingBalance = sumOpeningBucketSeed($openingBucketMap[$cid]);
-    } elseif ($hasOpening) {
-        $openingBalance = (float)$openingMap[$cid]['opening_balance'];
-    }
+    /*
+     * SOURCE OF TRUTH FORMULA 1 tetap KARTU PIUTANG:
+     * opening_balance adalah saldo snapshot resmi 31-Jul-2026.
+     *
+     * customer_opening_balance_bucket HANYA menjelaskan komposisi umur saldo
+     * tersebut. Bucket tidak boleh mengganti nominal Saldo Awal hanya karena
+     * total seed bucket kebetulan berbeda.
+     */
+    $openingBalance = $hasOpening
+        ? (float)$openingMap[$cid]['opening_balance']
+        : 0.0;
 
     $adj = $adjustmentMap[$cid] ?? [
         'pre_awal'=>0.0,'pre_penjualan'=>0.0,'pre_bayar'=>0.0,'pre_titip'=>0.0,
@@ -1670,31 +2914,47 @@ foreach ($masterCustomers as $cid => $m) {
     ];
 
     /*
-     * BAYAR mengikuti transaksi pembayaran nyata saja.
-     * Jangan membuat Bayar negatif sintetis dari Retur.
-     *
-     * Retur sudah mengurangi piutang melalui Penjualan Neto.
-     * Jika belum ada head_bayar pada bulan laporan, kolom Bayar harus tetap 0.
+     * BAYAR mengikuti transaksi pembayaran nyata pada head_bayar.bayar_date.
+     * payment_source=RETURN mengikuti signed payment (negatif), sama dengan
+     * Kartu Piutang. Jika tidak ada transaksi bayar pada bulan laporan,
+     * kolom BAYAR tetap 0.
      */
     $preCashForFormula = $c['pre_cash'];
     $periodCash = $c['period_cash'];
 
-    if ($hasOpening) {
-        $saldoAwal =
-            $openingBalance
-            + $c['pre_invoice']
-            - $c['pre_return']
-            - $preCashForFormula
-            - $c['pre_titip'];
-    } else {
-        $saldoAwal =
-            $c['pre_invoice']
-            - $c['pre_return']
-            - $preCashForFormula
-            - $c['pre_titip'];
-    }
+    /*
+     * SALDO AWAL - RULE CUT-OFF 31-Jul-2026
+     * ----------------------------------------------------------
+     * Agustus 2026:
+     *   saldo_awal = opening_balance snapshot 31-Jul-2026.
+     *
+     * September dan seterusnya:
+     *   opening snapshot
+     *   + invoice post-cutoff sebelum bulan filter
+     *   + koreksi invoice post-cutoff sebelum bulan filter (signed/minus)
+     *   - retur post-cutoff sebelum bulan filter
+     *   - pembayaran post-cutoff sebelum bulan filter
+     *   - titip-used post-cutoff sebelum bulan filter.
+     *
+     * Transaksi Juli dan sebelumnya TIDAK pernah ditambahkan lagi.
+     */
+    $preGrossPayment =
+        (float)$preCashForFormula
+        + (float)$c['pre_titip'];
 
-    // Adjustment periode sebelumnya ikut carry-forward.
+    $preTitipDelta =
+        (float)$c['unused_titip_before']
+        - (float)$c['unused_titip_cutoff'];
+
+    $saldoAwal =
+        $openingBalance
+        + $c['pre_invoice']
+        + $c['pre_invoice_correction']
+        - $c['pre_return']
+        - $preGrossPayment
+        - $preTitipDelta;
+
+    // Adjustment migrasi existing tetap dipertahankan.
     $saldoAwal +=
         $adj['pre_awal']
         + $adj['pre_penjualan']
@@ -1702,92 +2962,345 @@ foreach ($masterCustomers as $cid => $m) {
         - $adj['pre_titip'];
 
     $periodInvoice = $c['period_invoice'];
-    $periodTitip = $c['period_titip'];
+    $periodInvoiceCorrection = $c['period_invoice_correction'];
     $periodReturn = $c['period_return'];
 
-    $penjualanNeto = $periodInvoice - $periodReturn + $adj['period_penjualan'];
-    $periodCash += $adj['period_bayar'];
-    $periodTitip += $adj['period_titip'];
+    /*
+     * SOURCE OF TRUTH KARTU PIUTANG:
+     * Koreksi invoice adalah PENJUALAN signed (minus), bukan pembayaran.
+     */
+    $penjualanNeto =
+        $periodInvoice
+        + $periodInvoiceCorrection
+        - $periodReturn
+        + $adj['period_penjualan'];
+
+    $periodCash =
+        (float)$c['period_cash']
+        + (float)$c['period_titip']
+        + (float)$adj['period_bayar'];
+
     $saldoAwal += $adj['period_awal'];
+
+    /*
+     * RULE TITIP PERIODE:
+     * TITIP = saldo titip akhir bulan - saldo titip awal bulan.
+     *
+     * - Titip bulan sebelumnya yang habis dipakai bulan ini tampil negatif.
+     * - Titip yang masuk dan habis dipakai pada bulan yang sama net menjadi 0.
+     * - Bulan berikutnya tidak tampil lagi bila saldo titip sudah habis.
+     *
+     * Adjustment period_titip tetap dipertahankan.
+     * REV7: movement wajib tetap SIGNED seperti program lama.
+     * Jangan ABS()/max() hasil delta ini: pemakaian titip lama harus dapat tampil negatif.
+     */
+    $periodTitipMovement =
+        (float)$c['unused_titip_end']
+        - (float)$c['unused_titip_before'];
+
+    $periodTitip =
+        $periodTitipMovement
+        + (float)$adj['period_titip'];
 
     /*
      * Titip belum digunakan adalah credit balance Aging.
      * Saldo Awal memakai saldo titip belum terpakai per H-1.
      * Saldo Akhir memakai saldo titip belum terpakai per akhir periode.
      *
-     * Kolom TITIP tetap hanya menunjukkan titip yang SUDAH dipakai.
+     * Kolom TITIP menunjukkan perubahan saldo titip awal -> akhir bulan.
      */
     $saldoAwalBase = $saldoAwal;
     $unusedTitipBefore = (float)$c['unused_titip_before'];
     $unusedTitipEnd = (float)$c['unused_titip_end'];
 
-    $saldoAwal = $saldoAwalBase - $unusedTitipBefore;
-
-    $akhirBase =
-        $saldoAwalBase
+    $akhir =
+        $saldoAwal
         + $penjualanNeto
         - $periodCash
         - $periodTitip;
 
-    $akhir = $akhirBase - $unusedTitipEnd;
+    /* ========================================================
+     * FINAL BUCKET SOURCE - MIGRATION BASELINE
+     * ========================================================
+     * HANYA memilih source 5 bucket. Formula 1 di atas tidak disentuh.
+     */
+    $hasMigrationBaseline = isset($bucketBaselineMap[$cid]);
+    $useMigrationBaseline = (
+        $hasMigrationBaseline
+        && $endDate >= $bucketBaselineDate
+    );
 
-    /* Bucket invoice post-cutoff dihitung dari invoice eligible. */
-    $b1 = $c['b_1_30'];
-    $b2 = $c['b_31_60'];
-    $b3 = $c['b_61_90'];
-    $bLebih = $c['b_lebih'];
-    $bBelumJatuhTempo = $c['belum_jatuh_tempo'];
+    if ($useMigrationBaseline) {
 
-    if ($hasOpening) {
-        if ($hasValidOpeningBucket) {
+        if ($endDate === $bucketBaselineDate) {
+            /* Closing Agustus = snapshot hasil rekonsiliasi. */
+            $migrationSeed = $bucketBaselineMap[$cid];
 
-            $seed = $openingBucketMap[$cid];
+            $b1 = (float)$migrationSeed['b_1_30'];
+            $b2 = (float)$migrationSeed['b_31_60'];
+            $b3 = (float)$migrationSeed['b_61_90'];
+            $bLebih = (float)$migrationSeed['b_lebih'];
+            $bBelumJatuhTempo = (float)$migrationSeed['belum_jatuh_tempo'];
+
+        } else {
+            /* September+ = rollover baseline + payment baseline + invoice baru.
+             * Revisi ini mempertahankan signed bucket historical apa adanya. */
+            $migrationSeed = makeMigrationBucketSeed($bucketBaselineMap[$cid]);
 
             /*
-             * RULE PRESISI:
-             * Jangan hitung umur dari opening_date dan jangan mengurangi seluruh
-             * pembayaran secara kumulatif setelah semua rollover selesai.
-             * Simulasikan kronologis per bulan dari bucket_date sampai asOfDate.
+             * STEP 5 - September+:
+             * 1) rollover snapshot closing 31-Aug sesuai rule existing;
+             * 2) kurangi porsi BAYAR periode yang masih diperlukan untuk
+             *    melunasi saldo baseline, maksimal sebesar saldo baseline
+             *    positif. Invoice post-baseline tetap dihitung oleh query
+             *    post_base_* sehingga payment tidak dihitung dua kali.
+             *
+             * baselinePaymentTimeline tetap dipakai untuk payment yang dapat
+             * ditelusuri eksplisit ke invoice <= baseline. Kekurangannya
+             * diambil dari periodCash HANYA sampai saldo baseline habis.
              */
+            $migrationTimeline = $baselinePaymentTimeline[$cid] ?? [];
+
             $legacyBucket = simulateOpeningBuckets(
-                $seed,
+                $migrationSeed,
                 $asOfDate,
-                $openingPaymentTimeline[$cid] ?? []
+                $migrationTimeline
             );
 
-            $b1 += $legacyBucket['b_1_30'];
-            $b2 += $legacyBucket['b_31_60'];
-            $b3 += $legacyBucket['b_61_90'];
-            $bLebih += $legacyBucket['b_lebih'];
-            $bBelumJatuhTempo += $legacyBucket['belum_jatuh_tempo'];
-        } else {
             /*
-             * Bucket seed sekarang merupakan data migrasi WAJIB.
-             * Fallback hanya menjaga laporan tetap dapat dibuka. Tidak ada lagi
-             * tebakan umur berdasarkan opening_date.
+             * REV7 TAHAP 1:
+             * Terapkan payment invoice historical langsung ke bucket invoice
+             * yang dipilih. Tidak mengubah Formula 1.
              */
-            $openingOutstanding =
-                $openingBalance
-                - $c['opening_target_total']
-                - $adj['opening_payment_until_end'];
+            foreach (
+                ($baselineInvoicePaymentByBucket[$cid] ?? [])
+                as $targetBucketKey => $targetPayment
+            ) {
+                $targetPayment = max((float)$targetPayment, 0.0);
+                $availableTarget = max(
+                    (float)($legacyBucket[$targetBucketKey] ?? 0),
+                    0.0
+                );
+                $takeTarget = min($availableTarget, $targetPayment);
 
-            $bLebih += $openingOutstanding;
+                if ($takeTarget > 0.0001) {
+                    $legacyBucket[$targetBucketKey] -= $takeTarget;
+                }
+            }
+
+            $baselineRemain = sumOpeningBucketSeed($legacyBucket);
+            $timelineApplied = array_sum($migrationTimeline);
+            $targetedBaselinePaid = array_sum(
+                $baselineInvoicePaymentByBucket[$cid] ?? []
+            );
+            $postBaselineLinkedPaid = (float)($postBaselineLinkedPaymentTotal[$cid] ?? 0);
+            $periodCashForBaseline = max(
+                (float)$periodCash
+                - (float)$timelineApplied
+                - (float)$targetedBaselinePaid
+                - $postBaselineLinkedPaid,
+                0.0
+            );
+
+            if ($baselineRemain > 0.0001 && $periodCashForBaseline > 0.0001) {
+                $fallbackOpeningPayment = min($baselineRemain, $periodCashForBaseline);
+                applySignedOpeningPayment($legacyBucket, $fallbackOpeningPayment);
+            }
+
+            /*
+             * REVISI SEPTEMBER - SIGNED BUCKET
+             * ----------------------------------------------------
+             * JANGAN menetralkan bucket negatif secara global.
+             * Hasil program lama membuktikan saldo/kredit negatif dapat
+             * memiliki umur bucket yang sah dan harus ikut rollover, contoh:
+             * SARMIN, HENDRA MULYONO, LIE PEK WAN, LUSIANI, HERMAN.
+             *
+             * Karena itu legacyBucket hasil baseline 31-Aug + rollover +
+             * payment baseline dipertahankan apa adanya. Pembersihan pasangan
+             * +/- palsu untuk customer lunas tetap ditangani oleh mekanisme
+             * STEP 6 setelah bucket historical dan post-baseline digabung.
+             */
+
+            $b1 = (float)$legacyBucket['b_1_30']
+                + (float)($c['post_base_b_1_30'] ?? 0);
+
+            $b2 = (float)$legacyBucket['b_31_60']
+                + (float)($c['post_base_b_31_60'] ?? 0);
+
+            $b3 = (float)$legacyBucket['b_61_90']
+                + (float)($c['post_base_b_61_90'] ?? 0);
+
+            $bLebih = (float)$legacyBucket['b_lebih']
+                + (float)($c['post_base_b_lebih'] ?? 0);
+
+            $bBelumJatuhTempo = (float)$legacyBucket['belum_jatuh_tempo']
+                + (float)($c['post_base_bjt'] ?? 0);
+
+            /*
+             * STEP 6 - ALOKASI SISA PAYMENT KE BUCKET POST-BASELINE
+             * ----------------------------------------------------
+             * Query post_base_* tetap menjadi source bucket invoice September+
+             * dan seluruh rule pay_inv / retur / titip existing TIDAK diubah.
+             *
+             * Pada sebagian transaksi, periodCash sudah membuat Formula 1 lunas
+             * tetapi masih tersisa bucket invoice post-baseline. Sebelumnya
+             * FINAL RESIDUAL menutupnya dengan LEBIH negatif (contoh:
+             * BJT +9.502.000 dan LEBIH -9.502.000 saat AKHIR = 0).
+             *
+             * Jangan kurangi seluruh periodCash lagi karena payment yang sudah
+             * terikat di query invoice dapat terhitung dua kali. Yang dialokasikan
+             * hanya EXCESS bucket positif terhadap AKHIR positif Formula 1.
+             * Dengan demikian Formula 1, baseline Agustus, dan query existing
+             * tetap tidak disentuh.
+             */
+            $combinedBucket = [
+                'b_1_30' => (float)$b1,
+                'b_31_60' => (float)$b2,
+                'b_61_90' => (float)$b3,
+                'b_lebih' => (float)$bLebih,
+                'belum_jatuh_tempo' => (float)$bBelumJatuhTempo,
+            ];
+
+            /*
+             * STEP 6 REV5 - NORMALISASI RETURN / OPENING MIGRATION
+             * ----------------------------------------------------
+             * RETURN signed negatif pada pembayaran sudah tercermin pada
+             * Formula 1 (Penjualan/ Bayar) dan tidak boleh sekali lagi
+             * mengurangi aging invoice historical. Kembalikan nominal RETURN
+             * ke bucket 1-30 bulan berjalan.
+             *
+             * OPENING signed negatif yang efektif adalah adjustment historical,
+             * bukan credit baru. Setelah rollover, hapus komponen negatifnya
+             * dari bucket historical. Offset yang sebelumnya akan jatuh ke
+             * residual LEBIH dikompensasikan di sini agar total bucket tetap
+             * sama dengan AKHIR tanpa hardcode customer.
+             */
+            $rev5ReturnAbs = abs(min((float)($migrationReturnSigned[$cid] ?? 0), 0.0));
+
+            /* REV7: jangan normalisasi ulang RETURN yang sudah berpasangan. */
+            $rev7PairedReturnAbs = (float)($migrationPairedReturnAbs[$cid] ?? 0);
+            $rev5ReturnAbs = max(
+                $rev5ReturnAbs - $rev7PairedReturnAbs,
+                0.0
+            );
+
+            $rev5OpeningAbs = abs(min((float)($migrationOpeningSigned[$cid] ?? 0), 0.0));
+
+            if ($rev5ReturnAbs > 0.0001) {
+                $combinedBucket['b_1_30'] += $rev5ReturnAbs;
+                $combinedBucket['b_lebih'] -= $rev5ReturnAbs;
+            }
+
+            if ($rev5OpeningAbs > 0.0001) {
+                /* Cari bucket historical negatif hasil rollover OPENING. */
+                foreach (['b_lebih', 'b_61_90', 'b_31_60', 'b_1_30', 'belum_jatuh_tempo'] as $rev5Key) {
+                    if ($rev5OpeningAbs <= 0.0001) {
+                        break;
+                    }
+                    $rev5Value = (float)$combinedBucket[$rev5Key];
+                    if ($rev5Value < -0.0001) {
+                        $rev5Clear = min(abs($rev5Value), $rev5OpeningAbs);
+                        $combinedBucket[$rev5Key] += $rev5Clear;
+                        $combinedBucket['b_lebih'] -= $rev5Clear;
+                        $rev5OpeningAbs -= $rev5Clear;
+                    }
+                }
+            }
+
+            $b1 = (float)$combinedBucket['b_1_30'];
+            $b2 = (float)$combinedBucket['b_31_60'];
+            $b3 = (float)$combinedBucket['b_61_90'];
+            $bLebih = (float)$combinedBucket['b_lebih'];
+            $bBelumJatuhTempo = (float)$combinedBucket['belum_jatuh_tempo'];
+
+            $positiveBucketTotal = 0.0;
+            foreach ($combinedBucket as $bucketValue) {
+                if ($bucketValue > 0.0001) {
+                    $positiveBucketTotal += $bucketValue;
+                }
+            }
+
+            $targetPositiveOutstanding = max((float)$akhir, 0.0);
+            $postBasePaymentExcess = max(
+                $positiveBucketTotal - $targetPositiveOutstanding,
+                0.0
+            );
+
+            if ($postBasePaymentExcess > 0.0001) {
+                /*
+                 * Pakai allocator existing: payment menutup bucket tertua dulu.
+                 * Nilai dibatasi sebesar excess, sehingga tidak membuat credit
+                 * baru dan tidak mengubah total AKHIR Formula 1.
+                 */
+                applySignedOpeningPayment(
+                    $combinedBucket,
+                    $postBasePaymentExcess
+                );
+
+                $b1 = (float)$combinedBucket['b_1_30'];
+                $b2 = (float)$combinedBucket['b_31_60'];
+                $b3 = (float)$combinedBucket['b_61_90'];
+                $bLebih = (float)$combinedBucket['b_lebih'];
+                $bBelumJatuhTempo = (float)$combinedBucket['belum_jatuh_tempo'];
+            }
+        }
+
+    } else {
+        /* ====================================================
+         * EXISTING BUCKET LOGIC - TIDAK DIUBAH
+         * ==================================================== */
+        $b1 = $c['b_1_30'];
+        $b2 = $c['b_31_60'];
+        $b3 = $c['b_61_90'];
+        $bLebih = $c['b_lebih'];
+        $bBelumJatuhTempo = $c['belum_jatuh_tempo'];
+
+        if ($hasOpening) {
+            if ($hasValidOpeningBucket) {
+
+                $seed = $openingBucketMap[$cid];
+
+                $legacyBucket = simulateOpeningBuckets(
+                    $seed,
+                    $asOfDate,
+                    $openingPaymentTimeline[$cid] ?? []
+                );
+
+                $b1 += $legacyBucket['b_1_30'];
+                $b2 += $legacyBucket['b_31_60'];
+                $b3 += $legacyBucket['b_61_90'];
+                $bLebih += $legacyBucket['b_lebih'];
+                $bBelumJatuhTempo += $legacyBucket['belum_jatuh_tempo'];
+
+                $seedManualTotal = sumOpeningBucketSeed($seed);
+                $snapshotUnbucketed = $openingBalance - $seedManualTotal;
+                if (abs($snapshotUnbucketed) > 0.0001) {
+                    $bLebih += $snapshotUnbucketed;
+                }
+            } else {
+                $openingTimelineTotal =
+                    array_sum($openingPaymentTimeline[$cid] ?? []);
+
+                $openingOutstanding =
+                    $openingBalance
+                    - $openingTimelineTotal;
+
+                $bLebih += $openingOutstanding;
+            }
         }
     }
 
-    /* Orphan payment tetap diperlakukan sebagai credit customer. */
-    $bLebih -= $c['orphan_total'];
-
     /*
-     * RULE FINAL BUCKET LEBIH
-     * ----------------------------------------------------------
-     * Kolom LEBIH merupakan nilai NET:
-     *   + outstanding invoice > 90 hari
-     *   - retur yang belum digunakan
-     *   - titip yang belum digunakan
-     *
-     * Bila customer memiliki ketiganya, semuanya dijumlahkan pada kolom LEBIH.
+     * Closing migration Agustus sudah merupakan posisi NET final.
+     * Jangan kurangi orphan/return/titip sekali lagi pada snapshot tersebut.
+     * September+ kembali memakai rule credit existing; residual Lebih tetap
+     * menjadi safety net Formula 2.
      */
+    $isExactMigrationClosing = (
+        $useMigrationBaseline
+        && $endDate === $bucketBaselineDate
+    );
+
     $unusedReturnCredit =
         (float)$c['credit_bjt']
         + (float)$c['credit_b_1_30']
@@ -1797,8 +3310,167 @@ foreach ($masterCustomers as $cid => $m) {
 
     $unusedTitipEnd = (float)$c['unused_titip_end'];
 
-    $bLebih -= $unusedReturnCredit;
-    $bLebih -= $unusedTitipEnd;
+    if (!$isExactMigrationClosing) {
+        /* Orphan payment tetap diperlakukan sebagai credit customer. */
+        $bLebih -= $c['orphan_total'];
+
+        /* RULE FINAL BUCKET LEBIH existing. */
+        $bLebih -= $unusedReturnCredit;
+        $bLebih -= $unusedTitipEnd;
+    }
+
+    /*
+     * FINAL RESIDUAL LEBIH
+     * ----------------------------------------------------------
+     * Source of truth Formula 2 adalah AKHIR dari Formula 1.
+     * Setelah BJT, 1-30, 31-60, dan 61-90 selesai dihitung dari
+     * invoice/outstanding yang memiliki umur yang dapat ditentukan,
+     * seluruh sisa posisi ditempatkan pada LEBIH.
+     *
+     * Dengan demikian secara matematis WAJIB:
+     *   1-30 + 31-60 + 61-90 + LEBIH + BJT = AKHIR
+     *
+     * Residual ini juga menampung posisi migrasi/cutoff yang umur
+     * historisnya tidak dapat ditentukan secara lebih rinci.
+     */
+    $bLebihSourceBased = $bLebih;
+    $bLebih =
+        (float)$akhir
+        - (
+            (float)$bBelumJatuhTempo
+            + (float)$b1
+            + (float)$b2
+            + (float)$b3
+        );
+
+    /*
+     * STEP 6 REV6 - BERSIHKAN OFFSET OPENING MIGRATION
+     * --------------------------------------------------
+     * Khusus migration September+ dan hanya bila periode mempunyai
+     * payment_source=OPENING signed negatif. Jika setelah seluruh rule
+     * Rev5 + FINAL RESIDUAL masih terbentuk pasangan:
+     *   bucket umur negatif  <-> LEBIH positif
+     * dengan nominal yang berasal dari OPENING tersebut, keduanya adalah
+     * offset dari adjustment historical yang sama dan tidak boleh tampil
+     * sebagai dua bucket aging terpisah.
+     *
+     * Penting: ini BUKAN netting signed bucket global. Nilai yang boleh
+     * dibersihkan dibatasi oleh nominal OPENING periode berjalan, sehingga
+     * signed bucket valid customer lain tetap dipertahankan.
+     */
+    if ($useMigrationBaseline && $endDate > $bucketBaselineDate) {
+        $rev6OpeningRemaining = abs(min(
+            (float)($migrationOpeningSigned[$cid] ?? 0),
+            0.0
+        ));
+
+        if ($rev6OpeningRemaining > 0.0001 && $bLebih > 0.0001) {
+            foreach (['b3', 'b2', 'b1'] as $rev6BucketVar) {
+                if ($rev6OpeningRemaining <= 0.0001 || $bLebih <= 0.0001) {
+                    break;
+                }
+
+                $rev6BucketValue = (float)$$rev6BucketVar;
+                if ($rev6BucketValue < -0.0001) {
+                    $rev6Clear = min(
+                        abs($rev6BucketValue),
+                        $bLebih,
+                        $rev6OpeningRemaining
+                    );
+
+                    $$rev6BucketVar += $rev6Clear;
+                    $bLebih -= $rev6Clear;
+                    $rev6OpeningRemaining -= $rev6Clear;
+                }
+            }
+        }
+
+        /*
+         * REV7 TAHAP 3 - BERSIHKAN HISTORICAL RETURN SETTLEMENT
+         * ------------------------------------------------------
+         * Jika RETURN sebelum/hingga baseline sudah membentuk credit negatif
+         * pada migration baseline, lalu September+ mempunyai marker RETURN
+         * legacy bernilai 0 yang mereferensikan return master tersebut, maka
+         * pasangan bucket historical negatif <-> LEBIH positif adalah offset
+         * dari settlement yang sama.
+         *
+         * Bersihkan hanya sebesar nominal return master yang terbukti terkait.
+         * Signed bucket lain (mis. HERMAN) tidak disentuh bila tidak memenuhi
+         * sumber/marker ini.
+         */
+        $rev7HistoricalReturnRemaining = (float)(
+            $historicalReturnSettlementAbs[$cid] ?? 0
+        );
+
+        if ($rev7HistoricalReturnRemaining > 0.0001 && $bLebih > 0.0001) {
+            foreach (['b3', 'b2', 'b1'] as $rev7ReturnBucketVar) {
+                if (
+                    $rev7HistoricalReturnRemaining <= 0.0001
+                    || $bLebih <= 0.0001
+                ) {
+                    break;
+                }
+
+                $rev7ReturnBucketValue = (float)$$rev7ReturnBucketVar;
+                if ($rev7ReturnBucketValue < -0.0001) {
+                    $rev7ReturnClear = min(
+                        abs($rev7ReturnBucketValue),
+                        $bLebih,
+                        $rev7HistoricalReturnRemaining
+                    );
+
+                    $$rev7ReturnBucketVar += $rev7ReturnClear;
+                    $bLebih -= $rev7ReturnClear;
+                    $rev7HistoricalReturnRemaining -= $rev7ReturnClear;
+                }
+            }
+        }
+    }
+
+    /*
+     * REV7 TAHAP 4 - RECLASS HISTORICAL CP-MCP CREDIT
+     * --------------------------------------------------
+     * Jalankan SETELAH Tahap 3 settlement cleanup.
+     * Hanya LEBIH negatif yang masih tersisa yang boleh dipindahkan.
+     * Karena itu:
+     * - ABU yang sudah settle menjadi 0 tidak terbuka kembali;
+     * - customer tanpa historical CP-MCP return tidak disentuh;
+     * - nominal tidak pernah melebihi posisi credit migration yang tersisa;
+     * - total 5 bucket tetap sama, sehingga Formula 2 tidak berubah.
+     */
+    if (
+        $useMigrationBaseline
+        && $endDate > $bucketBaselineDate
+        && $bLebih < -0.0001
+        && isset($historicalCpMcpCreditByBucket[$cid])
+    ) {
+        $rev7CpRemaining = abs((float)$bLebih);
+        $rev7CpSource = $historicalCpMcpCreditByBucket[$cid];
+
+        foreach (
+            [
+                'b_1_30' => 'b1',
+                'b_31_60' => 'b2',
+                'b_61_90' => 'b3',
+                'belum_jatuh_tempo' => 'bBelumJatuhTempo',
+            ]
+            as $rev7CpKey => $rev7CpVar
+        ) {
+            if ($rev7CpRemaining <= 0.0001) {
+                break;
+            }
+
+            $rev7CpAvailable = max((float)($rev7CpSource[$rev7CpKey] ?? 0), 0.0);
+            if ($rev7CpAvailable <= 0.0001) {
+                continue;
+            }
+
+            $rev7CpMove = min($rev7CpRemaining, $rev7CpAvailable);
+            $$rev7CpVar -= $rev7CpMove;
+            $bLebih += $rev7CpMove;
+            $rev7CpRemaining -= $rev7CpMove;
+        }
+    }
 
     $amounts = initAmountRow();
     $amounts['saldo_awal'] = $saldoAwal;
@@ -1838,6 +3510,11 @@ foreach ($masterCustomers as $cid => $m) {
         'selisih_balance' => $selisih,
         'bucket_seed_missing' => ($hasOpening && !$hasValidOpeningBucket),
         'debug' => [
+            'using_migration_baseline' => $useMigrationBaseline ? 1 : 0,
+            'migration_baseline_total' => isset($bucketBaselineMap[$cid])
+                ? sumMigrationBucketBaseline($bucketBaselineMap[$cid])
+                : 0.0,
+            'baseline_payment_timeline_total' => array_sum($baselinePaymentTimeline[$cid] ?? []),
             'bucket_total' => $bucketTotal,
             'opening_target_total' => (float)$c['opening_target_total'],
             'opening_timeline_total' => array_sum($openingPaymentTimeline[$cid] ?? []),
@@ -1851,6 +3528,8 @@ foreach ($masterCustomers as $cid => $m) {
             'credit_b_lebih' => (float)$c['credit_b_lebih'],
             'unused_titip_before' => (float)$c['unused_titip_before'],
             'unused_titip_end' => (float)$c['unused_titip_end'],
+            'b_lebih_source_based' => (float)$bLebihSourceBased,
+            'b_lebih_residual' => (float)$bLebih,
         ],
     ];
 }
@@ -2033,392 +3712,337 @@ if (empty($printPages)) {
 
     <title><?= h($title) ?></title>
 
-    <style>
-        @page {
-            size: 377.8mm 279.4mm;
-            margin: 5mm 6mm;
-        }
+  <style>
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+    body {
+        font-family: "Courier New", Courier, monospace;
+        font-size: 15px;
+        color: #000;
+        background: #eef1f5;
+        padding: 16px;
+    }
+
+    .toolbar {
+        width: 100%;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-bottom: 16px;
+    }
+
+    .btn-action {
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        padding: 12px 24px;
+        font-size: 15px;
+        font-weight: bold;
+        cursor: pointer;
+        text-decoration: none;
+        box-shadow: 0 2px 6px rgba(0,0,0,.2);
+    }
+
+    .btn-back { background: #6c757d; }
+    .btn-print { background: #2b5797; }
+
+    .btn-action:hover {
+        filter: brightness(.92);
+        text-decoration: none;
+    }
+
+    .screen-scroll {
+        width: 100%;
+        overflow-x: auto;
+        overflow-y: visible;
+        padding-bottom: 12px;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .screen-scroll::-webkit-scrollbar { height: 11px; }
+    .screen-scroll::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 5px; }
+    .screen-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 5px; }
+
+    .print-wrap {
+        width: 100%;
+        max-width: 1800px;
+        margin: 0 auto;
+        padding: 16px 20px;
+        background: #fff;
+        box-shadow: 0 2px 12px rgba(0,0,0,.1);
+        border-radius: 4px;
+    }
+
+    .title {
+        font-size: 21px;
+        font-weight: bold;
+        margin-bottom: 4px;
+    }
+
+    .subtitle {
+        font-size: 14px;
+        margin-bottom: 4px;
+    }
+
+    .printed {
+        text-align: right;
+        font-size: 12px;
+        color: #555;
+        margin-bottom: 8px;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 13px;
+    }
+
+    th {
+        border-top: 1px solid #000;
+        border-bottom: 1px solid #000;
+        padding: 8px 6px;
+        text-align: center;
+        font-weight: bold;
+        white-space: nowrap;
+    }
+
+    td {
+        padding: 6px 6px;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+    .customer-col {
+        width: 280px;
+        text-align: left;
+        white-space: normal;
+    }
+
+    .money-col {
+        width: 128px;
+    }
+
+    .money-cell {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .city-row td {
+        padding-top: 12px;
+        padding-bottom: 5px;
+        font-weight: bold;
+        font-size: 14px;
+        border-top: 1px solid #000;
+    }
+
+    .city-total td {
+        border-top: 1px solid #777;
+        border-bottom: 1px solid #000;
+        font-weight: bold;
+        background: #f7f7f7;
+        padding-top: 6px;
+        padding-bottom: 6px;
+    }
+
+    .grand-total td {
+        border-top: 2px solid #000;
+        border-bottom: 2px solid #000;
+        font-weight: bold;
+        background: #e8e8e8;
+        padding-top: 8px;
+        padding-bottom: 8px;
+    }
+
+    .return-negative {
+        color: #a00000;
+        font-weight: bold;
+    }
+
+    .text-right { text-align: right; }
+    .text-center { text-align: center; }
+
+    .no-data {
+        padding: 20px;
+        text-align: center;
+        color: #777;
+        font-size: 14px;
+    }
+
+    .report-note {
+        margin-top: 8px;
+        font-size: 12px;
+        color: #555;
+    }
+
+    .print-report { display: none; }
+    .print-page { background: #fff; }
+
+    .continuation-message {
+        margin-top: 8px;
+        padding-top: 4px;
+        border-top: 1px dashed #777;
+        text-align: right;
+        font-size: 11px;
+        font-style: italic;
+        font-weight: bold;
+    }
+    @page{size:14.875in 11in;margin:6mm}
+    @media print {
 
         body {
-            font-family:
-                "Courier New",
-                Courier,
-                monospace;
-            font-size: 12px;
-            color: #000;
-            background: #eef1f5;
-            padding: 16px;
-        }
-
-        .toolbar {
-            width: 100%;
-            display: flex;
-            justify-content: flex-end;
-            gap: 8px;
-            margin-bottom: 16px;
-        }
-
-        .btn-action {
-            border: none;
-            border-radius: 6px;
-            color: #fff;
-            padding: 12px 24px;
-            font-size: 15px;
-            font-weight: bold;
-            cursor: pointer;
-            text-decoration: none;
-            box-shadow:
-                0 2px 6px rgba(0,0,0,.2);
-        }
-
-        .btn-back {
-            background: #6c757d;
-        }
-
-        .btn-print {
-            background: #2b5797;
-        }
-
-        .btn-action:hover {
-            filter: brightness(.92);
-            text-decoration: none;
-        }
-
-        .screen-scroll {
-            width: 100%;
-            overflow-x: auto;
-            overflow-y: visible;
-            padding-bottom: 12px;
-            -webkit-overflow-scrolling: touch;
-        }
-
-        .screen-scroll::-webkit-scrollbar {
-            height: 11px;
-        }
-
-        .screen-scroll::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 5px;
-        }
-
-        .screen-scroll::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 5px;
-        }
-
-        .print-wrap {
-            width: 1680px;
-            min-width: 1680px;
-            margin: 0 auto;
-            padding: 14px 18px;
-            background: #fff;
-            box-shadow:
-                0 2px 12px rgba(0,0,0,.1);
-            border-radius: 4px;
-        }
-
-        .title {
-            font-size: 16px;
-            font-weight: bold;
-            margin-bottom: 3px;
-        }
-
-        .subtitle {
-            font-size: 11px;
-            margin-bottom: 3px;
-        }
-
-        .printed {
-            text-align: right;
-            font-size: 10px;
-            color: #555;
-            margin-bottom: 6px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-            font-size: 9px;
-        }
-
-        th {
-            border-top: 1px solid #000;
-            border-bottom: 1px solid #000;
-            padding: 5px 3px;
-            text-align: center;
-            font-weight: bold;
-            white-space: nowrap;
-        }
-
-        td {
-            padding: 3px 4px;
-            vertical-align: middle;
-            white-space: nowrap;
-        }
-
-        .customer-col {
-            width: 245px;
-            text-align: left;
-            white-space: normal;
-        }
-
-        .money-col {
-            width: 112px;
-        }
-
-        .money-cell {
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .city-row td {
-            padding-top: 8px;
-            padding-bottom: 3px;
-            font-weight: bold;
-            font-size: 10px;
-            border-top: 1px solid #000;
-        }
-
-        .city-total td {
-            border-top: 1px solid #777;
-            border-bottom: 1px solid #000;
-            font-weight: bold;
-            background: #f7f7f7;
-            padding-top: 4px;
-            padding-bottom: 4px;
-        }
-
-        .grand-total td {
-            border-top: 2px solid #000;
-            border-bottom: 2px solid #000;
-            font-weight: bold;
-            background: #e8e8e8;
-            padding-top: 6px;
-            padding-bottom: 6px;
-        }
-
-        .return-negative {
-            color: #a00000;
-            font-weight: bold;
-        }
-
-        .text-right {
-            text-align: right;
-        }
-
-        .text-center {
-            text-align: center;
-        }
-
-        .no-data {
-            padding: 20px;
-            text-align: center;
-            color: #777;
-            font-size: 12px;
-        }
-
-        .report-note {
-            margin-top: 7px;
-            font-size: 9px;
-            color: #555;
-        }
-
-        .print-report {
-            display: none;
-        }
-
-        .print-page {
+            padding: 0;
             background: #fff;
         }
 
-        .continuation-message {
-            margin-top: 4mm;
+        .no-print { display: none !important; }
+        .screen-report { display: none !important; }
+        .print-report { display: block !important; }
+
+        .print-report .print-page {
+            width: 365.8mm !important;
+            min-width: 365.8mm !important;
+            max-width: 365.8mm !important;
+            height: 267mm !important;
+            min-height: 267mm !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: flex !important;
+            flex-direction: column !important;
+            page-break-after: always;
+            break-after: page;
+            overflow: hidden !important;
+        }
+
+        .print-report .print-page:last-child {
+            page-break-after: auto;
+            break-after: auto;
+        }
+
+        .print-report .page-table-wrap { flex: 0 0 auto; }
+
+        .print-report .continuation-message {
+            margin-top: auto;
             padding-top: 2mm;
+            padding-bottom: 1mm;
             border-top: 1px dashed #777;
             text-align: right;
-            font-size: 8pt;
+            font-size: 7.5pt;
             font-style: italic;
             font-weight: bold;
         }
 
-        @media print {
-            body {
-                padding: 0;
-                background: #fff;
-            }
-
-            .no-print {
-                display: none !important;
-            }
-
-
-            .screen-report {
-                display: none !important;
-            }
-
-            .print-report {
-                display: block !important;
-            }
-
-            .print-report .print-page {
-                width: 365.8mm !important;
-                min-width: 365.8mm !important;
-                max-width: 365.8mm !important;
-                height: 267mm !important;
-                min-height: 267mm !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                display: flex !important;
-                flex-direction: column !important;
-                page-break-after: always;
-                break-after: page;
-                overflow: hidden !important;
-            }
-
-            .print-report .print-page:last-child {
-                page-break-after: auto;
-                break-after: auto;
-            }
-
-            .print-report .page-table-wrap {
-                flex: 0 0 auto;
-            }
-
-            .print-report .continuation-message {
-                margin-top: auto;
-                padding-top: 2mm;
-                padding-bottom: 1mm;
-                border-top: 1px dashed #777;
-                text-align: right;
-                font-size: 7pt;
-                font-style: italic;
-                font-weight: bold;
-            }
-
-            .print-report .grand-total {
-                break-inside: avoid;
-                page-break-inside: avoid;
-            }
-
-            .screen-scroll {
-                overflow: visible !important;
-                padding: 0;
-            }
-
-            html,
-            body {
-                width: 377.8mm !important;
-                min-width: 377.8mm !important;
-                height: auto !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow: visible !important;
-            }
-
-            .print-wrap {
-                width: 365.8mm !important;
-                min-width: 365.8mm !important;
-                max-width: 365.8mm !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                box-shadow: none !important;
-                border-radius: 0 !important;
-            }
-
-            .title {
-                font-size: 10pt;
-                line-height: 1.1;
-            }
-
-            .subtitle {
-                font-size: 8pt;
-                line-height: 1.1;
-            }
-
-            .printed {
-                font-size: 7pt;
-                margin-bottom: 2mm;
-            }
-
-            table {
-                width: 100% !important;
-                table-layout: fixed !important;
-                font-size: 7pt;
-                line-height: 1.05;
-            }
-
-            th {
-                padding: 1.5mm 0.7mm;
-                font-weight: bold;
-            }
-
-            td {
-                padding: 1.1mm 0.7mm;
-            }
-
-            .customer-col {
-                width: 55mm !important;
-            }
-
-            .money-col {
-                width: 28.2mm !important;
-            }
-
-            .city-row td {
-                font-size: 7.5pt;
-                padding-top: 2mm;
-                padding-bottom: 0.8mm;
-            }
-
-            .city-total td {
-                padding-top: 1.2mm;
-                padding-bottom: 1.2mm;
-            }
-
-            .grand-total td {
-                padding-top: 1.5mm;
-                padding-bottom: 1.5mm;
-            }
-
-            .report-note {
-                font-size: 6.5pt;
-                margin-top: 2mm;
-            }
-
-            .city-total td,
-            .grand-total td {
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-            }
+        .print-report .grand-total {
+            break-inside: avoid;
+            page-break-inside: avoid;
         }
 
-        @media screen and (max-width: 768px) {
-            body {
-                padding: 8px;
-            }
-
-            .toolbar {
-                justify-content: center;
-            }
-
-            .btn-action {
-                flex: 1;
-                text-align: center;
-            }
-
-            .print-wrap {
-                width: 1500px;
-                min-width: 1500px;
-            }
+        .screen-scroll {
+            overflow: visible !important;
+            padding: 0;
         }
-    </style>
+
+        html, body {
+            width: 365.8mm !important;
+            min-width: 365.8mm !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: visible !important;
+        }
+
+        .print-wrap {
+            width: 365.8mm !important;
+            min-width: 365.8mm !important;
+            max-width: 365.8mm !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+        }
+
+        .title {
+            font-size: 10.5pt;
+            line-height: 1.1;
+        }
+
+        .subtitle {
+            font-size: 8.5pt;
+            line-height: 1.1;
+        }
+
+        .printed {
+            font-size: 7.3pt;
+            margin-bottom: 2mm;
+        }
+
+        table {
+            width: 100% !important;
+            table-layout: fixed !important;
+            font-size: 8pt;
+            line-height: 1.05;
+        }
+
+        th {
+            padding: 1.8mm 0.8mm;
+            font-weight: bold;
+        }
+
+        td {
+            padding: 1.3mm 0.8mm;
+        }
+
+        .customer-col { width: 60mm !important; }
+        .money-col { width: 30.58mm !important; } /* 60 + 30.58*10 = 365.8mm, pas */
+
+        .city-row td {
+            font-size: 8pt;
+            padding-top: 2.2mm;
+            padding-bottom: 0.9mm;
+        }
+
+        .city-total td {
+            padding-top: 1.3mm;
+            padding-bottom: 1.3mm;
+        }
+
+        .grand-total td {
+            padding-top: 1.6mm;
+            padding-bottom: 1.6mm;
+        }
+
+        .report-note {
+            font-size: 7pt;
+            margin-top: 2mm;
+        }
+
+        .city-total td,
+        .grand-total td {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+    }
+
+    @media screen and (max-width: 768px) {
+        body { padding: 8px; }
+
+        .toolbar { justify-content: center; }
+
+        .btn-action {
+            flex: 1;
+            text-align: center;
+        }
+
+        .print-wrap {
+            width: 100%;
+            max-width: 100%;
+        }
+    }
+</style>
 </head>
 
 <body>

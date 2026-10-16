@@ -20,16 +20,17 @@ include __DIR__ . '/../../koneksi.php';
 function generateOrderNo($conn) {
     $year   = date('Y');
     $month  = date('m');
-    $prefix = "SO.{$year}FC{$month}.";
+    $searchPrefix = "SO.{$year}FC";          // cari baris terbaru se-tahun
+    $outputPrefix = "SO.{$year}FC{$month}."; // format nomor baru tetap per-bulan
 
-    $prefixSafe = mysqli_real_escape_string($conn, $prefix);
+    $searchPrefixSafe = mysqli_real_escape_string($conn, $searchPrefix);
 
     $query = mysqli_query(
         $conn,
         "SELECT order_no
          FROM head_sales_order
-         WHERE order_no LIKE '{$prefixSafe}%'
-         ORDER BY CAST(RIGHT(order_no, 5) AS UNSIGNED) DESC
+         WHERE order_no LIKE '{$searchPrefixSafe}%'
+         ORDER BY date_created DESC, order_no DESC
          LIMIT 1"
     );
 
@@ -38,22 +39,19 @@ function generateOrderNo($conn) {
         ? ((int)substr((string)$row['order_no'], -5) + 1)
         : 1;
 
-    return $prefix . str_pad((string)$nextNum, 5, '0', STR_PAD_LEFT);
+    return $outputPrefix . str_pad((string)$nextNum, 5, '0', STR_PAD_LEFT);
 }
-
 // Fungsi generate nomor PO otomatis
 function generatePONumber($conn, $tahun) {
-    $query = mysqli_query($conn, "SELECT no_po FROM hed_po WHERE no_po LIKE '%/PO/$tahun' ORDER BY no_po DESC LIMIT 1");
-    $row = mysqli_fetch_assoc($query);
-    
-    if ($row) {
-        $last_num = intval(explode('/', $row['no_po'])[0]);
-        $next_num = $last_num + 1;
-    } else {
-        $next_num = 1;
-    }
-    
-    return str_pad($next_num, 3, '0', STR_PAD_LEFT) . "/PO/" . $tahun;
+    // Preview saja. Nomor final wajib ditentukan secara atomik di save_sales_order.php.
+    $tahun = (int)$tahun;
+    $sql = "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(no_po, '/', 1) AS UNSIGNED)), 0) AS last_num
+            FROM hed_po
+            WHERE no_po REGEXP '^[0-9]+/PO/{$tahun}$'";
+    $result = mysqli_query($conn, $sql);
+    $row = $result ? mysqli_fetch_assoc($result) : null;
+    $next_num = ((int)($row['last_num'] ?? 0)) + 1;
+    return str_pad((string)$next_num, 3, '0', STR_PAD_LEFT) . "/PO/" . $tahun;
 }
 
 // Ambil data master untuk Dropdown Panel Header
@@ -476,7 +474,6 @@ $no_po     = generatePONumber($conn, $tahun);
 
     <form method="POST" action="index.php?page=save_sales_order" id="formSO">
         <input type="hidden" name="po" value="<?= htmlspecialchars($no_po) ?>">
-        <input type="hidden" name="no_po" value="<?= htmlspecialchars($no_po) ?>">
         <!-- PANEL 1: Order Information -->
         <div class="panel-row">
             <div class="so-panel">
@@ -500,8 +497,8 @@ $no_po     = generatePONumber($conn, $tahun);
                     </div>
                     <div class="ff">
                         <label>No. PO <span class="required">*</span></label>
-                        <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
-                        <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO akan otomatis digenerate</small>
+                        <input type="text" name="no_po" id="no_po" value="<?= htmlspecialchars($no_po) ?>" readonly style="font-weight:bold; color:var(--accent-blue); background:#e9ecef;">
+                        <small style="display:block; color:#6c757d; font-size:9px; margin-top:2px;">Nomor PO ini hanya preview. Nomor final dicek dan ditetapkan saat Save.</small>
                     </div>
                     <div class="ff">
                         <label>Marketing <span class="required">*</span></label>
@@ -777,7 +774,7 @@ function updateRowNumbers() {
 }
 
 // ============================================================
-// PERBAIKAN 1: FUNGSI CEK INVENTORY KHUSUS - SAMA DENGAN edit_sales_order
+// FUNGSI CEK INVENTORY KHUSUS
 // ============================================================
 function isSpecialInventory(row) {
     var $row = $(row);
@@ -785,11 +782,13 @@ function isSpecialInventory(row) {
     
     return inventoryName.includes("PE ROLL STOKAN SSB") || 
            inventoryName.includes("PP ROLL BOLA") ||
+		   inventoryName.includes("PP ROLL MCP") ||
+           inventoryName.includes("PP ROLL CAHAYA LUMBA") ||
            inventoryName.includes("PE ROLL KAYU MAS");
 }
 
 // ============================================================
-// PERBAIKAN 2: FUNGSI GET PRICE FORMULA FACTOR - SAMA DENGAN edit_sales_order
+// FUNGSI GET PRICE FORMULA FACTOR
 // ============================================================
 function getPriceFormulaFactor(row) {
     var $row = $(row);
@@ -814,7 +813,7 @@ function getPriceFormulaFactor(row) {
 }
 
 // ============================================================
-// PERBAIKAN 3: FUNGSI PRICE - SAMA DENGAN edit_sales_order
+// FUNGSI PRICE
 // ============================================================
 function calculatePriceFromPriceUnit(row) {
     var $row = $(row);
@@ -846,30 +845,18 @@ function calculatePriceUnitFromPrice(row) {
 }
 
 // ============================================================
-// PERBAIKAN 4: FUNGSI UPDATE READONLY - SAMA DENGAN edit_sales_order
+// FUNGSI UPDATE READONLY
+// [PERUBAHAN] Semua inventory: price-unit & price editable
 // ============================================================
 function updatePriceUnitReadonly(row) {
     var $row = $(row);
-    var isSpecial = isSpecialInventory(row);
-    var priceUnitInput = $row.find('.price-unit');
-    var priceInput = $row.find('.price');
-    
-    if (isSpecial) {
-        priceUnitInput.prop('readonly', false);
-        priceUnitInput.css('background', '#ffffff');
-        priceInput.prop('readonly', true);
-        priceInput.css('background', '#f1f3f5');
-    } else {
-        priceUnitInput.prop('readonly', true);
-        priceUnitInput.css('background', '#f1f3f5');
-        priceUnitInput.val('0');
-        priceInput.prop('readonly', false);
-        priceInput.css('background', '#ffffff');
-    }
+    // Semua inventory: price-unit & price editable
+    $row.find('.price-unit').prop('readonly', false).css('background', '#ffffff');
+    $row.find('.price').prop('readonly', false).css('background', '#ffffff');
 }
 
 // ============================================================
-// FUNGSI CALCULATE - SAMA DENGAN edit_sales_order
+// FUNGSI CALCULATE
 // ============================================================
 function calculateRow(row) {
     var $row = $(row);
@@ -1531,41 +1518,45 @@ function initSelect2OnRow($row) {
     });
 
     // ============================================================
-    // PERBAIKAN 5: EVENT PRICE UNIT - SAMA DENGAN edit_sales_order
+    // [PERUBAHAN] EVENT PRICE UNIT
+    // Format Rupiah jalan untuk semua inventory.
+    // Kalkulasi tetap HANYA untuk special inventory (rumus tidak diubah).
     // ============================================================
     $row.find('.price-unit').on('input', function() {
         var tr = $(this).closest('tr');
         
+        // Format Rupiah selalu jalan (semua inventory)
+        var cursorPosition = this.selectionStart;
+        var beforeLength = this.value.length;
+
+        this.value = formatRupiahInput(this.value);
+
+        var afterLength = this.value.length;
+        this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
+        
+        // Kalkulasi HANYA untuk special inventory (rumus tidak diubah)
         if (isSpecialInventory(tr[0])) {
-            var cursorPosition = this.selectionStart;
-            var beforeLength = this.value.length;
-
-            this.value = formatRupiahInput(this.value);
-
-            var afterLength = this.value.length;
-            this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
-
             calculatePriceFromPriceUnit(tr[0]);
         }
     });
 
     // ============================================================
-    // PERBAIKAN 6: EVENT PRICE - SAMA DENGAN edit_sales_order
+    // EVENT PRICE
+    // Format Rupiah jalan untuk semua inventory.
+    // Kalkulasi tetap mengikuti logika existing.
     // ============================================================
     $row.find('.price').on('input', function() {
         var tr = $(this).closest('tr');
         
-        if (!isSpecialInventory(tr[0])) {
-            var cursorPosition = this.selectionStart;
-            var beforeLength = this.value.length;
+        var cursorPosition = this.selectionStart;
+        var beforeLength = this.value.length;
 
-            this.value = formatRupiahInput(this.value);
+        this.value = formatRupiahInput(this.value);
 
-            var afterLength = this.value.length;
-            this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
+        var afterLength = this.value.length;
+        this.selectionStart = this.selectionEnd = cursorPosition + (afterLength - beforeLength);
 
-            calculateRow(tr[0]);
-        }
+        calculateRow(tr[0]);
     });
 }
 

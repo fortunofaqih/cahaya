@@ -6,6 +6,13 @@
  */
 
 // modul/transaksi/edit_bayar.php
+//
+// CUT-OFF PIUTANG:
+// - Cutoff resmi = 31-Jul-2026.
+// - Invoice <= 31-Jul-2026 tidak boleh ditambahkan sebagai pilihan baru.
+// - PENGECUALIAN EDIT: invoice <= cutoff yang SUDAH terikat pada bayar_no
+//   yang sedang diedit tetap ditampilkan agar histori existing tidak rusak.
+// - Invoice baru yang selectable mulai 01-Aug-2026.
 // Edit Pembayaran Multi Invoice / Multi Shipping.
 //
 // Satu bayar_no dapat memiliki banyak detail_bayar.
@@ -101,6 +108,7 @@ $stmt = mysqli_prepare(
         shipping_no,
         opening_id,
         payment_source,
+        opening_effect_piutang,
         return_id,
         invoice_date,
         invoice_amount,
@@ -171,6 +179,8 @@ $currentReturnId = implode(',', array_unique(array_merge(
     array_keys($currentReturnUsage),
     array_keys($currentLegacyReturnIds)
 )));
+
+$bayarNoEsc = mysqli_real_escape_string($conn, $bayarNo);
 
 /*
 |--------------------------------------------------------------------------
@@ -263,6 +273,25 @@ $sqlShipping = "
 
         WHERE hi.customer_id = ?
           AND COALESCE(TRIM(di.shipping_no), '') <> ''
+
+          /*
+           * CUT-OFF 31-Jul-2026:
+           * - invoice mulai 01-Aug-2026 boleh dipilih normal;
+           * - invoice lama <= cutoff hanya tetap ditampilkan bila memang
+           *   sudah menjadi detail pada bayar_no yang sedang diedit.
+           */
+          AND (
+                hi.invoice_date >= '2026-08-01'
+                OR EXISTS (
+                    SELECT 1
+                    FROM detail_bayar db_current_cutoff
+                    WHERE db_current_cutoff.bayar_no = '{$bayarNoEsc}'
+                      AND db_current_cutoff.invoice_no = hi.invoice_no
+                      AND TRIM(COALESCE(db_current_cutoff.shipping_no,'')) = TRIM(di.shipping_no)
+                      AND UPPER(COALESCE(NULLIF(TRIM(db_current_cutoff.payment_source),''),'INVOICE')) = 'INVOICE'
+                )
+          )
+
           AND UPPER(COALESCE(hi.invoice_no, '')) NOT LIKE '%CP-MCP%'
           AND UPPER(COALESCE(TRIM(di.shipping_no), '')) NOT LIKE '%CP-MCP%'
 
@@ -483,6 +512,15 @@ $stmt = mysqli_prepare(
      FROM head_retur_invoice hri
      WHERE hri.customer_id = ?
        AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+       AND (
+            hri.return_date >= '2026-08-01'
+            OR EXISTS (
+                SELECT 1
+                FROM detail_bayar db_current_return
+                WHERE db_current_return.bayar_no = '{$bayarNoEsc}'
+                  AND TRIM(COALESCE(db_current_return.return_id,'')) = TRIM(hri.return_id)
+            )
+       )
      ORDER BY hri.return_date ASC, hri.return_id ASC"
 );
 mysqli_stmt_bind_param($stmt, 's', $customerId);
@@ -1031,6 +1069,7 @@ function selectedOpeningDirection() {
 function selectedSummary() {
     let total = 0;
     let payNowTotal = 0;
+    let absolutePayNowTotal = 0;
     let count = 0;
     let invalidPayNow = false;
     let positiveTotal = 0;
@@ -1075,12 +1114,14 @@ function selectedSummary() {
         }
 
         payNowTotal += payNow;
+        absolutePayNowTotal += Math.abs(payNow);
         count++;
     });
 
     return {
         total,
         payNowTotal,
+        absolutePayNowTotal,
         count,
         invalidPayNow,
         positiveTotal,
@@ -1119,7 +1160,7 @@ function syncCashFromPayNow() {
      * Retur terlebih dahulu menjadi komponen penyelesaian,
      * sisanya baru dibayar melalui Cash/Transfer atau Titip.
      */
-    const returDipakai = Math.min(returAmount, selected.payNowTotal);
+    const returDipakai = Math.min(returAmount, Math.max(selected.payNowTotal, 0));
     const kebutuhanCashTitip = Math.max(
         selected.payNowTotal - returDipakai,
         0
@@ -1154,7 +1195,7 @@ function checkNominal() {
      * 0 - 940.000 = -940.000
      */
     const target = selected.total - returAmount;
-    const returDipakai = Math.min(returAmount, selected.payNowTotal);
+    const returDipakai = Math.min(returAmount, Math.max(selected.payNowTotal, 0));
     const kebutuhanCashTitip = Math.max(
         selected.payNowTotal - returDipakai,
         0
@@ -1188,13 +1229,6 @@ function checkNominal() {
     if (selected.invalidPayNow) {
         warning.addClass('warning-danger')
             .html('Nilai Bayar Sekarang tidak sesuai arah saldo atau melebihi Sisa Sebelum Transaksi Ini.')
-            .show();
-        return;
-    }
-
-    if (selected.payNowTotal < -0.01) {
-        warning.addClass('warning-danger')
-            .html('Pemakaian Saldo Awal (-) / Kredit melebihi nilai piutang yang diselesaikan.')
             .show();
         return;
     }
@@ -1347,7 +1381,7 @@ $(document).ready(function () {
         const selected = selectedSummary();
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
-        const returDipakai = Math.min(returAmount, selected.payNowTotal);
+        const returDipakai = Math.min(returAmount, Math.max(selected.payNowTotal, 0));
         const kebutuhanCashTitip = Math.max(
             selected.payNowTotal - returDipakai,
             0
@@ -1379,7 +1413,7 @@ $(document).ready(function () {
         const saldo = parseFloat($('#saldo_titip').val()) || 0;
         const returAmount = parseFloat($('#retur_invoice').val()) || 0;
         const target = selected.total - returAmount;
-        const returDipakai = Math.min(returAmount, selected.payNowTotal);
+        const returDipakai = Math.min(returAmount, Math.max(selected.payNowTotal, 0));
         const kebutuhanCashTitip = Math.max(
             selected.payNowTotal - returDipakai,
             0
@@ -1396,8 +1430,8 @@ $(document).ready(function () {
             e.preventDefault(); return false;
         }
 
-        if (direction.hasNegativeOpening && (titip > 0.01 || selectedReturnId !== '')) {
-            alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip atau Retur Customer.');
+        if (direction.hasNegativeOpening && titip > 0.01) {
+            alert('Saldo Awal (-) / Kredit tidak boleh digabung dengan Titip Customer.');
             e.preventDefault(); return false;
         }
 
@@ -1411,12 +1445,22 @@ $(document).ready(function () {
             e.preventDefault(); return false;
         }
 
-        if (selected.payNowTotal < -0.01) {
-            alert('Pemakaian Saldo Awal (-) / Kredit melebihi nilai piutang yang diselesaikan.');
-            e.preventDefault(); return false;
-        }
-
-        if (selected.count > 0 && selected.payNowTotal <= 0.01 && selectedReturnId === '') {
+        /*
+         * Jangan memakai payNowTotal (signed/net) untuk menentukan apakah user
+         * sudah mengisi Bayar Sekarang.
+         *
+         * Contoh valid:
+         *   Invoice          +2.595.000
+         *   Saldo Awal (-)   -2.595.000
+         *   Net                       0
+         *
+         * Walaupun net = 0, kedua item benar-benar sedang diselesaikan.
+         */
+        if (
+            selected.count > 0 &&
+            selected.absolutePayNowTotal <= 0.01 &&
+            selectedReturnId === ''
+        ) {
             alert('Isi Bayar Sekarang minimal pada satu item.');
             e.preventDefault(); return false;
         }

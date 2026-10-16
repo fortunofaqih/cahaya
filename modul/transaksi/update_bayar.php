@@ -6,6 +6,13 @@
  */
 
 // modul/transaksi/update_bayar.php
+//
+// CUT-OFF PIUTANG:
+// - Cutoff resmi = 31-Jul-2026.
+// - Invoice <= 31-Jul-2026 tidak boleh ditambahkan sebagai item baru.
+// - PENGECUALIAN EDIT: invoice <= cutoff yang memang sudah tersimpan pada
+//   bayar_no ini tetap boleh dipertahankan/diedit agar histori existing aman.
+// - Validasi dilakukan server-side.
 // Update Pembayaran Multi Invoice / Multi Shipping.
 //
 // Strategi aman:
@@ -320,6 +327,58 @@ function getShippingForUpdate(
     }
 
     /*
+     * CUT-OFF 31-Jul-2026.
+     *
+     * Invoice <= cutoff hanya boleh dipertahankan saat EDIT bila pasangan
+     * invoice/shipping tersebut memang sudah menjadi detail pada bayar_no ini.
+     * Ini menjaga pembayaran Agustus lama terhadap invoice Juli tetap dapat
+     * diedit tanpa membuka invoice Juli sebagai pilihan baru.
+     */
+    $invoiceDateCutoff = (string)($row['invoice_date'] ?? '');
+
+    if (
+        $invoiceDateCutoff === '' ||
+        $invoiceDateCutoff === '0000-00-00' ||
+        $invoiceDateCutoff <= '2026-07-31'
+    ) {
+        $stmtCutoffExisting = mysqli_prepare(
+            $conn,
+            "
+            SELECT 1
+            FROM detail_bayar
+            WHERE bayar_no = ?
+              AND invoice_no = ?
+              AND TRIM(COALESCE(shipping_no,'')) = TRIM(?)
+              AND UPPER(COALESCE(NULLIF(TRIM(payment_source),''),'INVOICE')) = 'INVOICE'
+            LIMIT 1
+            FOR UPDATE
+            "
+        );
+
+        mysqli_stmt_bind_param(
+            $stmtCutoffExisting,
+            'sss',
+            $excludeBayarNo,
+            $invoiceNo,
+            $shippingNo
+        );
+
+        mysqli_stmt_execute($stmtCutoffExisting);
+        $existingCutoffRow = mysqli_fetch_assoc(
+            mysqli_stmt_get_result($stmtCutoffExisting)
+        );
+        mysqli_stmt_close($stmtCutoffExisting);
+
+        if (!$existingCutoffRow) {
+            throw new Exception(
+                'Invoice ' . $invoiceNo .
+                ' bertanggal sebelum / pada cutoff 31-Jul-2026 dan sudah termasuk Saldo Awal. ' .
+                'Invoice tersebut tidak boleh ditambahkan sebagai item baru.'
+            );
+        }
+    }
+
+    /*
      * Hitung pembayaran selain bayar_no yang sedang diedit.
      */
     if ((int)$row['shipping_count'] === 1) {
@@ -555,7 +614,7 @@ function validateReturnByCustomer(
     $requestedUse=round($requestedUse,2);
     if($returnId===''||$requestedUse<=0.0001) throw new Exception('No. Retur / nominal pemakaian Retur tidak valid.');
 
-    $stmt=mysqli_prepare($conn,"SELECT return_id,return_amount,grand_total,invoice_no,shipping_no,customer_id,
+    $stmt=mysqli_prepare($conn,"SELECT return_id,return_date,return_amount,grand_total,invoice_no,shipping_no,customer_id,
         CASE WHEN UPPER(COALESCE(invoice_no,'')) LIKE '%CP-MCP%' OR UPPER(COALESCE(shipping_no,'')) LIKE '%CP-MCP%'
              THEN COALESCE(grand_total,0) ELSE COALESCE(return_amount,0) END AS effective_return_amount
         FROM head_retur_invoice WHERE return_id=? AND customer_id=? AND LOWER(COALESCE(status,'Open'))<>'cancelled'
@@ -563,6 +622,40 @@ function validateReturnByCustomer(
     mysqli_stmt_bind_param($stmt,'ss',$returnId,$customerId); mysqli_stmt_execute($stmt);
     $row=mysqli_fetch_assoc(mysqli_stmt_get_result($stmt)); mysqli_stmt_close($stmt);
     if(!$row) throw new Exception('No. Retur '.$returnId.' tidak ditemukan, cancelled, atau bukan milik customer pembayaran.');
+
+    /*
+     * CUT-OFF RETUR 31-Jul-2026:
+     * Retur lama tidak boleh ditambahkan sebagai pilihan baru.
+     * Pengecualian EDIT: bila return_id tersebut memang sudah terikat pada
+     * bayar_no yang sedang diedit, histori existing tetap boleh dipertahankan.
+     */
+    $returnDate = (string)($row['return_date'] ?? '');
+    if (
+        $returnDate === '' ||
+        $returnDate === '0000-00-00' ||
+        $returnDate <= '2026-07-31'
+    ) {
+        $stmtExistingReturn = mysqli_prepare(
+            $conn,
+            "SELECT 1
+             FROM detail_bayar
+             WHERE bayar_no = ?
+               AND TRIM(COALESCE(return_id,'')) = TRIM(?)
+             LIMIT 1
+             FOR UPDATE"
+        );
+        mysqli_stmt_bind_param($stmtExistingReturn,'ss',$currentBayarNo,$returnId);
+        mysqli_stmt_execute($stmtExistingReturn);
+        $existingReturn = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtExistingReturn));
+        mysqli_stmt_close($stmtExistingReturn);
+
+        if (!$existingReturn) {
+            throw new Exception(
+                'Retur '.$returnId.' bertanggal sebelum / pada cutoff 31-Jul-2026 dan sudah termasuk Saldo Awal.'
+            );
+        }
+    }
+
     $face=round((float)($row['effective_return_amount']??0),2);
 
     $stmt=mysqli_prepare($conn,"SELECT
@@ -787,6 +880,7 @@ foreach ($postedItems as $item) {
         $selectedPosted[$key] = [
             'source' => 'OPENING',
             'opening_id' => $openingId,
+            'opening_effect_piutang' => null,
             'invoice_no' => '',
             'shipping_no' => '',
             'pay_now' => $payNow
@@ -889,6 +983,46 @@ try {
 
     /*
     |--------------------------------------------------------------------------
+    | SIMPAN FLAG OPENING EXISTING
+    |--------------------------------------------------------------------------
+    | Flag ini teknis dan tidak diedit user.
+    | Existing OPENING mempertahankan 0/1/NULL.
+    | OPENING baru yang ditambahkan saat edit default = 1.
+    |--------------------------------------------------------------------------
+    */
+    $existingOpeningEffectMap = [];
+
+    $stmtOpeningFlag = mysqli_prepare(
+        $conn,
+        "SELECT opening_id, opening_effect_piutang
+         FROM detail_bayar
+         WHERE bayar_no = ?
+           AND UPPER(COALESCE(NULLIF(TRIM(payment_source),''),'INVOICE')) = 'OPENING'
+           AND COALESCE(opening_id,0) > 0"
+    );
+
+    if ($stmtOpeningFlag) {
+        mysqli_stmt_bind_param($stmtOpeningFlag, 's', $bayarNo);
+        mysqli_stmt_execute($stmtOpeningFlag);
+        $resOpeningFlag = mysqli_stmt_get_result($stmtOpeningFlag);
+
+        while ($rowOpeningFlag = mysqli_fetch_assoc($resOpeningFlag)) {
+            $oid = (int)($rowOpeningFlag['opening_id'] ?? 0);
+            if ($oid <= 0) {
+                continue;
+            }
+
+            $existingOpeningEffectMap[$oid] =
+                $rowOpeningFlag['opening_effect_piutang'] === null
+                    ? null
+                    : (int)$rowOpeningFlag['opening_effect_piutang'];
+        }
+
+        mysqli_stmt_close($stmtOpeningFlag);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | AMBIL INVOICE LAMA UNTUK RECALC
     |--------------------------------------------------------------------------
     */
@@ -932,6 +1066,7 @@ try {
     $validItems = [];
     $selectedTotal = 0.0;
     $requestedPaymentTotal = 0.0;
+    $absoluteRequestedPaymentTotal = 0.0;
     $selectedReturnAmount = 0.0;
     $validatedReturns = [];
 
@@ -989,10 +1124,15 @@ try {
             }
 
             $requestedPaymentTotal += $payNow;
+            $absoluteRequestedPaymentTotal += abs($payNow);
 
             $validItems[] = [
                 'source' => 'OPENING',
                 'opening_id' => (int)$opening['opening_id'],
+                'opening_effect_piutang' =>
+                    array_key_exists((int)$opening['opening_id'], $existingOpeningEffectMap)
+                        ? $existingOpeningEffectMap[(int)$opening['opening_id']]
+                        : 1,
                 'opening_sign' => (int)($opening['opening_sign'] ?? 1),
                 'invoice_no' => '',
                 'invoice_date' => (string)$opening['opening_date'],
@@ -1039,6 +1179,7 @@ try {
 
         $selectedTotal += $sisa;
         $requestedPaymentTotal += $payNow;
+        $absoluteRequestedPaymentTotal += abs($payNow);
 
         $invoiceDateValue =
             !empty($shipping['invoice_date']) &&
@@ -1080,17 +1221,35 @@ try {
         }
     }
 
-    if ($hasNegativeOpening && !empty($selectedReturnPosted)) {
-        throw new Exception(
-            'Saldo Awal (-) / Kredit tidak boleh digabung dengan Retur Customer.'
-        );
-    }
-
     if ($hasNegativeOpening && $nominalTitip > 0.0001) {
         throw new Exception(
             'Saldo Awal (-) / Kredit tidak boleh diselesaikan menggunakan Titip Uang.'
         );
     }
+
+    /*
+     * Saldo Awal (-) standalone tetap sah, termasuk bila disertai Retur.
+     * Yang dimaksud standalone di sini: tidak ada Invoice / Saldo Awal (+).
+     */
+    $isNegativeOpeningStandalone =
+        $hasNegativeOpening &&
+        !$hasPositiveDebtItem;
+
+    /*
+     * Netting Invoice / Saldo Awal (+) dengan Saldo Awal (-) adalah valid.
+     * Contoh NUR KHASAN:
+     *   Invoice          +2.595.000
+     *   Saldo Awal (-)   -2.595.000
+     *   Cash/Titip                0
+     *
+     * requestedPaymentTotal bersifat SIGNED sehingga hasilnya dapat 0,
+     * tetapi absoluteRequestedPaymentTotal tetap > 0 dan membuktikan bahwa
+     * user memang mengisi settlement pada item-item tersebut.
+     */
+    $isOpeningCreditNetting =
+        $hasNegativeOpening &&
+        $hasPositiveDebtItem &&
+        $absoluteRequestedPaymentTotal > 0.01;
 
     /*
     |--------------------------------------------------------------------------
@@ -1106,12 +1265,16 @@ try {
     $selectedTotal = round($selectedTotal, 2);
     $selectedReturnAmount = round($selectedReturnAmount, 2);
     $requestedPaymentTotal = round($requestedPaymentTotal, 2);
+    $absoluteRequestedPaymentTotal = round($absoluteRequestedPaymentTotal, 2);
 
     /*
      * Kredit Saldo Awal (-) tidak boleh dipakai melebihi nilai piutang
      * positif yang sedang diselesaikan.
      */
-    if ($requestedPaymentTotal < -0.01) {
+    if (
+        !$isNegativeOpeningStandalone &&
+        $requestedPaymentTotal < -0.01
+    ) {
         throw new Exception(
             'Pemakaian Saldo Awal (-) / Kredit melebihi nilai Invoice / Saldo Awal (+) yang diselesaikan.'
         );
@@ -1141,7 +1304,7 @@ try {
      */
     $returnAppliedToPayment = min(
         $selectedReturnAmount,
-        $requestedPaymentTotal
+        max($requestedPaymentTotal, 0)
     );
 
     $cashTitipRequired = max(
@@ -1170,14 +1333,21 @@ try {
     }
 
     if (
-        $requestedPaymentTotal <= 0.0001 &&
+        !$isNegativeOpeningStandalone &&
+        !$isOpeningCreditNetting &&
+        $absoluteRequestedPaymentTotal <= 0.0001 &&
         $netPayable > 0.0001 &&
         empty($validatedReturns)
     ) {
         throw new Exception('Isi Bayar Sekarang minimal pada satu item.');
     }
 
-    if ($netPayable <= 0.0001 && empty($validatedReturns)) {
+    if (
+        !$isNegativeOpeningStandalone &&
+        !$isOpeningCreditNetting &&
+        $netPayable <= 0.0001 &&
+        empty($validatedReturns)
+    ) {
         throw new Exception(
             'Pembayaran Rp 0,00 hanya diperbolehkan jika No. Retur dipilih.'
         );
@@ -1318,13 +1488,15 @@ try {
      */
     $remainingOpeningCreditForPayment = 0.0;
 
-    foreach ($validItems as $creditItem) {
-        if (
-            ($creditItem['source'] ?? 'INVOICE') === 'OPENING' &&
-            (int)($creditItem['opening_sign'] ?? 1) < 0
-        ) {
-            $remainingOpeningCreditForPayment +=
-                abs(round((float)($creditItem['pay_now'] ?? 0), 2));
+    if (!$isNegativeOpeningStandalone) {
+        foreach ($validItems as $creditItem) {
+            if (
+                ($creditItem['source'] ?? 'INVOICE') === 'OPENING' &&
+                (int)($creditItem['opening_sign'] ?? 1) < 0
+            ) {
+                $remainingOpeningCreditForPayment +=
+                    abs(round((float)($creditItem['pay_now'] ?? 0), 2));
+            }
         }
     }
 
@@ -1351,6 +1523,7 @@ try {
             shipping_no,
             opening_id,
             payment_source,
+            opening_effect_piutang,
             return_id,
             invoice_date,
             invoice_amount,
@@ -1362,7 +1535,7 @@ try {
             create_user,
             date_created
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())"
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())"
     );
 
     foreach ($validItems as $item) {
@@ -1476,14 +1649,25 @@ try {
                 ? 'OPENING'
                 : 'INVOICE';
 
+        $detailOpeningEffectPiutang = null;
+
+        if (($item['source'] ?? 'INVOICE') === 'OPENING') {
+            $rawOpeningEffect = $item['opening_effect_piutang'] ?? null;
+            $detailOpeningEffectPiutang =
+                $rawOpeningEffect === null
+                    ? null
+                    : (int)$rawOpeningEffect;
+        }
+
         mysqli_stmt_bind_param(
             $stmtDetail,
-            'sssisssdddddss',
+            'sssisissdddddss',
             $bayarNo,
             $item['invoice_no'],
             $item['shipping_no'],
             $detailOpeningId,
             $detailPaymentSource,
+            $detailOpeningEffectPiutang,
             $detailReturnId,
             $item['invoice_date'],
             $item['shipping_amount'],

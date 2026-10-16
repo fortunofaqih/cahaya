@@ -326,7 +326,41 @@ if ($gudang_rs) {
 
 <script>
 function escHtml(s){ if(s===null||s===undefined)return ''; return String(s).replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];}); }
-function parseNum(v){ return parseFloat(String(v||'0').replace(/\./g,'').replace(',','.').replace(/[^\d.-]/g,'')) || 0; }
+function parseNum(v){
+    if (v === null || v === undefined || v === '') return 0;
+    if (typeof v === 'number') return isNaN(v) ? 0 : v;
+
+    var s = String(v).trim();
+
+    // Format Indonesia: 1.234,56  → ada titik DAN koma
+    if (s.indexOf(',') !== -1 && s.indexOf('.') !== -1) {
+        s = s.replace(/\./g, '').replace(',', '.');
+    }
+    // Hanya koma: 78,10 → desimal
+    else if (s.indexOf(',') !== -1) {
+        s = s.replace(',', '.');
+    }
+    // Hanya titik: 78.10
+    else if (s.indexOf('.') !== -1) {
+        var parts = s.split('.');
+        var last = parts[parts.length - 1];
+        // Kalau 3 digit di belakang dan ada >1 bagian → kemungkinan ribuan (1.234)
+        if (parts.length > 1 && last.length === 3 && /^\d+$/.test(parts[0])) {
+            // Khusus: kalau angka murni ribuan seperti "1.234" → 1234
+            // Tapi kalau "78.100" (3 digit) bisa ambigu. Untuk aman,
+            // kita cek apakah format berasal dari JSON (number) — kalau string,
+            // lebih baik treat sebagai desimal kalau bagian belakang bukan 000
+            if (!/^000$/.test(last)) {
+                // biarkan sebagai desimal (mis. 78.100 = 78.1)
+            } else {
+                s = s.replace(/\./g, '');
+            }
+        }
+    }
+
+    var n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
+}
 function fmtMoney(n){ return (parseFloat(n||0)).toLocaleString('id-ID',{minimumFractionDigits:2, maximumFractionDigits:2}); }
 function fmtDate(dateStr){ if(!dateStr) return ''; var d = new Date(dateStr + 'T00:00:00'); if(isNaN(d)) return dateStr; var months=['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des']; return String(d.getDate()).padStart(2,'0')+'-'+months[d.getMonth()]+'-'+d.getFullYear(); }
 function indoToSql(v){ if(!v) return ''; var p=v.split('-'); if(p.length!==3) return v; var m={'Jan':'01','Feb':'02','Mar':'03','Apr':'04','Mei':'05','May':'05','Jun':'06','Jul':'07','Agu':'08','Aug':'08','Sep':'09','Okt':'10','Oct':'10','Nov':'11','Des':'12','Dec':'12'}; return m[p[1]] ? p[2]+'-'+m[p[1]]+'-'+p[0] : v; }

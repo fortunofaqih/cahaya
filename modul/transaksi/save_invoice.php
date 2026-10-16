@@ -6,7 +6,7 @@
 // 3. Shipping yang sudah masuk invoice ditolak.
 // 4. Total invoice dihitung ulang di server.
 // 5. Harga Shipping diambil dari detail_sales_order.
-// 6. Jika inventory_name mengandung "ONGKOS", subtotal = price (tidak dikalikan qty).
+// 6. Semua inventory termasuk yang mengandung "ONGKOS": subtotal = effectiveQty × price.
 // 7. DP Sales Order dihitung berdasarkan sisa DP yang belum pernah dipakai.
 // 8. Nilai titip dipisahkan dari DP.
 // 9. Seluruh proses memakai transaction dan row locking.
@@ -337,8 +337,7 @@ function getEffectiveSalesOrderPrice(
  * Hitung subtotal satu Shipping.
  *
  * Rumus disamakan dengan update_invoice.php:
- * - ONGKOS: subtotal item = price
- * - Normal: effectiveQty × price
+ * - Semua inventory termasuk ONGKOS: subtotal item = effectiveQty × price
  * - effectiveQty = qty_pack_shipping jika > 0, selain itu qty_shipping
  * - subtotal satu Shipping dibulatkan normal ke Rupiah penuh
  */
@@ -389,18 +388,27 @@ function calculateShippingSubtotal(
             $inventoryId
         );
 
-        if (isOngkosItem($inventoryName)) {
-            $subtotal += $price;
-        } else {
-            if ($effectiveQty <= 0) {
-                throw new Exception(
-                    "Qty Shipping/Qty Pack Shipping untuk inventory {$inventoryId} " .
-                    "pada Shipping {$shippingNo} bernilai 0."
-                );
-            }
-
-            $subtotal += ($effectiveQty * $price);
+        /*
+         * Semua item, termasuk inventory yang namanya mengandung "ONGKOS",
+         * menggunakan nilai transaksi sebenarnya:
+         *
+         * subtotal = effectiveQty × price
+         *
+         * effectiveQty = qty_pack_shipping bila > 0,
+         * selain itu fallback ke qty_shipping.
+         *
+         * Jangan khususkan ONGKOS menjadi subtotal = price, karena itu
+         * menyebabkan contoh price Rp23.000 × qty 124,5 tersimpan hanya
+         * Rp23.000, padahal subtotal seharusnya Rp2.863.500.
+         */
+        if ($effectiveQty <= 0) {
+            throw new Exception(
+                "Qty Shipping/Qty Pack Shipping untuk inventory {$inventoryId} " .
+                "pada Shipping {$shippingNo} bernilai 0."
+            );
         }
+
+        $subtotal += ($effectiveQty * $price);
     }
 
     mysqli_stmt_close($stmt);

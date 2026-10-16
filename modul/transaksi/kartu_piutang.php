@@ -3,13 +3,14 @@
  * modul/transaksi/kartu_piutang.php
  *
  * RULE FINAL:
- * - Saldo Awal = snapshot customer_opening_balance bila opening_date masih berada
- *   sampai End Date laporan. Saldo awal tetap ditampilkan walaupun Start Date
- *   dipilih lebih awal daripada opening_date.
- * - customer_opening_balance adalah base migrasi / snapshot historis.
- * - SEMUA mutasi dalam periode filter tetap ditampilkan, termasuk transaksi sebelum/saat opening_date.
- * - Jika opening tersedia, transaksi <= opening_date bersifat histori/display saja karena sudah
- *   tercakup snapshot; transaksi strict > opening_date baru mengubah running saldo.
+ * - CUT-OFF GLOBAL 31-Jul-2026: customer_opening_balance adalah SNAPSHOT saldo awal resmi.
+ * - Transaksi <=31-Jul-2026 tetap tampil sebagai histori, tetapi tidak dihitung ulang ke saldo setelah cutoff.
+ * - Invoice/pembayaran bulan sebelumnya yang sudah lunas otomatis net 0 dan tidak dibawa lagi.
+ * - Opening balance cutoff tidak dijumlahkan lagi dengan invoice/pembayaran Juli.
+ * - SEMUA detail pembayaran dalam periode tetap ditampilkan, termasuk transaksi total_bayar 0.
+ * - Jika total_bayar 0 karena Invoice dan Retur saling offset, nilai Invoice positif dan Retur negatif
+ *   berlaku juga untuk data legacy yang return_id-nya masih menempel pada detail INVOICE.
+ *   tetap tampil masing-masing di kolom PEMBAYARAN sebagai audit transaksi Add Bayar.
  * - CP-MCP tidak masuk Penjualan/Pembayaran normal; retur CP-MCP tetap standalone.
  * - Cash mengikuti head_bayar.bayar_date.
  * - Titip Used mengikuti tanggal pemakaian detail_bayar.date_created (fallback head_bayar).
@@ -20,8 +21,9 @@
  * - Kolom PEMBAYARAN memakai nilai GROSS bayar_amount seperti ledger lama; bagian titip dikompensasikan oleh mutasi TITIP_USED negatif.
  * - TOTAL hanya menjumlah mutasi efektif setelah snapshot; histori yang tampil sebelum snapshot tidak ikut footer.
  * - Retur tampil sebagai PENJUALAN negatif; pemakaian Retur tampil sebagai PEMBAYARAN negatif.
- * - PAYMENT_OPENING wajib tampil sebagai mutasi pembayaran Saldo Awal.
+ * - PAYMENT_OPENING wajib tampil untuk audit pembayaran Saldo Awal, tetapi tidak mengubah SISA lagi karena opening balance sudah menjadi snapshot resmi.
  * - Nilai Penjualan mengikuti det_invoice resmi; tidak dihitung ulang dari SO/Shipping.
+ * - Koreksi Invoice memakai invoice_correction sebagai source of truth dan masuk sebagai PENJUALAN signed (minus).
  */
 
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -85,6 +87,16 @@ $start_date_display = formatDateDisplay($start_date);
 $end_date_display = formatDateDisplay($end_date);
 $previous_date = date('Y-m-d', strtotime($start_date . ' -1 day'));
 $customer_id = trim((string)($_GET['customer_id'] ?? ''));
+
+/*
+ * CUT-OFF GLOBAL MIGRASI
+ * ----------------------------------------------------------
+ * 31-Jul-2026 adalah snapshot resmi saldo awal.
+ * Seluruh transaksi <= cutoff hanya histori/audit dan TIDAK dihitung ulang
+ * ke saldo setelah cutoff. Mutasi efektif baru dimulai 01-Aug-2026.
+ */
+$cutoff_date = '2026-07-31';
+$post_cutoff_date = '2026-08-01';
 
 $customers = [];
 $resCustomer = mysqli_query($conn, "SELECT customer_id, customer FROM m_customer WHERE COALESCE(is_active,'Checked')='Checked' ORDER BY customer ASC");
@@ -155,107 +167,98 @@ if ($customer_id !== '') {
     $startEsc = mysqli_real_escape_string($conn, $start_date);
     $endEsc = mysqli_real_escape_string($conn, $end_date);
 
-    /* Latest active opening sampai end date. */
+    $cutoffEsc = mysqli_real_escape_string($conn, $cutoff_date);
+    $postCutoffEsc = mysqli_real_escape_string($conn, $post_cutoff_date);
+
+    /*
+     * RULE BARU MANAJER - CUT-OFF 31 JULI 2026
+     * ----------------------------------------------------------
+     * customer_opening_balance adalah SNAPSHOT resmi per cutoff, bukan
+     * adjustment yang dijumlahkan dengan transaksi Juli.
+     *
+     * - Transaksi <= 31-Jul-2026 tetap boleh tampil sebagai histori.
+     * - Transaksi <= 31-Jul-2026 tidak boleh memengaruhi saldo setelah cutoff.
+     * - Saldo setelah cutoff dimulai dari opening_balance snapshot.
+     * - Pembayaran >= 01-Aug-2026 tetap dihitung walaupun membayar invoice Juli.
+     */
     $opening_id = 0;
-    $opening_date = '';
-    $opening_balance = 0.0;
-    $stmt = mysqli_prepare($conn, "
+    $snapshot_balance = 0.0;
+    $snapshot_date = $cutoff_date;
+
+    $sql = "
         SELECT opening_id, opening_date, opening_balance
         FROM customer_opening_balance
-        WHERE customer_id=?
+        WHERE customer_id='{$cidEsc}'
           AND LOWER(COALESCE(status,'Active'))='active'
-          AND opening_date<=?
+          AND opening_date<='{$cutoffEsc}'
         ORDER BY opening_date DESC, opening_id DESC
         LIMIT 1
-    ");
-    mysqli_stmt_bind_param($stmt, 'ss', $customer_id, $end_date);
-    mysqli_stmt_execute($stmt);
-    if ($op = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt))) {
-        $opening_id = (int)$op['opening_id'];
-        $opening_date = (string)$op['opening_date'];
-        $opening_balance = (float)$op['opening_balance'];
-    }
-    mysqli_stmt_close($stmt);
-
-    /*
-     * Opening harus tetap berlaku selama opening_date masih <= End Date.
-     * Jadi bila user memilih Start Date lebih lama (mis. 01-Jan-2026)
-     * sedangkan opening baru 31-Jul-2026, snapshot 31-Jul tetap ditampilkan
-     * dan transaksi <= 31-Jul tidak dihitung ulang karena sudah tercakup opening.
-     */
-    $openingApplies = ($opening_date !== '' && $opening_date <= $end_date);
-    $boundary = $openingApplies ? $opening_date : '1000-01-01';
-    $boundaryEsc = mysqli_real_escape_string($conn, $boundary);
-    $openingDateEsc = mysqli_real_escape_string($conn, $opening_date);
-
-    /*
-     * FIX DATE EMPTY:
-     * Jangan pernah membandingkan kolom DATE dengan string kosong ('').
-     * Jika opening tidak berlaku/tidak ada, kondisi histori retur dibuat FALSE.
-     * Ini hanya mencegah MySQL error "Incorrect DATE value: ''" tanpa
-     * mengubah logika saldo/piutang existing.
-     */
-    $returnHistoricalCondition = $openingApplies
-        ? "hri.return_date <= '{$openingDateEsc}'"
-        : "0";
-
-    $openingSign = ($openingApplies && $opening_balance < 0) ? -1 : 1;
-
-    /*
-     * Tanggal baris Saldo Awal:
-     * - bila opening berada sebelum/sama dengan Start Date -> tampil H-1 Start Date
-     *   seperti ledger carry-forward biasa;
-     * - bila Start Date lebih awal dari opening -> tampil pada opening_date
-     *   supaya kronologi report tetap benar dan saldo awal tetap terlihat.
-     */
-    $opening_row_date = $previous_date;
-    if ($openingApplies && $opening_date > $start_date) {
-        $opening_row_date = $opening_date;
+    ";
+    $snapshotRes = mysqli_query($conn, $sql);
+    if ($snapshotRow = mysqli_fetch_assoc($snapshotRes)) {
+        $opening_id = (int)($snapshotRow['opening_id'] ?? 0);
+        $snapshot_balance = (float)($snapshotRow['opening_balance'] ?? 0);
+        $snapshot_date = (string)($snapshotRow['opening_date'] ?? $cutoff_date);
+        if ($snapshot_date === '' || $snapshot_date > $cutoff_date) {
+            $snapshot_date = $cutoff_date;
+        }
     }
 
-    /* 1) Invoice eligible sebelum start. */
+    /*
+     * Carry-forward invoice hanya mengambil transaksi SETELAH cutoff.
+     * Invoice Juli dan sebelumnya sudah tercakup di snapshot opening_balance.
+     */
     $sql = "
         SELECT COALESCE(SUM({$invoiceValueExpr}),0) AS v
         FROM head_invoice hi
         WHERE hi.customer_id='{$cidEsc}'
-          AND invoice_date<'{$startEsc}'
-          AND invoice_date>'{$boundaryEsc}'
-          AND UPPER(COALESCE(invoice_no,'')) NOT LIKE '%CP-MCP%'
+          AND hi.invoice_date>='{$postCutoffEsc}'
+          AND hi.invoice_date<'{$startEsc}'
+          AND UPPER(COALESCE(hi.invoice_no,'')) NOT LIKE '%CP-MCP%'
     ";
-    $preInvoice = (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['v'] ?? 0);
+    $preInvoice =
+        (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['v'] ?? 0);
 
     /*
-     * PAYMENT TARGET OPENING (eksplisit saja).
+     * SOURCE OF TRUTH KOREKSI INVOICE
      * ----------------------------------------------------------
-     * Jangan memakai invoice_date <= opening_date sebagai penanda OPENING.
-     * Pembayaran Agustus atas invoice Juli tetap merupakan mutasi nyata setelah
-     * snapshot dan WAJIB tampil (contoh SARMIN 03-Aug).
+     * invoice_correction adalah mutasi PENJUALAN signed.
+     * Nominal koreksi disimpan negatif, sehingga:
+     *   saldo = saldo + correction_amount
      *
-     * Yang dikeluarkan hanya alokasi yang memang eksplisit menuju snapshot opening,
-     * misalnya B-000000288 SARMIN: payment_source=OPENING / opening_id terisi.
+     * Koreksi setelah cutoff tetapi sebelum periode laporan wajib ikut
+     * carry-forward SALDO AWAL. Koreksi <= cutoff tidak dihitung ulang
+     * karena posisi sampai 31-Jul-2026 sudah terkandung dalam snapshot.
      */
-    $openingTargetExpr = $openingApplies
-        ? "CASE WHEN
-                UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='OPENING'
-                OR COALESCE(db.opening_id,0)>0
-           THEN 1 ELSE 0 END"
-        : "0";
+    $sql = "
+        SELECT COALESCE(SUM(COALESCE(correction_amount,0)),0) AS v
+        FROM invoice_correction
+        WHERE customer_id='{$cidEsc}'
+          AND correction_date>='{$postCutoffEsc}'
+          AND correction_date<'{$startEsc}'
+          AND LOWER(COALESCE(status,'Active'))='active'
+    ";
+    $preInvoiceCorrection =
+        (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['v'] ?? 0);
 
     /*
-     * PEMBAYARAN DISPLAY vs EFFECT PIUTANG:
-     * - Finance meminta pembayaran yang terhubung ke retur tetap tampil di kolom PEMBAYARAN.
-     * - Namun retur sudah mengurangi piutang melalui kolom RETUR, sehingga pembayaran link-retur
-     *   TIDAK boleh mengurangi SISA untuk kedua kalinya.
+     * PAYMENT TARGET OPENING bersifat eksplisit.
+     * opening_id/payment_source hanya menentukan target pembayaran, BUKAN
+     * membuat customer_opening_balance menjadi boundary histori.
      */
+    $openingTargetExpr = "CASE WHEN
+            UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='OPENING'
+            OR COALESCE(db.opening_id,0)>0
+        THEN 1 ELSE 0 END";
+
+        $openingEffectFlagExpr = "COALESCE(db.opening_effect_piutang,0)";
+
     /*
-     * Khusus payment_source=RETURN:
-     * - detail_bayar pada retur standalone hanya berfungsi sebagai link/audit dan nominalnya bisa 0.
-     * - nominal display pembayaran diambil dari head_retur_invoice.
-     * - effect piutang dibuat NEGATIF karena running balance menghitung: saldo - payment_effect.
-     *   Dengan begitu pembayaran/refund retur MENAMBAH saldo kembali menuju 0.
+     * Nilai retur master.
+     * CP-MCP memakai grand_total, retur normal memakai return_amount.
      */
     $returnAmountExpr = "CASE
-        WHEN hri.return_id IS NULL THEN COALESCE(db.bayar_amount,0)
+        WHEN hri.return_id IS NULL THEN ABS(COALESCE(db.bayar_amount,0))
         WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
           OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
             THEN COALESCE(hri.grand_total,0)
@@ -263,12 +266,133 @@ if ($customer_id !== '') {
     END";
 
     /*
-     * LEDGER PAYMENT GROSS
+     * LEGACY / NET ZERO ADD BAYAR
      * ----------------------------------------------------------
-     * Program lama menampilkan nilai pembayaran GROSS.
-     * Jika Rp55.362.000 dibayar dengan cash Rp5.362.000 + titip Rp50.000.000,
-     * kolom PEMBAYARAN tetap Rp55.362.000. Baris TITIP_USED -Rp50.000.000
-     * kemudian menambah kembali SISA, sehingga efek bersih = cash Rp5.362.000.
+     * Ada data pembayaran lama / kondisi tertentu di mana:
+     * - head_bayar.total_bayar = 0
+     * - invoice dan Retur sama besar dipanggil dalam transaksi yang sama
+     * - detail INVOICE masih dapat tersimpan bayar_amount = 0
+     * - detail RETURN tetap menunjukkan Retur yang dipakai.
+     *
+     * Kartu Piutang tetap harus memperlihatkan NILAI TRANSAKSI YANG DIPANGGIL:
+     *   INVOICE  +4.275.000
+     *   RETURN   -4.275.000
+     *
+     * Agar tidak mengubah transaksi normal:
+     * - fallback ini HANYA aktif untuk detail INVOICE bernilai 0,
+     * - total_bayar header juga 0,
+     * - dan pada bayar_no yang sama memang ada detail RETURN.
+     *
+     * Prioritas nominal fallback:
+     * 1. perubahan sisa_after dibanding detail INVOICE sebelumnya;
+     * 2. bila hanya ada satu detail INVOICE dalam bayar_no tersebut dan histori
+     *    lama tidak menyimpan perubahan sisa dengan baik, gunakan total Retur
+     *    yang dipanggil pada bayar_no itu.
+     */
+    $samePaymentReturnAmountExpr = "(
+        SELECT COALESCE(
+            SUM(
+                CASE
+                    /*
+                     * Data baru:
+                     *   payment_source=RETURN.
+                     *
+                     * Data legacy:
+                     *   return_id dapat melekat pada detail INVOICE/non-RETURN
+                     *   tanpa row RETURN tersendiri.
+                     */
+                    WHEN
+                        UPPER(COALESCE(NULLIF(TRIM(dr.payment_source),''),'INVOICE'))='RETURN'
+                        OR COALESCE(TRIM(dr.return_id),'')<>''
+                    THEN
+                        CASE
+                            WHEN UPPER(COALESCE(NULLIF(TRIM(dr.payment_source),''),'INVOICE'))='RETURN'
+                             AND ABS(COALESCE(dr.bayar_amount,0)) > 0.0001
+                                THEN ABS(COALESCE(dr.bayar_amount,0))
+                            ELSE ABS(
+                                CASE
+                                    WHEN UPPER(COALESCE(hrr.invoice_no,'')) LIKE '%CP-MCP%'
+                                      OR UPPER(COALESCE(hrr.shipping_no,'')) LIKE '%CP-MCP%'
+                                        THEN COALESCE(hrr.grand_total,0)
+                                    ELSE COALESCE(hrr.return_amount,0)
+                                END
+                            )
+                        END
+                    ELSE 0
+                END
+            ),
+            0
+        )
+        FROM detail_bayar dr
+        LEFT JOIN head_retur_invoice hrr
+            ON TRIM(hrr.return_id)=TRIM(dr.return_id)
+           AND LOWER(COALESCE(hrr.status,'Open'))<>'cancelled'
+        WHERE dr.bayar_no=db.bayar_no
+    )";
+
+    $previousInvoiceSisaExpr = "COALESCE(
+        (
+            SELECT dp.sisa_after
+            FROM detail_bayar dp
+            WHERE dp.invoice_no=db.invoice_no
+              AND TRIM(COALESCE(dp.shipping_no,''))=TRIM(COALESCE(db.shipping_no,''))
+              AND UPPER(COALESCE(NULLIF(TRIM(dp.payment_source),''),'INVOICE'))='INVOICE'
+              AND dp.id < db.id
+            ORDER BY dp.id DESC
+            LIMIT 1
+        ),
+        COALESCE(db.invoice_amount,0)
+    )";
+
+    $samePaymentInvoiceCountExpr = "(
+        SELECT COUNT(*)
+        FROM detail_bayar dpi
+        WHERE dpi.bayar_no=db.bayar_no
+          AND UPPER(COALESCE(NULLIF(TRIM(dpi.payment_source),''),'INVOICE'))='INVOICE'
+          AND COALESCE(TRIM(dpi.invoice_no),'')<>''
+    )";
+
+    $legacyZeroNetInvoiceExpr = "CASE
+        WHEN
+            UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='INVOICE'
+            AND COALESCE(TRIM(db.invoice_no),'')<>''
+            AND ABS(COALESCE(db.bayar_amount,0)) <= 0.0001
+            AND ABS(COALESCE(db.cash_amount,0)) <= 0.0001
+            AND ABS(COALESCE(db.titip_amount,0)) <= 0.0001
+            AND ABS(COALESCE(hb.total_bayar,0)) <= 0.0001
+            AND ({$samePaymentReturnAmountExpr}) > 0.0001
+        THEN
+            CASE
+                WHEN ({$previousInvoiceSisaExpr}) - COALESCE(db.sisa_after,0) > 0.0001
+                THEN LEAST(
+                    ({$previousInvoiceSisaExpr}) - COALESCE(db.sisa_after,0),
+                    ({$samePaymentReturnAmountExpr})
+                )
+                WHEN ({$samePaymentInvoiceCountExpr}) = 1
+                THEN LEAST(
+                    CASE
+                        WHEN COALESCE(db.invoice_amount,0) > 0
+                            THEN COALESCE(db.invoice_amount,0)
+                        ELSE ({$samePaymentReturnAmountExpr})
+                    END,
+                    ({$samePaymentReturnAmountExpr})
+                )
+                ELSE 0
+            END
+        ELSE 0
+    END";
+
+    /*
+     * PAYMENT SIGNED SOURCE OF TRUTH
+     * ----------------------------------------------------------
+     * INVOICE normal  : positif
+     * RETURN          : negatif
+     * OPENING (+)     : positif
+     * OPENING (-)     : negatif
+     *
+     * Data legacy RETURN dengan bayar_amount=0 memakai nominal master retur.
+     * Data legacy OPENING yang bayar_amount-nya positif tetap diberi tanda
+     * berdasarkan opening_balance target.
      */
     $paymentGrossExpr = "CASE
         WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='RETURN'
@@ -277,19 +401,55 @@ if ($customer_id !== '') {
                     THEN -1 * ABS(COALESCE(db.bayar_amount,0))
                 ELSE -1 * ABS({$returnAmountExpr})
             END
+
+        WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='OPENING'
+          OR COALESCE(db.opening_id,0)>0
+            THEN CASE
+                WHEN COALESCE(cob_target.opening_balance,0) < 0
+                    THEN -1 * ABS(
+                        CASE
+                            WHEN COALESCE(db.bayar_amount,0)<>0
+                                THEN COALESCE(db.bayar_amount,0)
+                            ELSE COALESCE(db.cash_amount,0)+COALESCE(db.titip_amount,0)
+                        END
+                    )
+                ELSE ABS(
+                        CASE
+                            WHEN COALESCE(db.bayar_amount,0)<>0
+                                THEN COALESCE(db.bayar_amount,0)
+                            ELSE COALESCE(db.cash_amount,0)+COALESCE(db.titip_amount,0)
+                        END
+                    )
+            END
+
+        /*
+         * Khusus net-zero Invoice + Retur:
+         * cek lebih dulu sebelum rule legacy keterangan='retur'.
+         *
+         * Pada data lama, detail INVOICE dapat membawa return_id dan
+         * head_bayar.keterangan='retur'. Jika rule keterangan retur dieksekusi
+         * lebih dulu, nilai pembayaran INVOICE akan dipaksa 0.
+         */
+        WHEN ({$legacyZeroNetInvoiceExpr}) > 0.0001
+            THEN ({$legacyZeroNetInvoiceExpr})
+
         WHEN LOWER(TRIM(COALESCE(hb.keterangan,'')))='retur'
              AND COALESCE(TRIM(db.return_id),'')<>''
             THEN 0
+
         WHEN COALESCE(db.bayar_amount,0)<>0
             THEN COALESCE(db.bayar_amount,0)
+
         ELSE COALESCE(db.cash_amount,0)+COALESCE(db.titip_amount,0)
     END";
 
-    /* Display dan effect pembayaran normal sama-sama GROSS. */
     $paymentDisplayExpr = $paymentGrossExpr;
     $paymentEffectExpr  = $paymentGrossExpr;
 
-    /* Titip used adalah bagian titip di detail_bayar. */
+    /*
+     * Titip used tetap mengikuti rule existing.
+     * RETURN tidak memiliki efek titip.
+     */
     $titipExpr = "CASE
         WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='RETURN'
             THEN 0
@@ -299,53 +459,68 @@ if ($customer_id !== '') {
         ELSE COALESCE(db.titip_amount,0)
     END";
 
-
     /*
-     * Mutasi setelah snapshot tetapi sebelum Start Date untuk membentuk
-     * Saldo Awal periode saat Start Date > opening_date.
-     *
-     * Rumus ledger:
-     * opening + invoice - retur - pembayaran_gross - titip_net
-     * titip_net = titip masuk (+) + titip used (-).
+     * Semua pembayaran sebelum Start Date ikut membentuk saldo carry-forward.
+     * Tidak ada lagi boundary opening_date.
      */
     $sql = "
         SELECT
-            COALESCE(SUM(CASE
-                WHEN hb.bayar_date<'{$startEsc}'
-                 AND hb.bayar_date>'{$boundaryEsc}'
-                THEN ({$paymentEffectExpr}) ELSE 0 END),0) AS payment_before,
+            COALESCE(SUM(
+                CASE
+                    WHEN hb.bayar_date>='{$postCutoffEsc}'
+                     AND hb.bayar_date<'{$startEsc}'
+                     AND (
+                            ({$openingTargetExpr})=0
+                            OR (({$openingTargetExpr})=1 AND ({$openingEffectFlagExpr})=1)
+                         )
+                    THEN ({$paymentEffectExpr})
+                    ELSE 0
+                END
+            ),0) AS payment_before,
 
-            COALESCE(SUM(CASE
-                WHEN hb.bayar_date<'{$startEsc}'
-                 AND hb.bayar_date>'{$boundaryEsc}'
-                THEN -1 * ({$titipExpr}) ELSE 0 END),0) AS titip_used_before
+            COALESCE(SUM(
+                CASE WHEN hb.bayar_date>='{$postCutoffEsc}' AND hb.bayar_date<'{$startEsc}'
+                     THEN -1 * ({$titipExpr}) ELSE 0 END
+            ),0) AS titip_used_before
+
         FROM detail_bayar db
-        INNER JOIN head_bayar hb ON hb.bayar_no=db.bayar_no
-        LEFT JOIN head_invoice hi ON hi.invoice_no=db.invoice_no
+        INNER JOIN head_bayar hb
+            ON hb.bayar_no=db.bayar_no
+        LEFT JOIN head_invoice hi
+            ON hi.invoice_no=db.invoice_no
         LEFT JOIN head_retur_invoice hri
             ON TRIM(hri.return_id)=TRIM(db.return_id)
            AND LOWER(COALESCE(hri.status,'Open'))<>'cancelled'
+        LEFT JOIN customer_opening_balance cob_target
+            ON cob_target.opening_id=db.opening_id
+           AND cob_target.customer_id=hb.customer_id
         WHERE hb.customer_id='{$cidEsc}'
           AND UPPER(COALESCE(db.invoice_no,'')) NOT LIKE '%CP-MCP%'
           AND UPPER(COALESCE(db.shipping_no,'')) NOT LIKE '%CP-MCP%'
     ";
     $prePay = mysqli_fetch_assoc(mysqli_query($conn, $sql));
-    $prePayment = (float)($prePay['payment_before'] ?? 0);
-    $preTitipUsed = (float)($prePay['titip_used_before'] ?? 0);
+    $prePayment =
+        (float)($prePay['payment_before'] ?? 0);
+    $preTitipUsed =
+        (float)($prePay['titip_used_before'] ?? 0);
 
-    /* Titip masuk sebelum Start Date juga merupakan mutasi ledger (+) dan
-       mengurangi piutang. */
+    /*
+     * Titip masuk sebelum Start Date tetap mengikuti ledger existing:
+     * amount_in mengurangi piutang, penggunaan titip dikompensasikan melalui
+     * TITIP_USED negatif.
+     */
     $sql = "
         SELECT COALESCE(SUM(COALESCE(amount_in,0)),0) AS titip_in_before
         FROM detail_titip
         WHERE customer_id='{$cidEsc}'
+          AND titip_date>='{$postCutoffEsc}'
           AND titip_date<'{$startEsc}'
-          AND titip_date>'{$boundaryEsc}'
     ";
-    $preTitipIn = (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['titip_in_before'] ?? 0);
+    $preTitipIn =
+        (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['titip_in_before'] ?? 0);
     $preTitipNet = $preTitipIn + $preTitipUsed;
 
-    /* 3) Retur eligible sebelum start. */
+    /* Retur sebelum Start Date adalah Penjualan negatif. */
     $sql = "
         SELECT COALESCE(SUM(CASE
             WHEN UPPER(COALESCE(invoice_no,'')) LIKE '%CP-MCP%'
@@ -355,39 +530,79 @@ if ($customer_id !== '') {
         END),0) AS v
         FROM head_retur_invoice
         WHERE customer_id='{$cidEsc}'
+          AND return_date>='{$postCutoffEsc}'
           AND return_date<'{$startEsc}'
-          AND return_date>'{$boundaryEsc}'
           AND LOWER(COALESCE(status,'Open'))<>'cancelled'
     ";
-    $preReturn = (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['v'] ?? 0);
+    $preReturn =
+        (float)(mysqli_fetch_assoc(mysqli_query($conn, $sql))['v'] ?? 0);
 
-    $saldo_awal = ($openingApplies ? $opening_balance : 0.0)
-        + $preInvoice
-        - $preReturn
-        - $prePayment
-        - $preTitipNet;
+    /*
+     * SALDO AWAL REPORT
+     * ----------------------------------------------------------
+     * Jika periode dimulai setelah cutoff:
+     *   snapshot 31-Jul + seluruh mutasi efektif post-cutoff s/d H-1.
+     *
+     * Jika periode melintasi cutoff:
+     *   Saldo Awal yang ditampilkan adalah snapshot 31-Jul dan seluruh transaksi
+     *   sebelum/saat cutoff hanya histori.
+     *
+     * Jika periode seluruhnya sebelum cutoff:
+     *   tidak ada saldo berjalan baru; transaksi hanya histori.
+     */
+    if ($start_date > $cutoff_date) {
+        $saldo_awal =
+            $snapshot_balance
+            + $preInvoice
+            + $preInvoiceCorrection
+            - $preReturn
+            - $prePayment
+            - $preTitipNet;
+        $opening_row_date = $previous_date;
+    } elseif ($end_date >= $cutoff_date) {
+        $saldo_awal = $snapshot_balance;
+        $opening_row_date = $cutoff_date;
+    } else {
+        $saldo_awal = 0.0;
+        $opening_row_date = '';
+    }
 
     /* =========================================================
-     * ROW TRANSAKSI PERIODE - TAMPILKAN SEMUA MUTASI
+     * ROW TRANSAKSI PERIODE
      * =========================================================
-     * Kartu Piutang adalah histori mutasi. Karena itu semua transaksi yang
-     * tanggal transaksinya berada di Start Date s/d End Date tetap ditampilkan,
-     * termasuk transaksi yang terjadi sebelum / pada opening_date.
-     *
-     * PENTING:
-     * - transaksi <= opening_date hanya bersifat INFORMASI bila opening snapshot
-     *   berlaku, sebab nilainya sudah tercakup dalam customer_opening_balance;
-     * - transaksi historis tersebut TIDAK dihitung lagi ke running saldo;
-     * - baris SALDO AWAL/SNAPSHOT ditempatkan secara kronologis pada opening_date;
-     * - transaksi setelah opening_date baru mengubah running saldo;
-     * - bila Start Date berada setelah opening_date, baris Saldo Awal tampil pada
-     *   H-1 Start Date sebagai carry-forward seperti ledger biasa.
-     *
-     * Payment cash dan titip used tetap dibuat sebagai row terpisah karena tanggal
-     * efektif keduanya memang dapat berbeda.
+     * Semua histori transaksi pada periode tetap ditampilkan.
+     * Nilai 0 tetap boleh tampil selama record detail_bayar memang ada.
+     * Manual opening dalam periode ditampilkan sebagai adjustment tersendiri
+     * dan mengubah running saldo, bukan menggantikan histori.
      */
     $sqlRows = "
         SELECT * FROM (
+            /* SALDO AWAL MANUAL / ADJUSTMENT DALAM PERIODE */
+            SELECT
+                cob.opening_date AS trans_date,
+                'Saldo Awal Manual' AS shipping_no,
+                '' AS return_id,
+                '' AS bayar_no,
+                'OPENING_ADJUSTMENT' AS payment_source,
+                cob.opening_id AS opening_id,
+                0 AS penjualan,
+                COALESCE(cob.opening_balance,0) AS retur,
+                0 AS retur_effect_piutang,
+                0 AS pembayaran,
+                0 AS payment_effect_piutang,
+                0 AS titip,
+                0 AS titip_effect_piutang,
+                'OPENING_ADJUSTMENT' AS row_type,
+                5 AS sort_order,
+                CONCAT('OPENING-',cob.opening_id) AS ref_sort
+            FROM customer_opening_balance cob
+            WHERE cob.customer_id='{$cidEsc}'
+              AND cob.opening_date BETWEEN '{$startEsc}' AND '{$endEsc}'
+              AND LOWER(COALESCE(cob.status,'Active'))='active'
+              AND 1=0 /* opening balance adalah snapshot cutoff, bukan adjustment periode */
+
+            UNION ALL
+
             /* PENJUALAN */
             SELECT
                 hi.invoice_date AS trans_date,
@@ -416,6 +631,43 @@ if ($customer_id !== '') {
             WHERE hi.customer_id='{$cidEsc}'
               AND hi.invoice_date BETWEEN '{$startEsc}' AND '{$endEsc}'
               AND UPPER(COALESCE(hi.invoice_no,'')) NOT LIKE '%CP-MCP%'
+
+            UNION ALL
+
+            /*
+             * KOREKSI INVOICE
+             * ----------------------------------------------------------
+             * Source of truth: invoice_correction.
+             * correction_amount disimpan signed negatif dan masuk sebagai
+             * PENJUALAN negatif. Tidak dianggap pembayaran / titip / retur.
+             */
+            SELECT
+            ic.correction_date AS trans_date,
+            COALESCE(
+                ic.correction_no COLLATE utf8mb4_general_ci,
+                ''
+            ) AS shipping_no,
+            '' AS return_id,
+            '' AS bayar_no,
+            'INVOICE_CORRECTION' AS payment_source,
+            0 AS opening_id,
+            COALESCE(ic.correction_amount,0) AS penjualan,
+            0 AS retur,
+            0 AS retur_effect_piutang,
+            0 AS pembayaran,
+            0 AS payment_effect_piutang,
+            0 AS titip,
+            0 AS titip_effect_piutang,
+            'INVOICE_CORRECTION' AS row_type,
+            15 AS sort_order,
+            COALESCE(
+                ic.correction_no COLLATE utf8mb4_general_ci,
+                ''
+            ) AS ref_sort
+        FROM invoice_correction ic
+        WHERE ic.customer_id='{$cidEsc}'
+        AND ic.correction_date BETWEEN '{$startEsc}' AND '{$endEsc}'
+        AND LOWER(COALESCE(ic.status,'Active'))='active'
 
             UNION ALL
 
@@ -495,6 +747,98 @@ if ($customer_id !== '') {
               AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))='RETURN'
               AND COALESCE(TRIM(db.return_id),'')<>''
 
+              /*
+               * CUT-OFF RETUR 31-Jul-2026:
+               * Retur Juli/sblmnya sudah masuk Opening Balance dan tidak boleh
+               * muncul lagi sendirian sebagai pembayaran setelah cutoff.
+               *
+               * Pengecualian audit: bila bayar_no yang sama memang mempunyai
+               * detail INVOICE non-CP-MCP, pertahankan RETURN negatif agar dapat
+               * tampil berpasangan dengan pembayaran INVOICE positif (net 0).
+               */
+              AND (
+                    hri.return_date > '{$cutoffEsc}'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM detail_bayar db_pair
+                        WHERE db_pair.bayar_no = db.bayar_no
+                          AND UPPER(COALESCE(NULLIF(TRIM(db_pair.payment_source),''),'INVOICE')) = 'INVOICE'
+                          AND COALESCE(TRIM(db_pair.invoice_no),'') <> ''
+                          AND UPPER(COALESCE(db_pair.invoice_no,'')) NOT LIKE '%CP-MCP%'
+                          AND UPPER(COALESCE(db_pair.shipping_no,'')) NOT LIKE '%CP-MCP%'
+                    )
+              )
+
+            UNION ALL
+
+            /*
+             * PEMBAYARAN RETUR LEGACY
+             * ----------------------------------------------------------
+             * Pada data lama, return_id dapat menempel pada detail INVOICE
+             * tanpa dibuat row payment_source=RETURN tersendiri.
+             * Agar histori Kartu Piutang tetap transparan, tampilkan Retur
+             * tersebut sebagai PEMBAYARAN negatif pada bayar_no yang sama.
+             */
+            SELECT
+                hb.bayar_date,
+                '',
+                COALESCE(db.return_id,''),
+                hb.bayar_no,
+                'RETURN',
+                COALESCE(db.opening_id,0),
+                0 AS penjualan,
+                0 AS retur,
+                0 AS retur_effect_piutang,
+                -1 * ABS(
+                    CASE
+                        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+                          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total,0)
+                        ELSE COALESCE(hri.return_amount,0)
+                    END
+                ) AS pembayaran,
+                -1 * ABS(
+                    CASE
+                        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+                          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+                        THEN COALESCE(hri.grand_total,0)
+                        ELSE COALESCE(hri.return_amount,0)
+                    END
+                ) AS payment_effect_piutang,
+                0 AS titip,
+                0 AS titip_effect_piutang,
+                'PAYMENT_RETURN_LEGACY',26,COALESCE(hb.bayar_no,'')
+            FROM detail_bayar db
+            INNER JOIN head_bayar hb
+                ON hb.bayar_no=db.bayar_no
+            INNER JOIN head_retur_invoice hri
+                ON TRIM(hri.return_id)=TRIM(db.return_id)
+               AND LOWER(COALESCE(hri.status,'Open'))<>'cancelled'
+            WHERE hb.customer_id='{$cidEsc}'
+              AND hb.bayar_date BETWEEN '{$startEsc}' AND '{$endEsc}'
+              AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))<>'RETURN'
+              AND COALESCE(TRIM(db.return_id),'')<>''
+
+              /*
+               * Legacy return_id yang berasal dari retur <= cutoff hanya boleh
+               * disintesis menjadi pembayaran RETURN negatif bila detail invoice
+               * pada transaksi ini memang membentuk pasangan positif net-zero.
+               * Untuk retur setelah cutoff, rule legacy existing tetap berlaku.
+               */
+              AND (
+                    hri.return_date > '{$cutoffEsc}'
+                    OR ({$legacyZeroNetInvoiceExpr}) > 0.0001
+              )
+
+              /* Hindari double row bila bayar_no sudah mempunyai RETURN baru. */
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM detail_bayar drx
+                    WHERE drx.bayar_no=db.bayar_no
+                      AND TRIM(COALESCE(drx.return_id,''))=TRIM(COALESCE(db.return_id,''))
+                      AND UPPER(COALESCE(NULLIF(TRIM(drx.payment_source),''),'INVOICE'))='RETURN'
+              )
+
             UNION ALL
 
             /* CASH / TRANSFER */
@@ -518,6 +862,9 @@ if ($customer_id !== '') {
             LEFT JOIN head_retur_invoice hri
                 ON TRIM(hri.return_id)=TRIM(db.return_id)
                AND LOWER(COALESCE(hri.status,'Open'))<>'cancelled'
+            LEFT JOIN customer_opening_balance cob_target
+                ON cob_target.opening_id=db.opening_id
+               AND cob_target.customer_id=hb.customer_id
             LEFT JOIN (
                 SELECT invoice_no,
                        GROUP_CONCAT(DISTINCT shipping_no ORDER BY shipping_no SEPARATOR ', ') AS shipping_no
@@ -528,7 +875,6 @@ if ($customer_id !== '') {
               AND hb.bayar_date BETWEEN '{$startEsc}' AND '{$endEsc}'
               AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))<>'RETURN'
               AND ({$openingTargetExpr})=0
-              AND (({$paymentDisplayExpr})<>0 OR ({$paymentEffectExpr})<>0)
               AND UPPER(COALESCE(db.invoice_no,'')) NOT LIKE '%CP-MCP%'
               AND UPPER(COALESCE(db.shipping_no,'')) NOT LIKE '%CP-MCP%'
 
@@ -545,14 +891,14 @@ if ($customer_id !== '') {
              * contoh SHANTY LOUNDRY B-000000316 Rp810.000 tanggal 12-Aug-2026,
              * tidak muncul di Kartu Piutang.
              *
-             * Nilai bayar_amount dipertahankan dengan tandanya:
-             * - Opening (+): pembayaran positif mengurangi SISA.
-             * - Opening (-): bayar_amount negatif berarti pemakaian kredit,
-             *   sehingga - payment_effect akan menambah SISA menuju nol.
+             * Nilai bayar_amount tetap ditampilkan di kolom PEMBAYARAN untuk audit.
+             * Namun PAYMENT_OPENING tidak mengubah running SISA lagi, karena
+             * customer_opening_balance sudah menjadi snapshot resmi pada cutoff.
+             * Dengan demikian pembayaran OPENING tidak dihitung dua kali terhadap
+             * saldo berjalan Kartu Piutang.
              *
              * Bila tanggal transaksi <= opening_date, mekanisme historical_only
-             * existing otomatis membuat row hanya tampil sebagai histori dan
-             * tidak menghitung ulang snapshot.
+             * existing tetap membuat row hanya tampil sebagai histori.
              */
             SELECT
                 hb.bayar_date,
@@ -565,7 +911,11 @@ if ($customer_id !== '') {
                 0 AS retur,
                 0 AS retur_effect_piutang,
                 ({$paymentDisplayExpr}) AS pembayaran,
-                ({$paymentEffectExpr}) AS payment_effect_piutang,
+                CASE
+                    WHEN ({$openingEffectFlagExpr})=1
+                        THEN ({$paymentEffectExpr})
+                    ELSE 0
+                END AS payment_effect_piutang,
                 0 AS titip,
                 0 AS titip_effect_piutang,
                 'PAYMENT_OPENING',35,COALESCE(hb.bayar_no,'')
@@ -574,11 +924,13 @@ if ($customer_id !== '') {
             LEFT JOIN head_retur_invoice hri
                 ON TRIM(hri.return_id)=TRIM(db.return_id)
                AND LOWER(COALESCE(hri.status,'Open'))<>'cancelled'
+            LEFT JOIN customer_opening_balance cob_target
+                ON cob_target.opening_id=db.opening_id
+               AND cob_target.customer_id=hb.customer_id
             WHERE hb.customer_id='{$cidEsc}'
               AND hb.bayar_date BETWEEN '{$startEsc}' AND '{$endEsc}'
               AND ({$openingTargetExpr})=1
               AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE'))<>'RETURN'
-              AND (({$paymentDisplayExpr})<>0 OR ({$paymentEffectExpr})<>0)
 
             UNION ALL
 
@@ -643,34 +995,41 @@ if ($customer_id !== '') {
      */
     $periodRows = [];
     while ($row = mysqli_fetch_assoc($resRows)) {
-        $row['historical_only'] = 0;
+        $rowDate = (string)($row['trans_date'] ?? '');
+        $row['historical_only'] =
+            ($rowDate !== '' && $rowDate <= $cutoff_date) ? 1 : 0;
         $periodRows[] = $row;
     }
 
     /*
-     * Baris SALDO AWAL / SNAPSHOT.
-     * sort_order=99 membuat snapshot 31-Jul berada SETELAH seluruh transaksi
-     * tanggal 31-Jul, karena snapshot dianggap posisi akhir hari tersebut.
+     * Baris SALDO AWAL SNAPSHOT / CARRY-FORWARD.
+     * - Jika periode melintasi cutoff, row ditempatkan tepat 31-Jul-2026
+     *   setelah histori transaksi hari cutoff.
+     * - Jika periode dimulai setelah cutoff, row ditempatkan pada H-1 Start Date
+     *   dengan nilai carry-forward dari snapshot + mutasi post-cutoff.
+     * - Jika seluruh periode sebelum cutoff, tidak ada row saldo awal baru.
      */
-    $periodRows[] = [
-        'trans_date' => $opening_row_date,
-        'shipping_no' => 'Saldo Awal',
-        'return_id' => '',
-        'bayar_no' => '',
-        'payment_source' => 'OPENING_BALANCE_ROW',
-        'opening_id' => $opening_id,
-        'penjualan' => 0.0,
-        'retur' => 0.0,
-        'retur_effect_piutang' => 0.0,
-        'pembayaran' => 0.0,
-        'payment_effect_piutang' => 0.0,
-        'titip' => 0.0,
-        'titip_effect_piutang' => 0.0,
-        'row_type' => 'OPENING_ROW',
-        'sort_order' => 99,
-        'ref_sort' => '',
-        'historical_only' => 0,
-    ];
+    if ($opening_row_date !== '') {
+        $periodRows[] = [
+            'trans_date' => $opening_row_date,
+            'shipping_no' => 'Saldo Awal',
+            'return_id' => '',
+            'bayar_no' => '',
+            'payment_source' => 'OPENING_BALANCE_ROW',
+            'opening_id' => $opening_id,
+            'penjualan' => 0.0,
+            'retur' => 0.0,
+            'retur_effect_piutang' => 0.0,
+            'pembayaran' => 0.0,
+            'payment_effect_piutang' => 0.0,
+            'titip' => 0.0,
+            'titip_effect_piutang' => 0.0,
+            'row_type' => 'OPENING_ROW',
+            'sort_order' => 99,
+            'ref_sort' => '',
+            'historical_only' => 0,
+        ];
+    }
 
     usort($periodRows, static function ($a, $b) {
         $dateA = (string)($a['trans_date'] ?? '');
@@ -707,12 +1066,6 @@ if ($customer_id !== '') {
         $titipEffect = (float)($row['titip_effect_piutang'] ?? 0);
 
         if ($isOpeningRow) {
-            /*
-             * Snapshot menjadi titik awal running balance.
-             * Bila Start Date lebih awal dari opening_date, saldo_awal pada kondisi
-             * ini sama dengan snapshot opening karena belum ada mutasi post-opening
-             * sebelum Start Date.
-             */
             $runningSaldo = $saldo_awal;
             $row['sisa'] = $runningSaldo;
             $rows[] = $row;
@@ -720,53 +1073,49 @@ if ($customer_id !== '') {
         }
 
         /*
-         * Bila report dimulai sebelum/sama dengan opening_date, semua transaksi
-         * sampai opening_date tetap DITAMPILKAN tetapi tidak dihitung ulang karena
-         * sudah terkandung di snapshot customer_opening_balance.
-         * Kolom SISA dikosongkan agar user tidak melihat running balance historis
-         * yang palsu / double-count.
+         * Semua transaksi <= cutoff hanya histori.
+         * Nilainya tetap tampil untuk audit, tetapi tidak memengaruhi running
+         * saldo maupun total mutasi efektif setelah snapshot.
          */
-        $historicalOnly = (
-            $openingApplies
-            && $start_date <= $opening_date
-            && $rowDate !== ''
-            && $rowDate <= $opening_date
-        );
+        $isHistoricalRow =
+            ($rowDate !== '' && $rowDate <= $cutoff_date);
 
-        if ($historicalOnly) {
+        if ($isHistoricalRow) {
             $row['historical_only'] = 1;
             $row['sisa'] = null;
-        } else {
-            /* paymentEffect normal + mengurangi saldo.
-             * payment_source=RETURN hanya link/audit dan effect=0 agar retur tidak dihitung dua kali.
-             * titip masuk: effect positif -> mengurangi SISA.
-             * titip used: effect negatif -> menambah kembali SISA karena sudah
-             * termasuk di pembayaran gross.
-             */
-            $runningSaldo += $penjualan - $paymentEffect - $titipEffect;
-            $row['sisa'] = $runningSaldo;
+            $rows[] = $row;
+            continue;
         }
 
-        /*
-         * TOTAL MUTASI EFEKTIF
-         * ------------------------------------------------------
-         * Transaksi historis sebelum/sama dengan snapshot tetap ditampilkan
-         * untuk kebutuhan ledger/audit, tetapi TIDAK ikut TOTAL periode karena
-         * nilainya sudah tercakup dalam Saldo Awal.
-         *
-         * Dengan demikian bila periode melintasi opening_date, footer tidak
-         * membengkak akibat histori yang hanya ditampilkan sebagai informasi.
-         */
-        if (!$historicalOnly) {
-            $total_penjualan += $penjualan;
-            $total_pembayaran += $pembayaran;
+        $row['historical_only'] = 0;
 
-            if ($rowType === 'TITIP_IN') {
-                $total_titip_masuk += max($titip, 0);
-            }
-            if ($rowType === 'TITIP_USED') {
-                $total_titip_terpakai += abs($titipEffect);
-            }
+        /* Running efektif setelah cutoff. */
+        $runningSaldo +=
+            $penjualan
+            - $paymentEffect
+            - $titipEffect;
+
+        $row['sisa'] = $runningSaldo;
+
+        $total_penjualan += $penjualan;
+
+        /*
+         * PAYMENT_OPENING tetap tampil di ledger untuk audit, tetapi bukan
+         * mutasi efektif Kartu Piutang karena opening balance sudah menjadi
+         * snapshot resmi. Karena itu jangan masukkan ke TOTAL PEMBAYARAN.
+         */
+        if (
+            $rowType !== 'PAYMENT_OPENING'
+            || abs($paymentEffect) > 0.0001
+        ) {
+            $total_pembayaran += $pembayaran;
+        }
+
+        if ($rowType === 'TITIP_IN') {
+            $total_titip_masuk += max($titip, 0);
+        }
+        if ($rowType === 'TITIP_USED') {
+            $total_titip_terpakai += abs($titipEffect);
         }
 
         $rows[] = $row;
@@ -1048,6 +1397,13 @@ if ($customer_id !== '') {
                 Export Excel
             </a>
 
+            <a class="btn-vs btn-primary"
+               href="modul/transaksi/cetak_kartu_piutang_all.php?start_date=<?= urlencode($start_date_display) ?>&end_date=<?= urlencode($end_date_display) ?>"
+               target="_blank">
+                <span class="app-icon"><?= appIcon('print') ?></span>
+                Cetak All Customer
+            </a>
+
         <?php else: ?>
 
             <a class="btn-vs btn-disabled" href="javascript:void(0);">
@@ -1058,6 +1414,13 @@ if ($customer_id !== '') {
             <a class="btn-vs btn-disabled" href="javascript:void(0);">
                 <span class="app-icon"><?= appIcon('print') ?></span>
                 Export Excel
+            </a>
+
+            <a class="btn-vs btn-primary"
+               href="modul/transaksi/cetak_kartu_piutang_all.php?start_date=<?= urlencode($start_date_display) ?>&end_date=<?= urlencode($end_date_display) ?>"
+               target="_blank">
+                <span class="app-icon"><?= appIcon('print') ?></span>
+                Cetak All Customer
             </a>
 
         <?php endif; ?>
@@ -1170,6 +1533,7 @@ if ($customer_id !== '') {
                             <?php
                             $rowType = strtoupper(trim((string)($row['row_type'] ?? '')));
                             $isOpeningRow = $rowType === 'OPENING_ROW';
+                            $isManualOpening = $rowType === 'OPENING_ADJUSTMENT';
                             $isReturn = $rowType === 'RETURN';
                             $isTitip = abs((float)($row['titip'] ?? 0)) > 0.0001;
 
@@ -1179,8 +1543,12 @@ if ($customer_id !== '') {
 
                             if ($isOpeningRow) {
                                 $shippingDisplay = '';
+                            } elseif ($isManualOpening) {
+                                $shippingDisplay = 'Saldo Awal Manual';
                             } elseif ($rowType === 'RETURN' || $paymentSource === 'RETURN') {
                                 $shippingDisplay = (string)($row['return_id'] ?? '');
+                            } elseif ($rowType === 'INVOICE_CORRECTION') {
+                                $shippingDisplay = (string)($row['shipping_no'] ?? '');
                             } elseif ($paymentSource === 'OPENING') {
                                 $shippingDisplay = 'Saldo Awal';
                             } elseif ($isTitip) {
@@ -1213,7 +1581,14 @@ if ($customer_id !== '') {
                             ?>
                             <tr class="<?= $isOpeningRow ? 'opening-row' : ($isHistoricalRow ? 'historical-row' : ($isReturn ? 'return-row' : ($isPaymentReturnLink ? 'payment-return-link' : ''))) ?>">
                                 <td class="money-cell">
-                                    <?= $isOpeningRow ? 'Rp ' . h(formatMoney($saldo_awal)) : '' ?>
+                                    <?php
+                                    if ($isOpeningRow) {
+                                        echo 'Rp ' . h(formatMoney($saldo_awal));
+                                    } elseif ($isManualOpening) {
+                                        $adjValue = (float)($row['retur'] ?? 0);
+                                        echo ($adjValue < 0 ? '- Rp ' : 'Rp ') . h(formatMoney(abs($adjValue)));
+                                    }
+                                    ?>
                                 </td>
                                 <td class="text-center"><?= h(formatDateDisplay($row['trans_date'])) ?></td>
                                 <td class="text-bold text-blue"><?= h($shippingDisplay) ?></td>

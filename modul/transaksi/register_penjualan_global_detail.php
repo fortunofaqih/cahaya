@@ -34,11 +34,39 @@ function fmtQtyR($v){
     return rtrim(rtrim($s,'0'),',');
 }
 
-function classifyCategoryDetailR($inventoryName){
-    $n=strtoupper(trim((string)$inventoryName));
+function classifyCategoryDetailR($inventoryName, $inventoryCategory=''){
+    $n = strtoupper(trim((string)$inventoryName));
+    $c = strtoupper(trim((string)$inventoryCategory));
+
+    /*
+     * KHUSUS KOLOM BAHAN
+     * Prioritas dari category master inventory
+     */
+    if (
+        $c === 'BIJI PLASTIK' ||
+        $c === 'BAHAN PACKING'
+    ) {
+        return 'BAHAN';
+    }
+
+    /*
+     * Fallback berdasarkan inventory_name.
+     * Contoh:
+     * LLDPE RESIN TITANVENE LL0209 SC
+     */
+    if (
+        strpos($n, 'RESIN') !== false ||
+        strpos($n, 'LLDPE') !== false
+    ) {
+        return 'BAHAN';
+    }
+
     if($n==='') return null;
 
-    // SEDOTAN diprioritaskan agar "SEDOTAN BAHAN" tetap masuk SEDOTAN.
+    // =============================
+    // RULE EXISTING JANGAN DIUBAH
+    // =============================
+
     if(strpos($n,'SEDOTAN')!==false) return 'SEDOTAN';
 
     if(preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n) && strpos($n,'SABLON')!==false) return 'PP SABLON';
@@ -51,11 +79,22 @@ function classifyCategoryDetailR($inventoryName){
     if(strpos($n,'TALI')!==false && strpos($n,'LOS')!==false) return 'TALI LOS';
 
     if(preg_match('/(^|[^A-Z])BAHAN([^A-Z]|$)/',$n)) return 'BAHAN';
+
     if(strpos($n,'TERPAL')!==false) return 'TERPAL';
     if(preg_match('/(^|[^A-Z])BOX([^A-Z]|$)/',$n)) return 'BOX';
     if(preg_match('/(^|[^A-Z])HD([^A-Z]|$)/',$n)) return 'HD';
 
-    return null;
+    if(strpos($n,'KERTAS')!==false) return null;
+
+    if(
+        preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n) &&
+        strpos($n,'WARNA')!==false
+    ) return null;
+
+    if(preg_match('/(^|[^A-Z])PE([^A-Z]|$)/',$n)) return null;
+    if(preg_match('/(^|[^A-Z])PP([^A-Z]|$)/',$n)) return null;
+
+    return 'LAIN-LAIN';
 }
 function emptyCatR(){ return ['qty'=>0.0,'qty_kg'=>0.0,'rp'=>0.0]; }
 function emptyGrandR(){
@@ -64,7 +103,7 @@ function emptyGrandR(){
         
         'HD'=>emptyCatR(),'HD WARNA'=>emptyCatR(),'HD KRESEK'=>emptyCatR(),'HD SABLON'=>emptyCatR(),'PP SABLON'=>emptyCatR(),
         'TALI KG'=>emptyCatR(),'TALI LOS'=>emptyCatR(),'BAHAN'=>emptyCatR(),
-        'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR()
+        'TERPAL'=>emptyCatR(),'BOX'=>emptyCatR(),'SEDOTAN'=>emptyCatR(),'LAIN-LAIN'=>emptyCatR()
     ];
 }
 
@@ -132,6 +171,7 @@ SELECT
         NULLIF(TRIM(mi.inventory_name),''),
         ''
     ) AS inventory_name,
+    COALESCE(NULLIF(TRIM(mi.category),''),'') AS inventory_category,
 
     CASE
         WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))<>'' 
@@ -156,6 +196,19 @@ SELECT
     CASE
         WHEN COALESCE(ds.subtotal,0)<>0
             THEN ABS(COALESCE(ds.subtotal,0))
+
+        /* LAIN-LAIN tanpa qty tetap punya basis Rupiah dari nilai tagihan. */
+        WHEN COALESCE(ds.qty_shipping,0)=0
+         AND COALESCE(ds.qty_pack_shipping,0)=0
+         AND COALESCE(ds.qty_detail_shipping,0)=0
+            THEN ABS(
+                CASE
+                    WHEN COALESCE(dso.price_unit,0)<>0 THEN COALESCE(dso.price_unit,0)
+                    WHEN COALESCE(dso.price,0)<>0 THEN COALESCE(dso.price,0)
+                    ELSE 0
+                END
+            )
+
         WHEN COALESCE(dso.price,0)<>0
             THEN ABS(
                 COALESCE(dso.price,0) *
@@ -204,13 +257,13 @@ mysqli_stmt_bind_param($stmt,'ss',$startDate,$endDate);
 mysqli_stmt_execute($stmt);
 $res=mysqli_stmt_get_result($stmt);
 
-$cats=['HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN'];
+$cats=['HD','HD WARNA','HD KRESEK','HD SABLON','PP SABLON','TALI KG','TALI LOS','BAHAN','TERPAL','BOX','SEDOTAN','LAIN-LAIN'];
 $rows=[];
 $grand=emptyGrandR();
 $shippingGroups=[];
 
 while($item=mysqli_fetch_assoc($res)){
-    $g=classifyCategoryDetailR($item['inventory_name']);
+    $g=classifyCategoryDetailR($item['inventory_name'], $item['inventory_category']);
 
     // Global Detail hanya menampilkan kategori yang termasuk daftar detail.
     if($g===null || !in_array($g,$cats,true)){
@@ -232,8 +285,9 @@ while($item=mysqli_fetch_assoc($res)){
 
     $shippingGroups[$key]['items'][]=[
         'category'=>$g,
-        'qty'=>(float)$item['category_qty'],
-        'qty_kg'=>(float)$item['category_qty_kg'],
+        // LAIN-LAIN hanya menampilkan nilai Rupiah. Qty dan Qty KG wajib 0.
+        'qty'=>$g==='LAIN-LAIN' ? 0.0 : (float)$item['category_qty'],
+        'qty_kg'=>$g==='LAIN-LAIN' ? 0.0 : (float)$item['category_qty_kg'],
         'basis'=>(float)$item['allocation_basis']
     ];
 }
@@ -299,6 +353,97 @@ foreach($shippingGroups as $key=>$ship){
         $grand[$g]['rp'] += $rows[$key][$g]['rp'];
     }
 }
+
+/*
+ * KOREKSI INVOICE
+ * ------------------------------------------------------------
+ * Source of truth: invoice_correction.
+ *
+ * Rule:
+ * - correction_amount sudah signed NEGATIF;
+ * - category menentukan kolom Rp pada Global Detail;
+ * - Qty dan Qty KG selalu 0 karena koreksi adalah mutasi nilai, bukan barang;
+ * - invoice_no / shipping_no memakai referensi koreksi bila diisi;
+ * - customer_name diambil dari m_customer;
+ * - hanya status Active dan correction_date dalam periode filter;
+ * - ONGKOS dipetakan ke LAIN-LAIN karena struktur Global Detail existing
+ *   tidak mempunyai kolom ONGKOS tersendiri.
+ *
+ * Kategori PP/KERTAS/PE/PE WARNA memang tidak menjadi kolom pada Global Detail
+ * existing, sehingga koreksi kategori tersebut tidak dimasukkan di laporan ini.
+ */
+$sqlCorrection = "
+    SELECT
+        ic.correction_id,
+        ic.correction_no,
+        ic.correction_date,
+        ic.customer_id,
+        COALESCE(mc.customer, ic.customer_id) AS customer_name,
+        COALESCE(ic.invoice_no,'') AS invoice_no,
+        COALESCE(ic.shipping_no,'') AS shipping_no,
+        UPPER(TRIM(COALESCE(ic.category,''))) AS category,
+        COALESCE(ic.correction_amount,0) AS correction_amount
+    FROM invoice_correction ic
+    LEFT JOIN m_customer mc
+        ON mc.customer_id COLLATE utf8mb4_general_ci
+         = ic.customer_id COLLATE utf8mb4_general_ci
+    WHERE ic.correction_date BETWEEN ? AND ?
+      AND LOWER(COALESCE(ic.status,'Active'))='active'
+";
+
+if ($sort === 'invoice_no') {
+    $sqlCorrection .= " ORDER BY ic.invoice_no " . $orderDirection . ", ic.correction_date ASC, ic.correction_id ASC ";
+} else {
+    $sqlCorrection .= " ORDER BY ic.shipping_no " . $orderDirection . ", ic.correction_date ASC, ic.correction_id ASC ";
+}
+
+$stmtCorrection = mysqli_prepare($conn, $sqlCorrection);
+if (!$stmtCorrection) {
+    die('SQL Koreksi Invoice Register Penjualan Global Detail Error: '.h(mysqli_error($conn)));
+}
+mysqli_stmt_bind_param($stmtCorrection,'ss',$startDate,$endDate);
+mysqli_stmt_execute($stmtCorrection);
+$resCorrection = mysqli_stmt_get_result($stmtCorrection);
+
+while($corr = mysqli_fetch_assoc($resCorrection)){
+    $g = strtoupper(trim((string)($corr['category'] ?? '')));
+
+    if($g === 'ONGKOS'){
+        $g = 'LAIN-LAIN';
+    }
+
+    if($g === '' || !in_array($g,$cats,true)){
+        continue;
+    }
+
+    $amount = (float)($corr['correction_amount'] ?? 0);
+
+    /*
+     * Key khusus supaya tidak bertabrakan dengan invoice/shipping normal
+     * maupun koreksi lain yang referensinya sama/kosong.
+     */
+    $key = 'CORRECTION|' . (int)$corr['correction_id'];
+
+    $rows[$key] = [
+        'shipping_no' => (string)($corr['shipping_no'] ?? ''),
+        'invoice_no' => (string)($corr['invoice_no'] ?? ''),
+        'customer_name' => (string)($corr['customer_name'] ?? ''),
+        'total' => $amount,
+        'penjualan' => $amount
+    ];
+
+    foreach($cats as $cat){
+        $rows[$key][$cat] = emptyCatR();
+    }
+
+    $rows[$key][$g]['rp'] = $amount;
+
+    $grand['total'] += $amount;
+    $grand['penjualan'] += $amount;
+    $grand[$g]['rp'] += $amount;
+}
+
+mysqli_stmt_close($stmtCorrection);
 
 ?>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -388,7 +533,7 @@ foreach($shippingGroups as $key=>$ship){
             </thead>
             <tbody>
             <?php if(empty($rows)): ?>
-                <tr><td colspan="38" class="text-center" style="padding:18px;color:#777">Tidak ada data untuk kategori HD, HD WARNA, HD KRESEK, HD SABLON, PP SABLON, TALI KG, TALI LOS, BAHAN, TERPAL, BOX, atau SEDOTAN pada periode ini.</td></tr>
+                <tr><td colspan="41" class="text-center" style="padding:18px;color:#777">Tidak ada data untuk kategori HD, HD WARNA, HD KRESEK, HD SABLON, PP SABLON, TALI KG, TALI LOS, BAHAN, TERPAL, BOX, SEDOTAN, atau LAIN-LAIN pada periode ini.</td></tr>
             <?php else: foreach($rows as $row): ?>
                 <tr>
                     <td><?=h($row['shipping_no'])?></td>

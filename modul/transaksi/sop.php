@@ -247,6 +247,31 @@ function getNextOrderNoLetterSuffix($conn, $order_no) {
 }
 
 // ==========================================
+// HELPER: Sanitasi nilai decimal untuk MySQL
+// ==========================================
+function sanitizeDecimalForSql($conn, $value, $default = null) {
+    if ($value === null) {
+        return $default === null ? 'NULL' : $default;
+    }
+
+    $value = trim((string)$value);
+
+    if ($value === '') {
+        return $default === null ? 'NULL' : $default;
+    }
+
+    // Normalisasi koma menjadi titik (antisipasi input "12,5")
+    $value = str_replace(',', '.', $value);
+
+    // Hanya izinkan format angka desimal
+    if (!preg_match('/^-?\d+(\.\d+)?$/', $value)) {
+        return $default === null ? 'NULL' : $default;
+    }
+
+    return $value;
+}
+
+// ==========================================
 // 1. HANDLER AJAX
 // ==========================================
 
@@ -696,7 +721,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                 $price     = (float)$item['price'];
                 $rem       = mysqli_real_escape_string($conn, $item['remarks']);
                 
-                $berat_jenis_potong   = mysqli_real_escape_string($conn, $item['berat_jenis_potong'] ?? '');
+                // ==========================================
+                // PATCH: Sanitasi nilai decimal (mencegah error
+                // "Incorrect decimal value '' for column ...")
+                // ==========================================
+                $berat_jenis_potong_sql = sanitizeDecimalForSql($conn, $item['berat_jenis_potong'] ?? '', 'NULL');
+                $berat_jenis_rol_sql    = sanitizeDecimalForSql($conn, $item['berat_jenis_rol']    ?? '', 'NULL');
+                $gramatur_asli_rol_sql  = sanitizeDecimalForSql($conn, $item['gramatur_asli_rol']  ?? '', '0');
+                $tebal_asli_rol_sql     = sanitizeDecimalForSql($conn, $item['tebal_asli_rol']     ?? '', '0');
+                $gramatur_plus_rol_sql  = sanitizeDecimalForSql($conn, $item['gramatur_plus_rol']  ?? '', '0');
+                $gramatur_min_rol_sql   = sanitizeDecimalForSql($conn, $item['gramatur_min_rol']   ?? '', '0');
+                $tebal_plus_rol_sql     = sanitizeDecimalForSql($conn, $item['tebal_plus_rol']     ?? '', '0');
+                $tebal_minus_rol_sql    = sanitizeDecimalForSql($conn, $item['tebal_minus_rol']    ?? '', '0');
+
+                // Field text (tetap menggunakan escape seperti biasa)
                 $spec_potong          = mysqli_real_escape_string($conn, $item['spec_potong'] ?? '');
                 $ukuran_potong        = mysqli_real_escape_string($conn, $item['ukuran_potong'] ?? '');
                 $jml_order_potong     = mysqli_real_escape_string($conn, $item['jml_order_potong'] ?? '');
@@ -711,7 +749,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                 $code_potong          = mysqli_real_escape_string($conn, $item['code_potong'] ?? '');
                 $jarak_seal           = (float)($item['jarak_seal'] ?? 0);
                 
-                $berat_jenis_rol      = mysqli_real_escape_string($conn, $item['berat_jenis_rol'] ?? '');
                 $ukuran_rol           = mysqli_real_escape_string($conn, $item['ukuran_rol'] ?? '');
                 $berat_rol            = mysqli_real_escape_string($conn, $item['berat_rol'] ?? '');
                 $isi_bal_rol          = mysqli_real_escape_string($conn, $item['isi_bal_rol'] ?? '');
@@ -721,16 +758,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                 $bobin_krepyak_rol    = mysqli_real_escape_string($conn, $item['bobin_krepyak_rol'] ?? '');
                 $kirim_las_rol        = mysqli_real_escape_string($conn, $item['kirim_las_rol'] ?? '');
                 $standar_cek_rol      = mysqli_real_escape_string($conn, $item['standar_cek_rol'] ?? '');
-                $gramatur_asli_rol    = mysqli_real_escape_string($conn, $item['gramatur_asli_rol'] ?? '');
-                $tebal_asli_rol       = mysqli_real_escape_string($conn, $item['tebal_asli_rol'] ?? '');
                 $spec_rol             = mysqli_real_escape_string($conn, $item['spec_rol'] ?? '');
                 $gramatur_rol         = mysqli_real_escape_string($conn, $item['gramatur_rol'] ?? '');
                 $tebal_rol            = mysqli_real_escape_string($conn, $item['tebal_rol'] ?? '');
                 $keterangan_rol       = mysqli_real_escape_string($conn, $item['keterangan_rol'] ?? '');
-                $gramatur_plus_rol    = mysqli_real_escape_string($conn, $item['gramatur_plus_rol'] ?? '');
-                $gramatur_min_rol     = mysqli_real_escape_string($conn, $item['gramatur_min_rol'] ?? '');
-                $tebal_plus_rol       = mysqli_real_escape_string($conn, $item['tebal_plus_rol'] ?? '');
-                $tebal_minus_rol      = mysqli_real_escape_string($conn, $item['tebal_minus_rol'] ?? '');
                 $no_mesin_rol         = mysqli_real_escape_string($conn, $item['no_mesin_rol'] ?? '');
                 $code_rol             = mysqli_real_escape_string($conn, $item['code_rol'] ?? '');
 
@@ -746,13 +777,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
                     no_mesin_rol, code_rol
                 ) VALUES (
                     '$sop_id', '$inv_id', '$inv_name', $qty, '$uom', $qty_pack, '$uom_det', $price, " . ($shipment_due_date ? "'$shipment_due_date'" : "NULL") . ", '$rem',
-                    '$berat_jenis_potong', '$spec_potong', '$ukuran_potong', '$jml_order_potong', '$isi_pakbal_potong',
+                    $berat_jenis_potong_sql, '$spec_potong', '$ukuran_potong', '$jml_order_potong', '$isi_pakbal_potong',
                     '$keterangan_potong', '$no_mesin_potong', '$nat_warna_potong',
                     '$berat_rol_warna', '$code_potong', $jarak_seal,
-                    '$berat_jenis_rol', '$ukuran_rol', '$berat_rol', '$isi_bal_rol', '$jml_order_rol', '$treat_rol',
+                    $berat_jenis_rol_sql, '$ukuran_rol', '$berat_rol', '$isi_bal_rol', '$jml_order_rol', '$treat_rol',
                     '$nat_warna_rol', '$bobin_krepyak_rol', '$kirim_las_rol', '$standar_cek_rol',
-                    '$gramatur_asli_rol', '$tebal_asli_rol', '$spec_rol', '$gramatur_rol', '$tebal_rol',
-                    '$keterangan_rol', '$gramatur_plus_rol', '$gramatur_min_rol', '$tebal_plus_rol', '$tebal_minus_rol',
+                    $gramatur_asli_rol_sql, $tebal_asli_rol_sql, '$spec_rol', '$gramatur_rol', '$tebal_rol',
+                    '$keterangan_rol', $gramatur_plus_rol_sql, $gramatur_min_rol_sql, $tebal_plus_rol_sql, $tebal_minus_rol_sql,
                     '$no_mesin_rol', '$code_rol'
                 )";
                 
@@ -764,7 +795,30 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_sop'])) {
         $message = "<div class='alert alert-success py-2 px-3 mb-2 rounded-0 fs-7'><i class='bi bi-check-circle-fill'></i> SOP $sop_id berhasil diproses.</div>";
     } catch (Exception $e) {
         mysqli_rollback($conn);
-        $message = "<div class='alert alert-danger py-2 px-3 mb-2 rounded-0 fs-7'><i class='bi bi-exclamation-triangle-fill'></i> Error: " . $e->getMessage() . "</div>";
+
+        // ==========================================
+        // PATCH: Pesan error yang lebih user-friendly
+        // ==========================================
+        $rawMsg = $e->getMessage();
+        $userMsg = $rawMsg;
+
+        if (stripos($rawMsg, 'Incorrect decimal value') !== false) {
+            if (preg_match("/column '([^']+)'/i", $rawMsg, $m)) {
+                $userMsg = "Nilai kolom <b>" . htmlspecialchars($m[1]) . "</b> tidak valid. Mohon isi dengan angka (contoh: 0 atau 12.5).";
+            } else {
+                $userMsg = "Ada nilai numerik yang tidak valid. Mohon periksa kembali isian spesifikasi.";
+            }
+        } elseif (stripos($rawMsg, "doesn't have a default value") !== false) {
+            $userMsg = "Ada field yang belum diisi. Mohon lengkapi data terlebih dahulu.";
+        } elseif (stripos($rawMsg, 'Duplicate entry') !== false) {
+            $userMsg = "Nomor SOP sudah terpakai. Silakan coba simpan ulang.";
+        }
+
+        $message = "<div class='alert alert-danger py-2 px-3 mb-2 rounded-0 fs-7'>"
+                 . "<i class='bi bi-exclamation-triangle-fill'></i> <b>Gagal menyimpan:</b> "
+                 . $userMsg
+                 . "<br><small class='text-muted'>Input Anda masih tersimpan di form. Perbaiki lalu klik Save lagi.</small>"
+                 . "</div>";
     }
 }
 
@@ -1546,11 +1600,6 @@ $(document).ready(function() {
     // AUTO UPDATE ROLL CALCULATIONS
     // ==========================================
     $(document).on('input change keyup', '#berat_jenis_rol, #standar_cek_rol, #ukuran_rol', function() {
-        /*
-         * Hitung ulang otomatis Gramatur Asli dan Tebal Asli
-         * ketika Berat Jenis Roll, Standar Pengecekan, atau Ukuran Roll
-         * diubah manual oleh user.
-         */
         refreshRollCalculatedFields();
     });
 
@@ -1637,20 +1686,37 @@ $(document).ready(function() {
     });
 
     // ==========================================
-    // FORM SUBMIT HANDLER
+    // FORM SUBMIT HANDLER (DENGAN VALIDASI)
     // ==========================================
-    $('#sopForm').on('submit', function() {
+    $('#sopForm').on('submit', function(e) {
         if (isSubmitting) {
+            e.preventDefault();
+            return false;
+        }
+
+        // ==========================================
+        // VALIDASI FORM SEBELUM SUBMIT
+        // ==========================================
+        let validation = validateSOPForm();
+        if (!validation.valid) {
+            e.preventDefault();
+            showValidationError(validation.errors);
+
+            if (validation.focusTarget && $(validation.focusTarget).length) {
+                setTimeout(function() {
+                    try { $(validation.focusTarget).focus(); } catch(err) {}
+                }, 100);
+            }
+
+            // Pindah ke tab yang bermasalah agar user melihat
+            if (validation.errors.some(x => x.indexOf('Qty') >= 0 || x.indexOf('item') >= 0 || x.indexOf('Sales Order') >= 0)) {
+                try { $('#bom-tab').tab('show'); } catch(err) {}
+            }
+
             return false;
         }
 
         isSubmitting = true;
-
-        if ($('#formItemGrid tbody input[name^="items["][name$="[inv_id]"]').length === 0) {
-            alert('Pilih minimal 1 item Sales Order untuk dibuat SOP.');
-            isSubmitting = false;
-            return false;
-        }
 
         updateRollSpecFromToleranceInputs();
 
@@ -1660,43 +1726,43 @@ $(document).ready(function() {
             if (name && name.includes('[inv_id]')) {
                 let index = name.match(/\[(\d+)\]/)[1];
                 
-                // Update potong specifications
-                $('input[name="items[' + index + '][berat_jenis_potong]"]').val($('#berat_jenis_potong').val());
-                $('input[name="items[' + index + '][spec_potong]"]').val($('#spec_potong').val());
-                $('input[name="items[' + index + '][ukuran_potong]"]').val($('#ukuran_potong').val());
-                $('input[name="items[' + index + '][jml_order_potong]"]').val($('#jml_order_potong').val());
-                $('input[name="items[' + index + '][isi_pakbal_potong]"]').val($('#isi_pakbal_potong').val());
-                $('input[name="items[' + index + '][keterangan_potong]"]').val($('#keterangan_potong').val());
-                $('input[name="items[' + index + '][shipment_due_date]"]').val(getShipmentDueDateValue());
-                $('input[name="items[' + index + '][no_mesin_potong]"]').val($('#no_mesin_potong').val());
-                $('input[name="items[' + index + '][nat_warna_potong]"]').val($('#nat_warna_potong').val());
-                $('input[name="items[' + index + '][berat_rol_warna]"]').val($('#berat_rol_warna').val());
-                $('input[name="items[' + index + '][code_potong]"]').val($('#code_potong').val());
-                $('input[name="items[' + index + '][jarak_seal]"]').val($('#jarak_seal').val());
+                // Update potong specifications (dengan fallback '' agar tidak undefined)
+                $('input[name="items[' + index + '][berat_jenis_potong]"]').val($('#berat_jenis_potong').val() || '');
+                $('input[name="items[' + index + '][spec_potong]"]').val($('#spec_potong').val() || '');
+                $('input[name="items[' + index + '][ukuran_potong]"]').val($('#ukuran_potong').val() || '');
+                $('input[name="items[' + index + '][jml_order_potong]"]').val($('#jml_order_potong').val() || '');
+                $('input[name="items[' + index + '][isi_pakbal_potong]"]').val($('#isi_pakbal_potong').val() || '');
+                $('input[name="items[' + index + '][keterangan_potong]"]').val($('#keterangan_potong').val() || '');
+                $('input[name="items[' + index + '][shipment_due_date]"]').val(getShipmentDueDateValue() || '');
+                $('input[name="items[' + index + '][no_mesin_potong]"]').val($('#no_mesin_potong').val() || '');
+                $('input[name="items[' + index + '][nat_warna_potong]"]').val($('#nat_warna_potong').val() || '');
+                $('input[name="items[' + index + '][berat_rol_warna]"]').val($('#berat_rol_warna').val() || '');
+                $('input[name="items[' + index + '][code_potong]"]').val($('#code_potong').val() || '');
+                $('input[name="items[' + index + '][jarak_seal]"]').val($('#jarak_seal').val() || 0);
                 
-                // Update roll specifications
-                $('input[name="items[' + index + '][berat_jenis_rol]"]').val($('#berat_jenis_rol').val());
-                $('input[name="items[' + index + '][ukuran_rol]"]').val($('#ukuran_rol').val());
-                $('input[name="items[' + index + '][berat_rol]"]').val($('#berat_rol').val());
-                $('input[name="items[' + index + '][isi_bal_rol]"]').val($('#isi_bal_rol').val());
-                $('input[name="items[' + index + '][jml_order_rol]"]').val($('#jml_order_rol').val());
-                $('input[name="items[' + index + '][treat_rol]"]').val($('#treat_rol').val());
-                $('input[name="items[' + index + '][nat_warna_rol]"]').val($('#nat_warna_rol').val());
-                $('input[name="items[' + index + '][bobin_krepyak_rol]"]').val($('#bobin_krepyak_rol').val());
-                $('input[name="items[' + index + '][kirim_las_rol]"]').val($('#kirim_las_rol').val());
-                $('input[name="items[' + index + '][standar_cek_rol]"]').val($('#standar_cek_rol').val());
-                $('input[name="items[' + index + '][gramatur_asli_rol]"]').val($('#gramatur_asli_rol').val());
-                $('input[name="items[' + index + '][tebal_asli_rol]"]').val($('#tebal_asli_rol').val());
-                $('input[name="items[' + index + '][spec_rol]"]').val($('#spec_rol').val());
-                $('input[name="items[' + index + '][gramatur_rol]"]').val($('#gramatur_rol').val());
-                $('input[name="items[' + index + '][tebal_rol]"]').val($('#tebal_rol').val());
-                $('input[name="items[' + index + '][keterangan_rol]"]').val($('#keterangan_rol').val());
-                $('input[name="items[' + index + '][gramatur_plus_rol]"]').val($('#gramatur_plus_rol').val());
-                $('input[name="items[' + index + '][gramatur_min_rol]"]').val($('#gramatur_min_rol').val());
-                $('input[name="items[' + index + '][tebal_plus_rol]"]').val($('#tebal_plus_rol').val());
-                $('input[name="items[' + index + '][tebal_minus_rol]"]').val($('#tebal_minus_rol').val());
-                $('input[name="items[' + index + '][no_mesin_rol]"]').val($('#no_mesin_rol').val());
-                $('input[name="items[' + index + '][code_rol]"]').val($('#code_rol').val());
+                // Update roll specifications (dengan fallback '' agar tidak undefined)
+                $('input[name="items[' + index + '][berat_jenis_rol]"]').val($('#berat_jenis_rol').val() || '');
+                $('input[name="items[' + index + '][ukuran_rol]"]').val($('#ukuran_rol').val() || '');
+                $('input[name="items[' + index + '][berat_rol]"]').val($('#berat_rol').val() || '');
+                $('input[name="items[' + index + '][isi_bal_rol]"]').val($('#isi_bal_rol').val() || '');
+                $('input[name="items[' + index + '][jml_order_rol]"]').val($('#jml_order_rol').val() || '');
+                $('input[name="items[' + index + '][treat_rol]"]').val($('#treat_rol').val() || '');
+                $('input[name="items[' + index + '][nat_warna_rol]"]').val($('#nat_warna_rol').val() || '');
+                $('input[name="items[' + index + '][bobin_krepyak_rol]"]').val($('#bobin_krepyak_rol').val() || '');
+                $('input[name="items[' + index + '][kirim_las_rol]"]').val($('#kirim_las_rol').val() || '');
+                $('input[name="items[' + index + '][standar_cek_rol]"]').val($('#standar_cek_rol').val() || '');
+                $('input[name="items[' + index + '][gramatur_asli_rol]"]').val($('#gramatur_asli_rol').val() || '');
+                $('input[name="items[' + index + '][tebal_asli_rol]"]').val($('#tebal_asli_rol').val() || '');
+                $('input[name="items[' + index + '][spec_rol]"]').val($('#spec_rol').val() || '');
+                $('input[name="items[' + index + '][gramatur_rol]"]').val($('#gramatur_rol').val() || '');
+                $('input[name="items[' + index + '][tebal_rol]"]').val($('#tebal_rol').val() || '');
+                $('input[name="items[' + index + '][keterangan_rol]"]').val($('#keterangan_rol').val() || '');
+                $('input[name="items[' + index + '][gramatur_plus_rol]"]').val($('#gramatur_plus_rol').val() || '0');
+                $('input[name="items[' + index + '][gramatur_min_rol]"]').val($('#gramatur_min_rol').val() || '0');
+                $('input[name="items[' + index + '][tebal_plus_rol]"]').val($('#tebal_plus_rol').val() || '0');
+                $('input[name="items[' + index + '][tebal_minus_rol]"]').val($('#tebal_minus_rol').val() || '0');
+                $('input[name="items[' + index + '][no_mesin_rol]"]').val($('#no_mesin_rol').val() || '');
+                $('input[name="items[' + index + '][code_rol]"]').val($('#code_rol').val() || '');
             }
         });
         
@@ -1710,6 +1776,87 @@ $(document).ready(function() {
         $('.shipment-due-date-input').val($(this).val());
     });
 });
+
+// ==========================================
+// VALIDASI FORM SOP (CLIENT-SIDE)
+// ==========================================
+function validateSOPForm() {
+    let errors = [];
+    let focusTarget = null;
+
+    if (!$('#form_sop_date').val()) {
+        errors.push('SOP Date wajib diisi.');
+        focusTarget = focusTarget || '#form_sop_date';
+    }
+
+    if (!$('#form_target_date').val()) {
+        errors.push('Target Date wajib diisi.');
+        focusTarget = focusTarget || '#form_target_date';
+    }
+
+    if (!$('#form_order_no').val()) {
+        errors.push('Sales Order No. wajib dipilih (klik tombol Select).');
+        focusTarget = focusTarget || '#btnBrowseSO';
+    }
+
+    // Validasi minimal ada 1 item BOM
+    let itemRows = $('#formItemGrid tbody input[name^="items["][name$="[inv_id]"]');
+    if (itemRows.length === 0) {
+        errors.push('Pilih minimal 1 item Sales Order untuk dibuat SOP.');
+        focusTarget = focusTarget || '#btnBrowseSO';
+    }
+
+    // Validasi kuantitas item (tidak boleh 0 / kosong)
+    let invalidQty = false;
+    $('#formItemGrid tbody input[name^="items["][name$="[qty]"]').each(function() {
+        let val = parseFloat($(this).val());
+        if (!isFinite(val) || val <= 0) {
+            invalidQty = true;
+            return false;
+        }
+    });
+
+    if (invalidQty) {
+        errors.push('Qty pada Bill of Materials harus lebih besar dari 0.');
+        focusTarget = focusTarget || '#formItemGrid tbody input[name^="items["][name$="[qty]"]"]:first';
+    }
+
+    return { valid: errors.length === 0, errors: errors, focusTarget: focusTarget };
+}
+
+// ==========================================
+// TAMPILKAN NOTIFIKASI VALIDASI
+// ==========================================
+function showValidationError(errors) {
+    let html = '<div class="text-start">';
+    html += '<div class="fw-bold mb-2"><i class="bi bi-exclamation-triangle-fill text-warning"></i> Data belum lengkap:</div>';
+    html += '<ul class="mb-0 ps-3">';
+    errors.forEach(function(err) {
+        html += '<li>' + escapeHtmlJS(err) + '</li>';
+    });
+    html += '</ul>';
+    html += '<div class="mt-2 text-muted" style="font-size:11px;">Silakan lengkapi data di atas. Input Anda tidak akan hilang.</div>';
+    html += '</div>';
+
+    let notifId = 'sopValidationNotif';
+    $('#' + notifId).remove();
+
+    let notif = $(
+        '<div id="' + notifId + '" class="alert alert-warning shadow-lg border-warning" ' +
+        'style="position:fixed; top:20px; left:50%; transform:translateX(-50%); ' +
+        'z-index:99999; max-width:600px; width:90%; border-radius:6px;">' +
+        '<div class="d-flex justify-content-between align-items-start">' +
+        '<div class="flex-grow-1">' + html + '</div>' +
+        '<button type="button" class="btn-close ms-2" onclick="$(this).closest(\'.alert\').remove()"></button>' +
+        '</div></div>'
+    );
+
+    $('body').append(notif);
+
+    setTimeout(function() {
+        notif.fadeOut(400, function() { $(this).remove(); });
+    }, 8000);
+}
 
 // ==========================================
 // FORMAT EXPAND ROW
@@ -2078,12 +2225,6 @@ function formatNumber2(value) {
         return '';
     }
 
-    /*
-     * Potong menjadi 2 angka desimal tanpa pembulatan.
-     * Contoh:
-     * 6.2456 menjadi 6.24
-     * 6.2499 menjadi 6.24
-     */
     let truncated;
 
     if (num >= 0) {
@@ -2453,10 +2594,6 @@ function fillRollAutoFieldsFromItem(item) {
         $('#spec_rol').val(getDefaultSpecRolText());
     }
 
-    /*
-     * Setelah BOM dipilih, langsung isi Gramatur Asli
-     * dan Tebal Asli berdasarkan item pertama yang dipilih.
-     */
     refreshRollCalculatedFields();
 }
 
@@ -2531,7 +2668,6 @@ function renderDetailRowForCreate(item, index) {
                    placeholder="Machine/Color codes...">
         </td>
 
-        <!-- Hidden fields untuk specifications -->
         <input type="hidden" name="items[${index}][berat_jenis_potong]" value="${escapeHtmlJS(autoBeratJenisPotong)}">
         <input type="hidden" name="items[${index}][spec_potong]" value="${escapeHtmlJS(autoSpecPotong)}">
         <input type="hidden" name="items[${index}][ukuran_potong]" value="${escapeHtmlJS(autoUkuranPotong)}">

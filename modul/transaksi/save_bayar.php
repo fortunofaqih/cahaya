@@ -6,6 +6,12 @@
  */
 
 // modul/transaksi/save_bayar.php
+//
+// CUT-OFF PIUTANG:
+// - Cutoff resmi = 31-Jul-2026.
+// - Invoice dengan invoice_date <= 31-Jul-2026 tidak boleh disimpan sebagai
+//   item INVOICE baru karena nilainya sudah menjadi Opening Balance.
+// - Validasi dilakukan lagi di server agar tidak bisa dilewati lewat POST manual.
 // RULE CP-MCP:
 // - Invoice / Shipping yang mengandung string CP-MCP ditolak sebagai transaksi pembayaran.
 // - Retur customer tetap boleh dipakai standalone berdasarkan return_id/customer,
@@ -433,6 +439,24 @@ function getShippingPaymentData(
     }
 
     /*
+     * CUT-OFF 31-Jul-2026 - validasi server-side.
+     * Invoice Juli dan sebelumnya sudah masuk Opening Balance dan tidak boleh
+     * dibuat sebagai transaksi INVOICE baru.
+     */
+    $invoiceDateCutoff = (string)($row['invoice_date'] ?? '');
+    if (
+        $invoiceDateCutoff === '' ||
+        $invoiceDateCutoff === '0000-00-00' ||
+        $invoiceDateCutoff <= '2026-07-31'
+    ) {
+        throw new Exception(
+            'Invoice ' . $invoiceNo .
+            ' bertanggal sebelum / pada cutoff 31-Jul-2026 dan sudah termasuk Saldo Awal. ' .
+            'Gunakan Saldo Awal (Opening Balance), bukan Invoice Juli.'
+        );
+    }
+
+    /*
      * Pembayaran dan retur yang SUDAH dipakai.
      * Untuk single-shipping, hitung di level invoice agar
      * transaksi legacy tanpa shipping_no tetap terbaca.
@@ -785,7 +809,7 @@ function validateSelectedReturnByCustomer(
         throw new Exception('No. Retur / nominal Retur yang dipakai tidak valid.');
     }
 
-    $stmt = mysqli_prepare($conn, "SELECT return_id, return_amount, grand_total, invoice_no, shipping_no, customer_id,
+    $stmt = mysqli_prepare($conn, "SELECT return_id, return_date, return_amount, grand_total, invoice_no, shipping_no, customer_id,
         CASE WHEN UPPER(COALESCE(invoice_no,'')) LIKE '%CP-MCP%' OR UPPER(COALESCE(shipping_no,'')) LIKE '%CP-MCP%'
              THEN COALESCE(grand_total,0) ELSE COALESCE(return_amount,0) END AS effective_return_amount
         FROM head_retur_invoice
@@ -796,6 +820,22 @@ function validateSelectedReturnByCustomer(
     $row=mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
     mysqli_stmt_close($stmt);
     if(!$row) throw new Exception('No. Retur '.$returnId.' tidak ditemukan, cancelled, atau bukan milik customer pembayaran.');
+
+    /*
+     * CUT-OFF RETUR 31-Jul-2026:
+     * Retur sampai 31-Jul-2026 sudah masuk snapshot Opening Balance,
+     * sehingga tidak boleh dipakai lagi sebagai Retur baru.
+     */
+    $returnDate = (string)($row['return_date'] ?? '');
+    if (
+        $returnDate === '' ||
+        $returnDate === '0000-00-00' ||
+        $returnDate <= '2026-07-31'
+    ) {
+        throw new Exception(
+            'Retur '.$returnId.' bertanggal sebelum / pada cutoff 31-Jul-2026 dan sudah termasuk Saldo Awal.'
+        );
+    }
 
     $face=roundPaymentMoney((float)($row['effective_return_amount']??0));
     if($face<=0.0001) throw new Exception('Nilai No. Retur '.$returnId.' tidak valid atau Rp 0,00.');
@@ -1147,9 +1187,12 @@ foreach (
             parseNumber($item['pay_now'] ?? 0)
         );
 
+        $openingEffectPiutang = 1;
+
         $selectedPosted[$key] = [
             'source' => 'OPENING',
             'opening_id' => $openingId,
+            'opening_effect_piutang' => $openingEffectPiutang,
             'invoice_no' => '',
             'shipping_no' => '',
             'pay_now' => $payNow
@@ -1268,6 +1311,7 @@ try {
     $validItems = [];
     $selectedTotal = 0.0;
     $requestedPaymentTotal = 0.0;
+    $absoluteRequestedPaymentTotal = 0.0;
 
     /*
      * Customer selalu diambil ulang dari master.
@@ -1361,10 +1405,12 @@ try {
             }
 
             $requestedPaymentTotal += $payNow;
+            $absoluteRequestedPaymentTotal += abs($payNow);
 
             $validItems[] = [
                 'source' => 'OPENING',
                 'opening_id' => (int)$opening['opening_id'],
+                'opening_effect_piutang' => (int)($posted['opening_effect_piutang'] ?? 0),
                 'opening_sign' => (int)($opening['opening_sign'] ?? 1),
                 'invoice_no' => '',
                 'invoice_date' => (string)$opening['opening_date'],
@@ -1429,6 +1475,7 @@ try {
 
         $selectedTotal += $sisaShipping;
         $requestedPaymentTotal += $payNow;
+        $absoluteRequestedPaymentTotal += abs($payNow);
 
         $invoiceDateValue =
             !empty($shipping['invoice_date']) &&
@@ -1486,12 +1533,6 @@ try {
         }
     }
 
-    if ($hasNegativeOpening && !empty($selectedReturnPosted)) {
-        throw new Exception(
-            'Saldo Awal (-) / Kredit tidak boleh digabung dengan Retur Customer.'
-        );
-    }
-
     if ($hasNegativeOpening && $nominalTitip > 0.0001) {
         throw new Exception(
             'Saldo Awal (-) / Kredit tidak boleh diselesaikan menggunakan Titip Uang.'
@@ -1509,6 +1550,16 @@ try {
     $isNegativeOpeningStandalone =
         $hasNegativeOpening &&
         !$hasPositiveDebtItem;
+
+    /*
+     * Netting item positif dengan Saldo Awal (-) adalah transaksi valid.
+     * requestedPaymentTotal dapat menjadi Rp 0 karena nilai positif dan
+     * negatif saling menutup, tetapi user tetap benar-benar mengisi settlement.
+     */
+    $isOpeningCreditNetting =
+        $hasNegativeOpening &&
+        $hasPositiveDebtItem &&
+        $absoluteRequestedPaymentTotal > 0.01;
 
     /*
     |--------------------------------------------------------------------------
@@ -1532,6 +1583,7 @@ try {
 
     $selectedTotal = roundPaymentMoney($selectedTotal);
     $requestedPaymentTotal = roundPaymentMoney($requestedPaymentTotal);
+    $absoluteRequestedPaymentTotal = roundPaymentMoney($absoluteRequestedPaymentTotal);
 
     /*
      * Kredit Saldo Awal (-) tidak boleh dipakai melebihi nilai piutang
@@ -1577,7 +1629,7 @@ try {
      */
     $returnAppliedToPayment = min(
         $selectedReturnAmount,
-        $requestedPaymentTotal
+        max($requestedPaymentTotal, 0)
     );
 
     $requiredCashTitip = max(
@@ -1616,7 +1668,8 @@ try {
 
     if (
         !$isNegativeOpeningStandalone &&
-        $requestedPaymentTotal <= 0.0001 &&
+        !$isOpeningCreditNetting &&
+        $absoluteRequestedPaymentTotal <= 0.0001 &&
         $netPayable > 0.0001 &&
         empty($validatedReturns)
     ) {
@@ -1632,6 +1685,7 @@ try {
      */
     if (
         !$isNegativeOpeningStandalone &&
+        !$isOpeningCreditNetting &&
         $netPayable <= 0.0001 &&
         empty($validatedReturns)
     ) {
@@ -1823,6 +1877,7 @@ try {
                 shipping_no,
                 opening_id,
                 payment_source,
+                opening_effect_piutang,
                 return_id,
                 invoice_date,
                 invoice_amount,
@@ -1835,7 +1890,7 @@ try {
                 date_created
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?,
                 NOW()
@@ -2005,14 +2060,20 @@ try {
                 ? 'OPENING'
                 : 'INVOICE';
 
+        $detailOpeningEffectPiutang =
+            ($item['source'] ?? 'INVOICE') === 'OPENING'
+                ? (int)($item['opening_effect_piutang'] ?? 0)
+                : null;
+
         mysqli_stmt_bind_param(
             $stmtDetail,
-            'sssisssdddddss',
+            'sssisissdddddss',
             $bayarNo,
             $item['invoice_no'],
             $item['shipping_no'],
             $detailOpeningId,
             $detailPaymentSource,
+            $detailOpeningEffectPiutang,
             $detailReturnId,
             $item['invoice_date'],
             $item['shipping_amount'],
@@ -2053,6 +2114,7 @@ try {
         $blankInvoiceDate = null;
         $blankOpeningId = null;
         $returnPaymentSource = 'RETURN';
+        $blankOpeningEffectPiutang = null;
         $detailReturnId = (string)$retUse['return_id'];
         $returnFaceAmount = roundPaymentMoney((float)$retUse['face_amount']);
         $returnPayAmount = -1 * roundPaymentMoney((float)$retUse['use_amount']);
@@ -2062,12 +2124,13 @@ try {
 
         mysqli_stmt_bind_param(
             $stmtDetail,
-            'sssisssdddddss',
+            'sssisissdddddss',
             $bayarNo,
             $blankInvoiceNo,
             $blankShippingNo,
             $blankOpeningId,
             $returnPaymentSource,
+            $blankOpeningEffectPiutang,
             $detailReturnId,
             $blankInvoiceDate,
             $returnFaceAmount,

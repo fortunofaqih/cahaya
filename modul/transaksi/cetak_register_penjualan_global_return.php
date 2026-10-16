@@ -1,677 +1,1380 @@
 <?php
+
 // modul/transaksi/register_penjualan_global_return.php
+
+
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
+
+
 if (!isset($_SESSION['username'])) {
+
     echo "<script>window.location.href='../../login.php';</script>";
+
     exit;
+
 }
+
+
 
 include __DIR__ . '/../../koneksi.php';
 
+
+
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
 mysqli_set_charset($conn, 'utf8mb4');
+
+
 
 function h($v){ return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8'); }
 
+
+
 function parseDateR($v,$f){
+
     $v = trim((string)$v);
+
     if ($v === '') return $f;
 
+
+
     foreach (['d-M-Y','Y-m-d','d-m-Y','d/m/Y'] as $fmt) {
+
         $d = DateTime::createFromFormat($fmt,$v);
+
         if ($d instanceof DateTime) return $d->format('Y-m-d');
+
     }
 
+
+
     return $f;
+
 }
+
+
 
 function fmtDateR($d){
+
     if (empty($d) || $d === '0000-00-00') return '';
+
     $t = strtotime($d);
+
     return $t ? date('d-M-Y',$t) : '';
+
 }
+
+
 
 function fmtMoneyR($v){
+
     // Buang pecahan desimal tanpa pembulatan.
+
     // Contoh: 400.412.886,50 -> 400.412.886,00
+
     $v = (float)$v;
+
     $whole = $v < 0 ? ceil($v) : floor($v);
+
     return number_format($whole, 2, ',', '.');
+
 }
+
+
 
 function fmtQtyR($v){
+
     $s = number_format((float)$v,2,',','.');
+
     return rtrim(rtrim($s,'0'),',');
+
 }
+
+
 
 function emptyCatR(){
+
     return ['qty'=>0.0,'qty_kg'=>0.0,'rp'=>0.0];
+
 }
+
+
 
 function emptyGrandR(){
+
     return [
+
         'total'=>0.0,
+
         'penjualan'=>0.0,
+
         'PP'=>emptyCatR(),
+
         'KERTAS'=>emptyCatR(),
+
         'PE'=>emptyCatR(),
+
         'PE WARNA'=>emptyCatR(),
+
         'LAIN LAIN'=>emptyCatR()
+
     ];
+
 }
+
+
 
 $today = date('Y-m-d');
+
 $startDate = parseDateR($_GET['start_date'] ?? '', date('Y-m-01'));
+
 $endDate   = parseDateR($_GET['end_date'] ?? '', $today);
 
+
+
 if (strtotime($startDate) > strtotime($endDate)) {
+
     [$startDate,$endDate] = [$endDate,$startDate];
+
 }
 
+
+
 /*
+
  * Sorting cetak mengikuti Return ID.
+
  */
+
 $sort = 'return_id';
+
 $dir  = strtolower(trim((string)($_GET['dir'] ?? 'desc')));
+
+
 
 $allowedDir = ['asc','desc'];
 
+
+
 if (!in_array($dir,$allowedDir,true)) $dir = 'desc';
+
+
 
 $orderDirection = strtoupper($dir);
 
+
+
 {
 
+
+
     $orderColumn = "
+
         CAST(RIGHT(TRIM(hri.return_id), 2) AS UNSIGNED) {$orderDirection},
 
+
+
         CASE SUBSTRING(UPPER(TRIM(hri.return_id)), 4, 3)
+
             WHEN 'JAN' THEN 1
+
             WHEN 'FEB' THEN 2
+
             WHEN 'MAR' THEN 3
+
             WHEN 'APR' THEN 4
+
             WHEN 'MEI' THEN 5
+
             WHEN 'JUN' THEN 6
+
             WHEN 'JUL' THEN 7
+
             WHEN 'AGT' THEN 8
+
             WHEN 'SEP' THEN 9
+
             WHEN 'OKT' THEN 10
+
             WHEN 'NOV' THEN 11
+
             WHEN 'DES' THEN 12
+
             ELSE 0
+
         END {$orderDirection},
 
+
+
         CAST(
+
             SUBSTRING(TRIM(hri.return_id), 2, 2)
+
             AS UNSIGNED
+
         ) {$orderDirection}
+
     ";
 
+
+
 }
+
+
 
 function sortUrlR($column,$currentSort,$currentDir,$startDate,$endDate){
+
     $nextDir = ($currentSort === $column && $currentDir === 'asc') ? 'desc' : 'asc';
 
+
+
     return 'index.php?' . http_build_query([
+
         'page' => 'register_penjualan_global_return',
+
         'start_date' => fmtDateR($startDate),
+
         'end_date' => fmtDateR($endDate),
+
         'sort' => $column,
+
         'dir' => $nextDir,
+
     ]);
+
 }
+
+
 
 function sortIconR($column,$currentSort,$currentDir){
+
     if ($currentSort !== $column) return '↕';
+
     return $currentDir === 'asc' ? '▲' : '▼';
+
 }
 
+
+
 /*
+
 |--------------------------------------------------------------------------
+
 | DATA RETUR
+
 |--------------------------------------------------------------------------
+
 | - Sumber header  : head_retur_invoice
+
 | - Sumber detail  : detail_retur_invoice
+
 | - Cancelled tidak dihitung.
+
 | - Kategori dibaca dari inventory_name, mengikuti Register Penjualan Global.
+
 | - CP-MCP: nilai Penjualan Retur memakai grand_total.
+
 | - Retur normal: nilai Penjualan Retur memakai return_amount.
+
 |--------------------------------------------------------------------------
+
 */
+
 /*
+
 |--------------------------------------------------------------------------
+
 | DATA RETUR - NILAI KEUANGAN
+
 |--------------------------------------------------------------------------
+
 | Nilai resmi return:
+
 | - CP-MCP     : head_retur_invoice.grand_total
+
 | - Retur normal: head_retur_invoice.return_amount
+
 |
+
 | Detail return tetap dipakai untuk kategori dan quantity.
+
 | Rp kategori dialokasikan dari nilai resmi return di header menggunakan
+
 | return_subtotal sebagai dasar pembobotan. Dengan demikian jumlah seluruh
+
 | Rp kategori per Return ID selalu sama dengan nilai return resmi.
+
 |--------------------------------------------------------------------------
+
 */
+
 $sql = "
+
 SELECT
+
     hri.return_id,
+
     hri.return_date,
+
     hri.invoice_no,
+
     hri.shipping_no,
+
     hri.customer_name,
 
-    COALESCE(hri.grand_total,0) AS total_return,
+
 
     CASE
         WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
           OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
             THEN COALESCE(hri.grand_total,0)
         ELSE COALESCE(hri.return_amount,0)
+    END AS total_return,
+
+
+
+    CASE
+
+        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+
+          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+
+            THEN COALESCE(hri.grand_total,0)
+
+        ELSE COALESCE(hri.return_amount,0)
+
     END AS penjualan_return,
+
+
 
     dri.id AS return_detail_id,
 
+
+
     CASE
+
+        WHEN UPPER(COALESCE(hri.invoice_no,'')) LIKE '%CP-MCP%'
+
+          OR UPPER(COALESCE(hri.shipping_no,'')) LIKE '%CP-MCP%'
+
+            THEN COALESCE(hri.grand_total,0)
+
+        ELSE COALESCE(hri.return_amount,0)
+
+    END AS penjualan_return,
+
+
+
+    dri.id AS return_detail_id,
+
+    -- Prioritaskan kategori manual untuk return yang sudah memiliki category.
+    -- Category lain tetap masuk kolom LAIN LAIN tanpa mengubah layout.
+
+
+
+
+    CASE
+
+        WHEN UPPER(TRIM(COALESCE(dri.category,''))) IN ('PP','KERTAS','PE','PE WARNA') THEN UPPER(TRIM(dri.category))
+        WHEN TRIM(COALESCE(dri.category,'')) <> '' THEN 'LAIN LAIN'
         WHEN UPPER(
+
             COALESCE(
+
                 NULLIF(TRIM(dri.inventory_name),''),
+
                 NULLIF(TRIM(mi.inventory_name),''),
+
                 ''
+
             )
+
         ) REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
+
         AND UPPER(
+
             COALESCE(
+
                 NULLIF(TRIM(dri.inventory_name),''),
+
                 NULLIF(TRIM(mi.inventory_name),''),
+
                 ''
+
             )
+
         ) LIKE '%WARNA%'
+
             THEN 'PE WARNA'
 
+
+
         WHEN UPPER(
+
             COALESCE(
+
                 NULLIF(TRIM(dri.inventory_name),''),
+
                 NULLIF(TRIM(mi.inventory_name),''),
+
                 ''
+
             )
+
         ) LIKE '%KERTAS%'
+
             THEN 'KERTAS'
 
+
+
         WHEN UPPER(
+
             COALESCE(
+
                 NULLIF(TRIM(dri.inventory_name),''),
+
                 NULLIF(TRIM(mi.inventory_name),''),
+
                 ''
+
             )
+
         ) REGEXP '(^|[^A-Z])PP([^A-Z]|$)'
+
             THEN 'PP'
 
+
+
         WHEN UPPER(
+
             COALESCE(
+
                 NULLIF(TRIM(dri.inventory_name),''),
+
                 NULLIF(TRIM(mi.inventory_name),''),
+
                 ''
+
             )
+
         ) REGEXP '(^|[^A-Z])PE([^A-Z]|$)'
+
             THEN 'PE'
 
+
+
         ELSE 'LAIN LAIN'
+
     END AS category_group,
 
+
+
     CASE
+
         WHEN UPPER(TRIM(COALESCE(dri.uom_pack,''))) <> ''
+
          AND UPPER(TRIM(COALESCE(dri.uom_pack,''))) <> 'KG'
+
             THEN COALESCE(dri.return_quantity_pack,0)
+
+
 
         WHEN UPPER(TRIM(COALESCE(dri.uom_detail,''))) <> ''
+
          AND UPPER(TRIM(COALESCE(dri.uom_detail,''))) <> 'KG'
+
             THEN COALESCE(dri.return_quantity_detail,0)
+
+
 
         ELSE COALESCE(dri.return_quantity,0)
+
     END AS category_qty,
 
+
+
     CASE
+
         WHEN UPPER(TRIM(COALESCE(dri.uom,''))) = 'KG'
+
             THEN COALESCE(dri.return_quantity,0)
 
+
+
         WHEN UPPER(TRIM(COALESCE(dri.uom_pack,''))) = 'KG'
+
             THEN COALESCE(dri.return_quantity_pack,0)
 
+
+
         WHEN UPPER(TRIM(COALESCE(dri.uom_detail,''))) = 'KG'
+
             THEN COALESCE(dri.return_quantity_detail,0)
 
+
+
         ELSE 0
+
     END AS category_qty_kg,
+
+
 
     ABS(COALESCE(dri.return_subtotal,0)) AS allocation_basis
 
+
+
 FROM head_retur_invoice hri
+
 INNER JOIN detail_retur_invoice dri
+
     ON TRIM(dri.return_id) = TRIM(hri.return_id)
+
 LEFT JOIN m_inventory mi
+
     ON TRIM(mi.inventory_id) = TRIM(dri.inventory_id)
 
+
+
 WHERE hri.return_date BETWEEN ? AND ?
+
   AND LOWER(COALESCE(hri.status,'Open')) <> 'cancelled'
 
+
+
 ORDER BY
+
     {$orderColumn},
+
     hri.return_date DESC,
+
     hri.return_id DESC,
+
     dri.id ASC
+
 ";
+
+
 
 $stmt = mysqli_prepare($conn,$sql);
 
+
+
 if (!$stmt) {
+
     die('SQL Register Penjualan Global Return Error: ' . h(mysqli_error($conn)));
+
 }
 
+
+
 mysqli_stmt_bind_param($stmt,'ss',$startDate,$endDate);
+
 mysqli_stmt_execute($stmt);
+
 $res = mysqli_stmt_get_result($stmt);
+
+
 
 $cats = ['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
 
+
+
 $rows = [];
+
 $grand = emptyGrandR();
+
 $returnGroups = [];
 
+
+
 while ($item = mysqli_fetch_assoc($res)) {
+
     $key = (string)$item['return_id'];
 
+
+
     if (!isset($returnGroups[$key])) {
+
         $returnGroups[$key] = [
+
             'return_id' => $item['return_id'],
+
             'return_date' => $item['return_date'],
+
             'customer_name' => $item['customer_name'],
+
             'total' => (float)$item['total_return'],
+
             'penjualan' => (float)$item['penjualan_return'],
+
             'items' => []
+
         ];
+
     }
+
+
 
     $g = $item['category_group'];
+
     if (!in_array($g,$cats,true)) {
+
         $g = 'LAIN LAIN';
+
     }
 
+
+
     $returnGroups[$key]['items'][] = [
+
         'category' => $g,
+
         'qty' => (float)$item['category_qty'],
+
         'qty_kg' => (float)$item['category_qty_kg'],
+
         'basis' => (float)$item['allocation_basis']
+
     ];
+
 }
+
+
 
 mysqli_stmt_close($stmt);
 
+
+
 foreach ($returnGroups as $key => $ret) {
+
     $rows[$key] = [
+
         'return_id' => $ret['return_id'],
+
         'return_date' => $ret['return_date'],
+
         'customer_name' => $ret['customer_name'],
+
         'total' => $ret['total'],
+
         'penjualan' => $ret['penjualan'],
+
         'PP'=>emptyCatR(),
+
         'KERTAS'=>emptyCatR(),
+
         'PE'=>emptyCatR(),
+
         'PE WARNA'=>emptyCatR(),
+
         'LAIN LAIN'=>emptyCatR()
+
     ];
 
+
+
     $grand['total'] += $ret['total'];
+
     $grand['penjualan'] += $ret['penjualan'];
 
+
+
     $basisByCat = [];
+
     $totalBasis = 0.0;
 
+
+
     foreach ($ret['items'] as $it) {
+
         $g = $it['category'];
 
+
+
         $rows[$key][$g]['qty'] += $it['qty'];
+
         $rows[$key][$g]['qty_kg'] += $it['qty_kg'];
 
+
+
         if (!isset($basisByCat[$g])) {
+
             $basisByCat[$g] = 0.0;
+
         }
 
+
+
         $basisByCat[$g] += abs($it['basis']);
+
         $totalBasis += abs($it['basis']);
+
     }
+
+
 
     $catsInReturn = array_keys($basisByCat);
 
+
+
     if (count($catsInReturn) === 1) {
+
         // Satu kategori: seluruh nilai return resmi masuk ke kategori tersebut.
+
         $rows[$key][$catsInReturn[0]]['rp'] += $ret['penjualan'];
+
+
 
     } elseif ($totalBasis > 0) {
+
         // Multi kategori: alokasi proporsional berdasarkan return_subtotal detail.
+
         $allocated = 0.0;
+
         $last = count($catsInReturn) - 1;
 
+
+
         foreach ($catsInReturn as $i => $g) {
+
             if ($i === $last) {
+
                 $amount = $ret['penjualan'] - $allocated;
+
             } else {
+
                 $amount = $ret['penjualan'] * ($basisByCat[$g] / $totalBasis);
+
                 $allocated += $amount;
+
             }
 
+
+
             $rows[$key][$g]['rp'] += $amount;
+
         }
 
+
+
     } elseif (!empty($catsInReturn)) {
+
         // Safety fallback agar nilai return header tidak hilang.
+
         $rows[$key][$catsInReturn[0]]['rp'] += $ret['penjualan'];
+
     }
+
+
 
     foreach ($cats as $g) {
+
         $grand[$g]['qty'] += $rows[$key][$g]['qty'];
+
         $grand[$g]['qty_kg'] += $rows[$key][$g]['qty_kg'];
+
         $grand[$g]['rp'] += $rows[$key][$g]['rp'];
+
     }
+
 }
+
 ?>
 
+
+
 <!DOCTYPE html>
+
 <html lang="id">
+
 <head>
+
 <meta charset="UTF-8">
+
 <title>Register Penjualan Global Return</title>
 
+
+
 <style>
-@page {
-    size: A4 landscape;
-    margin: 7mm 5mm;
-}
+
+@page{size:14.875in 11in;margin:6mm}
+
+
 
 * {
+
     box-sizing: border-box;
+
+    margin: 2mm;
+
+    padding: 2mm;
+
 }
+
+
 
 body {
+
     margin: 0;
+
     font-family: Arial, Helvetica, sans-serif;
+
     color: #000;
+
     background: #f3f5f7;
+
     font-size: 11px;
+
     padding: 18px 28px;
+
 }
+
+
 
 .print-actions {
+
     margin-bottom: 8px;
+
     text-align: right;
+
 }
+
+
 
 .print-btn {
+
     border: 0;
+
     border-radius: 3px;
+
     background: #8b0000;
+
     color: #fff;
+
     padding: 6px 12px;
+
     font-size: 11px;
+
     font-weight: bold;
+
     cursor: pointer;
+
 }
+
+
 
 .print-header {
+
     text-align: center;
+
     margin-bottom: 7px;
+
 }
+
+
 
 .print-header h2 {
+
     margin: 0 0 5px;
+
     font-size: 20px;
+
     text-transform: uppercase;
+
 }
+
+
 
 .print-header .period {
+
     font-size: 12px;
+
     font-weight: bold;
+
 }
+
+
 
 .report-table {
+
     width: 100%;
+
     border-collapse: collapse;
+
     table-layout: fixed;
+
     font-size: 10.5px;
+
 }
+
+
 
 .report-table th,
+
 .report-table td {
+
     border: 0.5px solid #555;
+
     padding: 5px 4px;
+
     vertical-align: middle;
+
 }
+
+
 
 .report-table th {
+
     background: #ececec;
+
     font-weight: bold;
+
     text-align: center;
+
 }
+
+
 
 .report-table td {
+
     white-space: nowrap;
+
 }
+
+
 
 .return-col   { width: 105px; }
+
 .customer-col { width: 170px; }
+
 .total-col    { width: 90px; }
 
+
+
 .customer-cell {
+
     white-space: normal !important;
+
     overflow-wrap: anywhere;
+
     line-height: 1.1;
+
 }
+
+
 
 .qty-cell,
+
 .money-cell {
+
     text-align: right;
+
     font-variant-numeric: tabular-nums;
+
 }
+
+
 
 tfoot td {
+
     font-weight: bold;
+
     background: #f2f2f2;
+
 }
 
+
+
 .no-data {
+
     text-align: center;
+
     padding: 12px !important;
+
     font-size: 9px;
+
 }
+
+
+
 
 
 .print-card {
-    width: 98%;
-    max-width: 1850px;
+
+    width: 100%;
+
+    max-width: 1900px;
+
     margin: 0 auto 22px;
+
     padding: 20px 24px;
+
     background: #fff;
+
     border: 1px solid #d9dee5;
+
     border-radius: 6px;
+
     box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+
 }
+
+
+
 
 
 @media screen {
+
     .print-card {
+
         overflow-x: auto;
+
     }
 
+
+
     .report-table {
+
         min-width: 1650px;
+
     }
+
+
 
     .report-table th {
+
         font-size: 10.5px;
+
     }
 
+
+
     .report-table td {
+
         font-size: 10px;
+
     }
+
 }
 
+
+
 @media print {
+
     .print-actions {
+
         display: none !important;
+
     }
+
+
 
     .report-table {
+
         min-width: 0 !important;
+
         font-size: 6.6px !important;
+
     }
+
+
 
     .report-table th,
+
     .report-table td {
+
         padding: 2.2px 2px !important;
+
         font-size: 6.4px !important;
+
         line-height: 1.15 !important;
+
     }
+
+
 
     .print-header h2 {
+
         font-size: 14px !important;
+
     }
 
+
+
     .print-header .period {
+
         font-size: 9px !important;
+
     }
+
+
+
 
 
     .report-table th:nth-child(1),
+
     .report-table td:nth-child(1) {
+
         white-space: nowrap !important;
+
         font-size: 6.2px !important;
+
     }
+
+
 
     .return-col   { width: 62px !important; }
+
     .customer-col { width: 82px !important; }
+
     .total-col    { width: 46px !important; }
 
+
+
     thead {
+
         display: table-header-group;
+
     }
+
+
 
     tfoot {
+
         display: table-row-group;
+
     }
+
+
 
     tr {
+
         page-break-inside: avoid;
+
     }
+
+
 
     body {
+
         padding: 0 !important;
+
         background: #fff !important;
+
         -webkit-print-color-adjust: exact;
+
         print-color-adjust: exact;
+
     }
 
+
+
     .print-card {
+
         width: 100% !important;
+
         max-width: none !important;
+
         margin: 0 !important;
+
         padding: 0 !important;
+
         border: 0 !important;
+
         border-radius: 0 !important;
+
         box-shadow: none !important;
+
         background: #fff !important;
+
     }
+
 }
+
 </style>
+
 </head>
+
+
 
 <body>
 
+
+
 <div class="print-actions">
+
     <button type="button" class="print-btn" onclick="window.print()">
+
         Print
+
     </button>
+
 </div>
+
+
 
 <div class="print-card">
 
+
+
 <div class="print-header">
+
     <h2>Register Penjualan Global Return</h2>
 
+
+
     <div class="period">
+
         Periode <?=h(fmtDateR($startDate))?> s/d <?=h(fmtDateR($endDate))?>
+
     </div>
+
 </div>
+
+
 
 <table class="report-table">
+
     <thead>
+
         <tr>
+
             <th rowspan="2" class="return-col">RETURN ID</th>
+
             <th rowspan="2" class="customer-col">NAMA CUST.</th>
+
             <th rowspan="2" class="total-col">TOTAL</th>
+
             <th rowspan="2" class="total-col">PENJUALAN</th>
 
+
+
             <?php foreach ($cats as $cat): ?>
+
                 <th colspan="3"><?=h($cat)?></th>
+
             <?php endforeach; ?>
+
         </tr>
 
+
+
         <tr>
+
             <?php foreach ($cats as $cat): ?>
+
                 <th>Qty</th>
+
                 <th>Qty KG</th>
+
                 <th>Rp</th>
+
             <?php endforeach; ?>
+
         </tr>
+
     </thead>
 
+
+
     <tbody>
+
     <?php if (empty($rows)): ?>
+
         <tr>
+
             <td colspan="19" class="no-data">
+
                 Tidak ada data return penjualan pada periode ini.
+
             </td>
+
         </tr>
+
     <?php else: ?>
+
         <?php foreach ($rows as $row): ?>
+
             <tr>
+
                 <td><?=h($row['return_id'])?></td>
+
                 <td class="customer-cell"><?=h($row['customer_name'])?></td>
+
                 <td class="money-cell"><?=h(fmtMoneyR($row['total']))?></td>
+
                 <td class="money-cell"><?=h(fmtMoneyR($row['penjualan']))?></td>
 
+
+
                 <?php foreach ($cats as $cat): ?>
+
                     <td class="qty-cell"><?=h(fmtQtyR($row[$cat]['qty']))?></td>
+
                     <td class="qty-cell"><?=h(fmtQtyR($row[$cat]['qty_kg']))?></td>
+
                     <td class="money-cell"><?=h(fmtMoneyR($row[$cat]['rp']))?></td>
+
                 <?php endforeach; ?>
+
             </tr>
+
         <?php endforeach; ?>
+
     <?php endif; ?>
+
     </tbody>
 
+
+
     <tfoot>
+
         <tr>
+
             <td colspan="2" style="text-align:right">TOTAL RETURN</td>
+
             <td class="money-cell"><?=h(fmtMoneyR($grand['total']))?></td>
+
             <td class="money-cell"><?=h(fmtMoneyR($grand['penjualan']))?></td>
 
+
+
             <?php foreach ($cats as $cat): ?>
+
                 <td class="qty-cell"><?=h(fmtQtyR($grand[$cat]['qty']))?></td>
+
                 <td class="qty-cell"><?=h(fmtQtyR($grand[$cat]['qty_kg']))?></td>
+
                 <td class="money-cell"><?=h(fmtMoneyR($grand[$cat]['rp']))?></td>
+
             <?php endforeach; ?>
+
         </tr>
+
     </tfoot>
+
 </table>
+
+
 
 </div>
 
+
+
 <script>
+
 window.addEventListener('load', function () {
+
     window.print();
+
 });
+
 </script>
 
+
+
 </body>
+
 </html>

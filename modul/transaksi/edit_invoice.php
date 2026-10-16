@@ -59,11 +59,23 @@ function getShippingInvoiceSubtotal($conn, $shippingNo, $orderNo, $currentInvoic
             hs.order_no,
             hs.remarks_shipping,
             COALESCE(SUM(
-                COALESCE(ds.qty_pack_shipping, 0) *
                 CASE
-                    WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
-                    WHEN COALESCE(dso.quantity_pack, 0) > 0 THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
-                    ELSE 0
+                    WHEN UPPER(COALESCE(ds.inventory_name, '')) LIKE '%ONGKOS%'
+                     AND COALESCE(ds.qty_shipping, 0) = 0
+                     AND COALESCE(ds.qty_pack_shipping, 0) = 0
+                     AND COALESCE(ds.qty_detail_shipping, 0) = 0
+                        THEN CASE
+                            WHEN COALESCE(dso.price_unit, 0) > 0 THEN COALESCE(dso.price_unit, 0)
+                            WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+                            ELSE 0
+                        END
+                    ELSE
+                        COALESCE(ds.qty_pack_shipping, 0) *
+                        CASE
+                            WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+                            WHEN COALESCE(dso.quantity_pack, 0) > 0 THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                            ELSE 0
+                        END
                 END
             ), 0) AS invoice_subtotal
         FROM hed_shipping hs
@@ -123,11 +135,23 @@ function getInvoiceItemsByShipping($conn, $shippingNo) {
                 ELSE 0
             END AS invoice_price,
             (
-                COALESCE(ds.qty_pack_shipping, 0) *
                 CASE
-                    WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
-                    WHEN COALESCE(dso.quantity_pack, 0) > 0 THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
-                    ELSE 0
+                    WHEN UPPER(COALESCE(ds.inventory_name, '')) LIKE '%ONGKOS%'
+                     AND COALESCE(ds.qty_shipping, 0) = 0
+                     AND COALESCE(ds.qty_pack_shipping, 0) = 0
+                     AND COALESCE(ds.qty_detail_shipping, 0) = 0
+                        THEN CASE
+                            WHEN COALESCE(dso.price_unit, 0) > 0 THEN COALESCE(dso.price_unit, 0)
+                            WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+                            ELSE 0
+                        END
+                    ELSE
+                        COALESCE(ds.qty_pack_shipping, 0) *
+                        CASE
+                            WHEN COALESCE(dso.price, 0) > 0 THEN COALESCE(dso.price, 0)
+                            WHEN COALESCE(dso.quantity_pack, 0) > 0 THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                            ELSE 0
+                        END
                 END
             ) AS invoice_subtotal
         FROM det_shipping ds

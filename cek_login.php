@@ -12,9 +12,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
               LEFT JOIN sys_role r ON u.id_role = r.id_role 
               WHERE u.username = '$username'";
               
-    $result = mysqli_query($conn, $query);
+   $result = mysqli_query($conn, $query);
 
-    if (mysqli_num_rows($result) === 1) {
+// Cek apakah query gagal
+if (!$result) {
+    die("Query error: " . mysqli_error($conn));
+}
+
+if (mysqli_num_rows($result) === 1) {
         $d = mysqli_fetch_assoc($result);
 
         if ($d['is_active'] !== 'Checked') {

@@ -377,9 +377,14 @@ if ($resCustomer) {
                     Reset
                 </a>
 
-                <button type="submit" class="btn-vs btn-success">
+                <button type="submit" class="btn-vs btn-success" id="btnCetakAging">
                     <span class="app-icon"><?= appIcon('print') ?></span>
                     Cetak Laporan
+                </button>
+
+                <button type="button" class="btn-vs btn-success" id="btnExportAging">
+                    <span class="app-icon"><?= appIcon('report') ?></span>
+                    Export Excel
                 </button>
             </div>
         </form>
@@ -428,6 +433,29 @@ $(document).ready(function () {
 
     $('.filter-value-select').on('change', function () {
         $('#filter_value').val($(this).val() || '');
+    });
+
+    $('#btnExportAging').on('click', function () {
+        const reportType = $('input[name="report_type"]:checked').val();
+        const filterBy = $('#filter_by').val();
+
+        if (filterBy !== 'semua' && !$('#filter_value').val()) {
+            alert('Nilai filter wajib dipilih.');
+            return;
+        }
+
+        const params = new URLSearchParams();
+        params.set('bulan', $('#bulan').val() || '');
+        params.set('tahun', $('#tahun').val() || '');
+        params.set('filter_by', filterBy || 'semua');
+        params.set('filter_value', $('#filter_value').val() || '');
+        params.set('report_type', reportType || 'global');
+
+        const exportUrl = reportType === 'detail'
+            ? 'modul/transaksi/export_excel_aging_detail.php'
+            : 'modul/transaksi/export_excel_aging_global.php';
+
+        window.open(exportUrl + '?' + params.toString(), '_blank');
     });
 
     $('#formAging').on('submit', function (e) {

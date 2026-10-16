@@ -2,8 +2,7 @@
 // modul/transaksi/update_invoice.php
 // Update invoice terpisah dan konsisten dengan add_invoice.php.
 // Rule utama:
-// 1. Inventory mengandung "ONGKOS" => subtotal item = price.
-// 2. Inventory selain ONGKOS => subtotal = price × Qty Pack,
+// 1. Semua inventory termasuk yang mengandung "ONGKOS" => subtotal = price × Qty Pack,
 //    atau price × Qty jika Qty Pack tidak tersedia.
 // 3. Shipping yang sedang dimiliki invoice ini tetap boleh dipilih.
 // 4. Shipping yang sudah dipakai invoice lain tidak boleh digunakan.
@@ -286,10 +285,7 @@ function assertActiveCustomer(mysqli $conn, string $customerId): void
 /**
  * Mengambil subtotal satu shipping dengan rule yang sama seperti add_invoice:
  *
- * ONGKOS:
- * subtotal = price
- *
- * Barang biasa:
+ * Semua inventory termasuk ONGKOS:
  * subtotal = price × (qty_pack jika > 0, selain itu qty)
  */
 function calculateShippingInvoice(
@@ -388,13 +384,25 @@ function calculateShippingInvoice(
         $qty = (float)($item['qty_shipping'] ?? 0);
         $qtyPack = (float)($item['qty_pack_shipping'] ?? 0);
 
-        if (strpos($inventoryName, 'ONGKOS') !== false) {
-            $itemSubtotal = $price;
-        } else {
-            $effectiveQty = $qtyPack > 0 ? $qtyPack : $qty;
-            $itemSubtotal = $price * $effectiveQty;
+        /*
+         * Semua inventory, termasuk "ONGKOS", mengikuti nilai transaksi:
+         * subtotal = price × effectiveQty.
+         *
+         * Kasus contoh:
+         * price Rp23.000 × qty 124,5 = Rp2.863.500.
+         */
+        $effectiveQty = $qtyPack > 0 ? $qtyPack : $qty;
+
+        if ($effectiveQty <= 0) {
+            mysqli_stmt_close($stmtItems);
+            throw new RuntimeException(
+                "Qty Shipping/Qty Pack Shipping untuk inventory " .
+                (string)($item['inventory_id'] ?? '') .
+                " pada Shipping $shippingNo bernilai 0."
+            );
         }
 
+        $itemSubtotal = $price * $effectiveQty;
         $shippingSubtotal += $itemSubtotal;
         $itemCount++;
     }

@@ -138,13 +138,27 @@ function getItems($conn, $shippingNo) {
             END AS invoice_price,
 
             (
-                COALESCE(ds.qty_pack_shipping, 0) *
                 CASE
-                    WHEN COALESCE(dso.price, 0) > 0
-                        THEN COALESCE(dso.price, 0)
-                    WHEN COALESCE(dso.quantity_pack, 0) > 0
-                        THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
-                    ELSE 0
+                    WHEN UPPER(COALESCE(ds.inventory_name, '')) LIKE '%ONGKOS%'
+                     AND COALESCE(ds.qty_shipping, 0) = 0
+                     AND COALESCE(ds.qty_pack_shipping, 0) = 0
+                     AND COALESCE(ds.qty_detail_shipping, 0) = 0
+                        THEN CASE
+                            WHEN COALESCE(dso.price_unit, 0) > 0
+                                THEN COALESCE(dso.price_unit, 0)
+                            WHEN COALESCE(dso.price, 0) > 0
+                                THEN COALESCE(dso.price, 0)
+                            ELSE 0
+                        END
+                    ELSE
+                        COALESCE(ds.qty_pack_shipping, 0) *
+                        CASE
+                            WHEN COALESCE(dso.price, 0) > 0
+                                THEN COALESCE(dso.price, 0)
+                            WHEN COALESCE(dso.quantity_pack, 0) > 0
+                                THEN COALESCE(dso.subtotal, 0) / NULLIF(dso.quantity_pack, 0)
+                            ELSE 0
+                        END
                 END
             ) AS invoice_subtotal
 
