@@ -396,7 +396,7 @@ $maxRowSlots = 10;
 
         .customer-line-2 {
             left: 130mm;
-            top: 45mm;
+            top: 40mm;
             width: 80mm;
             font-size: 11pt;
         }
@@ -405,7 +405,7 @@ $maxRowSlots = 10;
          * customer-line-2 mulai pada left 130mm.
          * Order No ditempatkan 100mm (10cm) di sebelah kirinya:
          * 130mm - 100mm = 30mm.
-         * Posisi vertikal dibuat sama, yaitu top 45mm.
+         * Posisi vertikal dibuat sama, yaitu top 40mm.
          */
         .order-no-field {
             left: 10mm;
@@ -416,7 +416,7 @@ $maxRowSlots = 10;
 
         .customer-line-3 {
             left: 160mm;
-            top: 55mm;
+            top: 50mm;
             width: 80mm;
             font-size: 11pt;
         }
@@ -588,7 +588,7 @@ $maxRowSlots = 10;
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-    $startTop = 85;
+    $startTop = 80;
     $rowHeight = 5.0;
 
     $currentTop = $startTop;

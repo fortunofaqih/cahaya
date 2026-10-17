@@ -539,7 +539,7 @@ $maxRowSlots = 10;
 
         .date-field {
             left: 140mm;
-            top: 15mm;
+            top: 14mm;
             width: 70mm;
             font-size: 11pt;
         }
@@ -553,7 +553,7 @@ $maxRowSlots = 10;
 
         .customer-line-2 {
             left: 130mm;
-            top: 45mm;
+            top: 40mm;
             width: 80mm;
             font-size: 11pt;
         }
@@ -567,7 +567,7 @@ $maxRowSlots = 10;
 
         .customer-line-3 {
             left: 160mm;
-            top: 55mm;
+            top: 50mm;
             width: 80mm;
             font-size: 11pt;
         }
@@ -747,7 +747,7 @@ $maxRowSlots = 10;
     <div class="field truck-field"><?= e($truckNoText) ?></div>
 
     <?php
-    $startTop = 85;
+    $startTop = 80;
     $rowHeight = 5.0;
     $currentTop = $startTop;
     $usedSlots = 0;
