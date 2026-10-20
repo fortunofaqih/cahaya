@@ -639,9 +639,10 @@ $invoiceDateDisplay = formatDateDisplay($header['invoice_date'] ?? '');
 
 <script>
 function trimDecimal(value) {
-    return Number(value || 0)
-        .toFixed(4)
-        .replace(/\.?0+$/, '');
+    var n = Number(value || 0);
+    if (!isFinite(n)) return '0';
+    // Batasi ke 4 desimal, lalu hapus trailing zero tanpa regex agresif
+    return parseFloat(n.toFixed(4)).toString();
 }
 
 function formatMoney(value) {
@@ -674,25 +675,44 @@ function syncFromQty(row) {
     var originalPack = Number(row.dataset.originalPack || 0);
     var uomPack = String(row.dataset.uomPack || '').toUpperCase();
 
-    var qty = Math.max(
-        0,
-        Math.min(Number(qtyInput.value || 0), originalQty)
-    );
+    var qty = Math.max(0, Math.min(Number(qtyInput.value || 0), originalQty));
 
     var pack = 0;
-
     if (uomPack === 'KG') {
         pack = qty;
     } else if (originalQty > 0 && originalPack > 0) {
         pack = qty / (originalQty / originalPack);
     }
-
     if (originalPack > 0) {
         pack = Math.min(pack, originalPack);
     }
 
-    qtyInput.value = trimDecimal(qty);
+    // JANGAN timpa qtyInput — hanya update pack
     packInput.value = trimDecimal(pack);
+
+    calculateRow(row);
+}
+
+function syncFromPack(row) {
+    var qtyInput = row.querySelector('.return-qty');
+    var packInput = row.querySelector('.return-pack');
+
+    var originalQty = Number(row.dataset.originalQty || 0);
+    var originalPack = Number(row.dataset.originalPack || 0);
+    var uomPack = String(row.dataset.uomPack || '').toUpperCase();
+
+    var pack = Math.max(0, Math.min(Number(packInput.value || 0), originalPack));
+
+    var qty = 0;
+    if (uomPack === 'KG') {
+        qty = pack;
+    } else if (originalQty > 0 && originalPack > 0) {
+        qty = pack * (originalQty / originalPack);
+    }
+    qty = Math.min(qty, originalQty);
+
+    // JANGAN timpa packInput — hanya update qty
+    qtyInput.value = trimDecimal(qty);
 
     calculateRow(row);
 }
