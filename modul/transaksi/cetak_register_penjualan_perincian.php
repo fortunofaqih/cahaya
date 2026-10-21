@@ -225,6 +225,8 @@ SELECT
         WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,''))) <> ''
          AND UPPER(TRIM(COALESCE(ds.uom_detail_shipping,''))) <> 'KG'
             THEN COALESCE(ds.qty_detail_shipping,0)
+        WHEN UPPER(TRIM(COALESCE(ds.uom_shipping,''))) = 'KG'
+            THEN COALESCE(qic.qty_invoice, ds.qty_shipping, 0)
         ELSE COALESCE(ds.qty_shipping,0)
     END AS row_qty,
     CASE
@@ -258,6 +260,10 @@ INNER JOIN hed_shipping hs
     ON TRIM(hs.shipping_no) = TRIM(di.shipping_no)
 INNER JOIN det_shipping ds
     ON TRIM(ds.shipping_no) = TRIM(di.shipping_no)
+/* Koreksi Qty invoice hanya untuk Quantum yang bersatuan KG. */
+LEFT JOIN invoice_qty_current qic
+    ON qic.invoice_no = di.invoice_no
+   AND qic.shipping_detail_id = ds.id
 LEFT JOIN m_inventory mi
     ON TRIM(mi.inventory_id) = TRIM(ds.inventory_id)
 LEFT JOIN detail_sales_order dso

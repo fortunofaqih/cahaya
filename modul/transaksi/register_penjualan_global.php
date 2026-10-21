@@ -136,7 +136,8 @@ function sortIconR($column, $currentSort, $currentDir) {
  * Register Penjualan Global berbasis INVOICE:
  * - TOTAL       = det_invoice.total
  * - PENJUALAN   = det_invoice.subtotal
- * - Qty/Qty KG  = det_shipping (untuk detail barang)
+ * - Qty         = det_shipping (rule existing)
+ * - Qty KG      = invoice_qty_current.qty_invoice bila ada koreksi; jika tidak, det_shipping
  * - Rp kategori = dialokasikan dari det_invoice.subtotal
  *
  * Jika satu shipping hanya berisi satu kategori, seluruh subtotal invoice
@@ -171,11 +172,11 @@ SELECT
 
     CASE
         WHEN UPPER(TRIM(COALESCE(ds.uom_shipping,'')))='KG'
-            THEN COALESCE(ds.qty_shipping,0)
+            THEN COALESCE(qic.qty_invoice, ds.qty_shipping, 0)
         WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))='KG'
-            THEN COALESCE(ds.qty_pack_shipping,0)
+            THEN COALESCE(qic.qty_invoice, ds.qty_pack_shipping, 0)
         WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))='KG'
-            THEN COALESCE(ds.qty_detail_shipping,0)
+            THEN COALESCE(qic.qty_invoice, ds.qty_detail_shipping, 0)
         ELSE 0
     END AS category_qty_kg,
 
@@ -218,6 +219,10 @@ INNER JOIN hed_shipping hs
     ON TRIM(hs.shipping_no)=TRIM(di.shipping_no)
 INNER JOIN det_shipping ds
     ON TRIM(ds.shipping_no)=TRIM(di.shipping_no)
+/* Satu koreksi aktif per invoice + detail shipping; tidak menggandakan baris. */
+LEFT JOIN invoice_qty_current qic
+    ON qic.invoice_no = di.invoice_no
+   AND qic.shipping_detail_id = ds.id
 LEFT JOIN m_inventory mi
     ON TRIM(mi.inventory_id)=TRIM(ds.inventory_id)
 LEFT JOIN detail_sales_order dso

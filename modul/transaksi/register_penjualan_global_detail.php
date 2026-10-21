@@ -149,7 +149,8 @@ function sortIconR($column, $currentSort, $currentDir) {
  * Register Penjualan Global Detail berbasis INVOICE:
  * - TOTAL       = det_invoice.total
  * - PENJUALAN   = det_invoice.subtotal
- * - Qty/Qty KG  = det_shipping
+ * - Qty         = det_shipping
+ * - Qty KG      = invoice_qty_current jika dikoreksi, selain itu det_shipping
  * - Rp kategori = dialokasikan dari det_invoice.subtotal
  *
  * Jika satu shipping hanya memiliki satu kategori detail, seluruh subtotal
@@ -185,7 +186,7 @@ SELECT
 
     CASE
         WHEN UPPER(TRIM(COALESCE(ds.uom_shipping,'')))='KG'
-            THEN COALESCE(ds.qty_shipping,0)
+            THEN COALESCE(qic.qty_invoice, ds.qty_shipping, 0)
         WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,'')))='KG'
             THEN COALESCE(ds.qty_pack_shipping,0)
         WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,'')))='KG'
@@ -228,6 +229,10 @@ INNER JOIN hed_shipping hs
     ON TRIM(hs.shipping_no)=TRIM(di.shipping_no)
 INNER JOIN det_shipping ds
     ON TRIM(ds.shipping_no)=TRIM(di.shipping_no)
+/* Koreksi Qty Invoice hanya untuk Qty KG; tidak memengaruhi Qty Pack atau nominal. */
+LEFT JOIN invoice_qty_current qic
+    ON qic.invoice_no = di.invoice_no
+   AND qic.shipping_detail_id = ds.id
 LEFT JOIN m_inventory mi
     ON TRIM(mi.inventory_id)=TRIM(ds.inventory_id)
 LEFT JOIN detail_sales_order dso
