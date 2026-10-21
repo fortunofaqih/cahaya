@@ -1230,7 +1230,7 @@ function buildRow(d) {
                 <input type="text" name="uom_detail[]" class="inv-uom-detail uom-detail-input" 
                        value="${escHtml(d.uom_detail||'')}" placeholder="Klik pilih" readonly
                        style="width:70px; text-align:center;">
-                <input type="number" step="0.0001" name="uom_detail_value[]" class="inv-uom-detail-value"
+                <input type="number" step="0.0001" name="quantity_detail[]" class="inv-uom-detail-value"
                        value="${d.uom_detail_value||''}" placeholder="Value"
                        style="width:75px; text-align:right;">
                 <input type="hidden" class="inv-uom-detail-factor" value="${d.uom_detail_factor||0}">
@@ -1842,8 +1842,8 @@ $(document).ready(function() {
                 quantity: d.quantity || '',
                 quantity_pack: d.quantity_pack || '',
                 uom_detail: d.uom_detail || '',
-                uom_detail_value: d.uom_detail_value || 0,
-                uom_detail_factor: d.uom_detail_factor || 0,
+                uom_detail_value: d.quantity_detail || 0,
+                uom_detail_factor: getUomFactor(d.inventory_id, d.uom_detail || '') || 0,
                 price_unit: d.price_unit || 0,
                 price: d.price || 0,
                 subtotal: d.subtotal || 0,

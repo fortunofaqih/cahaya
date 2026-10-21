@@ -397,6 +397,7 @@ try {
     $uoms            = $_POST['uom'] ?? [];
 
     $quantity_packs  = $_POST['quantity_pack'] ?? [];
+    $quantity_details = $_POST['quantity_detail'] ?? [];
 
     $uom_packs       = $_POST['uom_pack'] ?? [];
 
@@ -463,6 +464,7 @@ try {
 
 
         $qty_pack   = floatval($quantity_packs[$i] ?? 0);
+        $qty_detail = floatval($quantity_details[$i] ?? 0);
 
         $price_unit = parseRupiah($price_units[$i] ?? 0);
 
@@ -568,7 +570,7 @@ try {
 
             order_no, inventory_id, inventory_name, quantity, uom,
 
-            quantity_pack, uom_pack, uom_detail,
+            quantity_pack, quantity_detail, uom_pack, uom_detail,
 
             price_unit, price, subtotal, remarks
 
@@ -585,6 +587,7 @@ try {
             '" . mysqli_real_escape_string($conn, $uoms[$i] ?? '') . "',
 
             '$qty_pack',
+            '$qty_detail',
 
             '" . mysqli_real_escape_string($conn, $uom_packs[$i] ?? '') . "',
 
