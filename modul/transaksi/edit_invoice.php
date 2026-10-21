@@ -113,12 +113,14 @@ function getShippingInvoiceSubtotal($conn, $shippingNo, $orderNo, $currentInvoic
     ];
 }
 
-function getInvoiceItemsByShipping($conn, $shippingNo) {
+function getInvoiceItemsByShipping($conn, $shippingNo, $invoiceNo) {
     $sql = "
         SELECT
             hs.shipping_no,
             hs.order_no,
             COALESCE(mg.name, 'GUDANG BARANG JADI 1') AS warehouse_name,
+            ds.id AS shipping_detail_id,
+            COALESCE(qc.qty_invoice, ds.qty_shipping) AS qty_invoice,
             ds.inventory_id,
             ds.inventory_name,
             ds.qty_shipping,
@@ -160,12 +162,13 @@ function getInvoiceItemsByShipping($conn, $shippingNo) {
         LEFT JOIN detail_sales_order dso
                ON dso.order_no = hs.order_no
               AND dso.inventory_id = ds.inventory_id
+        LEFT JOIN invoice_qty_current qc ON qc.invoice_no = ? AND qc.shipping_detail_id = ds.id
         WHERE ds.shipping_no = ?
         ORDER BY ds.id ASC
     ";
     $stmt = mysqli_prepare($conn, $sql);
     if (!$stmt) return [];
-    mysqli_stmt_bind_param($stmt, 's', $shippingNo);
+    mysqli_stmt_bind_param($stmt, 'ss', $invoiceNo, $shippingNo);
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
     $items = [];
@@ -362,6 +365,8 @@ $customerMismatch =
 				transform: rotate(90deg);
 			}
 		}
+        .qty-invoice-input { min-width:105px; max-width:145px; margin-left:auto; }
+        .qty-invoice-input.qty-exceeds { border-color:#e0a800; background:#fff8dc; }
     </style>
 </head>
 <body>
@@ -462,15 +467,27 @@ $customerMismatch =
                                 <td><?= h($ship['warehouse_name']) ?></td>
                                 <td class="text-end fw-bold"><?= fmtMoney($ship['subtotal_calc']) ?></td>
                                 <td>
-                                    <?php $items = getInvoiceItemsByShipping($conn, $ship['shipping_no']); ?>
+                                    <?php $items = getInvoiceItemsByShipping($conn, $ship['shipping_no'], $invoiceNo); ?>
                                     <table class="table table-sm table-bordered item-table mb-0">
-                                        <thead><tr><th>Inventory ID</th><th>Inventory Name</th><th>Qty</th><th>UoM</th><th>Qty Pack</th><th>UoM Pack</th><th>Price</th><th>Subtotal</th></tr></thead>
+                                        <thead><tr><th>Inventory ID</th><th>Inventory Name</th><th>Qty Invoice (KG)</th><th>UoM</th><th>Qty Pack</th><th>UoM Pack</th><th>Price</th><th>Subtotal</th></tr></thead>
                                         <tbody>
                                         <?php foreach ($items as $it): ?>
                                             <tr>
                                                 <td><?= h($it['inventory_id']) ?></td>
                                                 <td class="item-name"><?= h($it['inventory_name']) ?></td>
-                                                <td class="text-end"><?= fmtQty($it['qty_shipping']) ?></td>
+                                                <td class="text-end">
+                                                    <?php if (strtoupper(trim((string)$it['uom_shipping'])) === 'KG'): ?>
+                                                        <input class="form-control form-control-sm text-end qty-invoice-input" type="text"
+                                                               name="qty_invoice[<?= (int)$it['shipping_detail_id'] ?>]"
+                                                               value="<?= h(number_format((float)$it['qty_invoice'], 4, ',', '.')) ?>"
+                                                               data-shipping-qty="<?= h($it['qty_shipping']) ?>"
+                                                               data-item="<?= h($it['inventory_name']) ?>" inputmode="decimal"
+                                                               aria-label="Qty Invoice KG <?= h($it['inventory_name']) ?>" required>
+                                                        <small class="text-muted">Shipping: <?= fmtQty($it['qty_shipping']) ?> KG</small>
+                                                    <?php else: ?>
+                                                        <?= fmtQty($it['qty_shipping']) ?>
+                                                    <?php endif; ?>
+                                                </td>
                                                 <td class="text-center"><?= h($it['uom_shipping']) ?></td>
                                                 <td class="text-end"><?= fmtQty($it['qty_pack_shipping']) ?></td>
                                                 <td class="text-center"><?= h($it['uom_pack_shipping']) ?></td>
@@ -498,6 +515,18 @@ $customerMismatch =
             </div>
         </div>
     </form>
+    <script>
+    document.querySelectorAll('.qty-invoice-input').forEach(function(input) {
+        input.addEventListener('change', function() {
+            const qty = Number(input.value.trim().replace(/\./g, '').replace(',', '.'));
+            const shipQty = Number(input.dataset.shippingQty);
+            input.classList.toggle('qty-exceeds', Number.isFinite(qty) && qty > shipQty);
+            if (Number.isFinite(qty) && qty > shipQty) {
+                alert('Peringatan: Qty Invoice ' + qty + ' KG melebihi Qty Shipping ' + shipQty + ' KG untuk ' + input.dataset.item + '. Perubahan tetap diizinkan.');
+            }
+        });
+    });
+    </script>
 </div>
 </body>
 </html>

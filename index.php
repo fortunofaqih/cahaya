@@ -340,7 +340,13 @@ switch ($page) {
     case 'diagnostic_aging_piutang_rev6_6_customer':
         include 'modul/transaksi/diagnostic_aging_piutang_rev6_6_customer.php';
         break;
-    
+    case 'history_qty':
+        include 'modul/transaksi/history_qty.php';
+        break;
+  case 'cetak_history_qty':
+        include 'modul/transaksi/cetak_history_qty.php';
+        break;
+   
     // --- PROGRAM / KEAMANAN ---
     case 'ganti-password':
         include 'modul/program/ganti_password.php';
