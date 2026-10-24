@@ -1729,17 +1729,73 @@ $(document).ready(function() {
         }
     });
 
-    $('#shipping_no').on('input blur', function() {
-        if (isAutoGenerateShippingNo) {
-            return;
+   /*
+ * Normalisasi Shipping No mode manual.
+ * User cukup mengetik digit (misal 515 / 6515). Sistem akan
+ * menambahkan leading zero sehingga selalu 6 digit (000515 / 006515).
+ *
+ * - Jika input hanya digit  -> pad ke 6 digit
+ * - Jika sudah ada prefix/huruf -> tidak diubah, tetapi diberi warning
+ *   bahwa format manual hanya mendukung angka.
+ */
+function normalizeManualShippingNo(rawValue) {
+    var value = String(rawValue || '').toUpperCase().trim();
+
+    // Hanya digit murni yang di-pad menjadi 6 digit.
+    if (/^\d+$/.test(value)) {
+        // Jika user mengetik lebih dari 6 digit, biarkan apa adanya;
+        // backend yang akan menolak / warning.
+        if (value.length < 6) {
+            value = value.padStart(6, '0');
         }
+    }
 
-        var upper = $(this).val().toUpperCase();
+    return value;
+}
+
+function isManualShippingNoValid(value) {
+    // Manual: harus 6 digit angka.
+    return /^\d{6}$/.test(String(value || '').trim());
+}
+
+$('#shipping_no').on('input', function() {
+    if (isAutoGenerateShippingNo) {
+        return;
+    }
+
+    // Jaga input tetap uppercase saat mengetik.
+    var upper = String($(this).val() || '').toUpperCase();
+    if (upper !== $(this).val()) {
         $(this).val(upper);
+    }
 
-        clearTimeout(checkShippingTimer);
-        checkShippingTimer = setTimeout(checkShippingNo, 350);
-    });
+    // Sembunyikan warning lama selama user masih mengetik.
+    $('#shipping_no_warning').hide();
+});
+
+$('#shipping_no').on('blur', function() {
+    if (isAutoGenerateShippingNo) {
+        return;
+    }
+
+    var normalized = normalizeManualShippingNo($(this).val());
+    $(this).val(normalized);
+
+    if (normalized !== '' && !isManualShippingNoValid(normalized)) {
+        $('#shipping_no_warning')
+            .html(
+                '<i class="fa fa-triangle-exclamation"></i> ' +
+                'Shipping No manual harus berupa 6 digit angka (contoh: 000515).'
+            )
+            .show();
+        $('#shipping_no_ok').hide();
+        shippingNoExists = false;
+        return;
+    }
+
+    clearTimeout(checkShippingTimer);
+    checkShippingTimer = setTimeout(checkShippingNo, 350);
+});
 
     $('#orderInventoryModal').on('click', function(e) {
         if (e.target === this) {
@@ -1754,14 +1810,31 @@ $(document).ready(function() {
     });
 
     $('#formShipping').on('submit', function(e) {
-        var shippingNo = $.trim($('#shipping_no').val());
+       var shippingNo = $.trim($('#shipping_no').val());
 
-        if (shippingNo === '') {
-            e.preventDefault();
-            alert('Shipping No wajib diisi!');
-            $('#shipping_no').focus();
-            return false;
-        }
+if (shippingNo === '') {
+    e.preventDefault();
+    alert('Shipping No wajib diisi!');
+    $('#shipping_no').focus();
+    return false;
+}
+
+// Normalisasi sekali lagi saat submit (mode manual),
+// supaya user yang mengetik 515 langsung tersimpan sebagai 000515.
+if (!isAutoGenerateShippingNo) {
+    shippingNo = normalizeManualShippingNo(shippingNo);
+    $('#shipping_no').val(shippingNo);
+
+    if (!isManualShippingNoValid(shippingNo)) {
+        e.preventDefault();
+        alert(
+            'Gagal Simpan: Shipping No manual harus berupa 6 digit angka ' +
+            '(contoh: 000515). Nomor yang Anda masukkan: ' + shippingNo
+        );
+        $('#shipping_no').focus();
+        return false;
+    }
+}
 
         /*
          * Untuk mode manual, nomor yang sudah terdeteksi duplikat tetap

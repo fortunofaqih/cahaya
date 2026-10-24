@@ -38,6 +38,33 @@ function normalizeUom($uom) {
     return $uom === '' ? null : $uom;
 }
 
+/**
+ * Normalisasi Shipping No mode manual menjadi 6 digit.
+ * - Jika input murni digit dan panjang < 6 -> pad leading zero.
+ * - Jika > 6 digit atau ada prefix/huruf -> dikembalikan apa adanya,
+ *   validasi lanjutan akan menolak jika diperlukan.
+ */
+function normalizeManualShippingNoServer(string $value): string
+{
+    $value = strtoupper(trim($value));
+
+    if ($value !== '' && ctype_digit($value)) {
+        if (strlen($value) < 6) {
+            $value = str_pad($value, 6, '0', STR_PAD_LEFT);
+        }
+    }
+
+    return $value;
+}
+
+/**
+ * Validasi Shipping No mode manual: wajib tepat 6 digit angka.
+ */
+function isValidManualShippingNo(string $value): bool
+{
+    return (bool)preg_match('/^\d{6}$/', $value);
+}
+
 function parseNumber($value) {
     $value = trim((string)$value);
     if ($value === '') {
@@ -560,10 +587,29 @@ try {
     $username = $_SESSION['username'];
 
     // Header
-    $shipping_no_preview = strtoupper(postValue('shipping_no'));
+   // Header
+$shipping_no_preview = strtoupper(postValue('shipping_no'));
+$shipping_no = $shipping_no_preview;
+$auto_generate_shipping_no =
+    postValue('auto_generate_shipping_no') === '1';
+
+/*
+ * Mode manual: normalisasi menjadi 6 digit.
+ * Auto Generate tidak disentuh karena polanya (misal SJ.2026.00123)
+ * bukan digit murni.
+ */
+if (!$auto_generate_shipping_no) {
+    $shipping_no_preview = normalizeManualShippingNoServer($shipping_no_preview);
     $shipping_no = $shipping_no_preview;
-    $auto_generate_shipping_no =
-        postValue('auto_generate_shipping_no') === '1';
+
+    if (!isValidManualShippingNo($shipping_no)) {
+        failAndBack(
+            'Shipping No manual harus berupa 6 digit angka ' .
+            '(contoh: 000515). Nomor yang Anda masukkan: ' .
+            $shipping_no
+        );
+    }
+}
     $shipping_date = toDbDate(postValue('shipping_date'));
     $nota_date = toDbDate(postValue('nota_date'));
     $order_no = postValue('order_no');
@@ -725,13 +771,13 @@ try {
             $conn,
             $shipping_no_preview
         );
-    } else {
-        $shipping_no = strtoupper(trim($shipping_no_preview));
+   } else {
+    $shipping_no = strtoupper(trim($shipping_no_preview));
 
-        $shippingNumberLock = createShippingLockName(
-            'manual',
-            $shipping_no
-        );
+    $shippingNumberLock = createShippingLockName(
+        'manual',
+        $shipping_no
+    );
 
         acquireShippingLock($conn, $shippingNumberLock);
 

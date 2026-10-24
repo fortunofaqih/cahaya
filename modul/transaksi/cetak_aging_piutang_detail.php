@@ -2875,6 +2875,41 @@ while ($r = mysqli_fetch_assoc($resReturnAgg)) {
 mysqli_stmt_close($stmtReturnAgg);
 
 /* ============================================================
+ * 5A. REKLASIFIKASI BUCKET PER BULAN - REPORTING ONLY
+ * ============================================================
+ * Tidak mengubah saldo, pembayaran, titip, atau transaksi sumber.
+ * Hanya bulan laporan yang sama dengan period_date yang menerima delta.
+ * Delta harus net 0 agar formula aging tetap balance.
+ */
+$bucketReclassMap = [];
+if (tableExists($conn, 'aging_bucket_reclassification')) {
+    $stmtBucketReclass = mysqli_prepare($conn, "
+        SELECT customer_id, b_1_30_delta, b_lebih_delta, bjt_delta
+        FROM aging_bucket_reclassification
+        WHERE period_date = ?
+    ");
+    mysqli_stmt_bind_param($stmtBucketReclass, 's', $startDate);
+    mysqli_stmt_execute($stmtBucketReclass);
+    $resBucketReclass = mysqli_stmt_get_result($stmtBucketReclass);
+    while ($bc = mysqli_fetch_assoc($resBucketReclass)) {
+        $bcCid = trim((string)($bc['customer_id'] ?? ''));
+        if ($bcCid === '' || !isset($masterCustomers[$bcCid])) continue;
+        $b1Delta = (float)($bc['b_1_30_delta'] ?? 0);
+        $lebihDelta = (float)($bc['b_lebih_delta'] ?? 0);
+        $bjtDelta = (float)($bc['bjt_delta'] ?? 0);
+        if (abs($b1Delta + $lebihDelta + $bjtDelta) > 0.01) {
+            throw new RuntimeException('Reklasifikasi bucket tidak balance untuk customer: ' . $bcCid);
+        }
+        $bucketReclassMap[$bcCid] = [
+            'b_1_30_delta' => $b1Delta,
+            'b_lebih_delta' => $lebihDelta,
+            'bjt_delta' => $bjtDelta
+        ];
+    }
+    mysqli_stmt_close($stmtBucketReclass);
+}
+
+/* ============================================================
  * 6. FINALISASI CARRY-FORWARD PER CUSTOMER
  * ============================================================ */
 foreach ($masterCustomers as $cid => $m) {
@@ -3220,7 +3255,83 @@ foreach ($masterCustomers as $cid => $m) {
                 }
             }
 
-            $targetPositiveOutstanding = max((float)$akhir, 0.0);
+            /*
+             * FIX SOURCE-AWARE SIGNED BUCKET (SEPTEMBER DAN SETERUSNYA)
+             * ---------------------------------------------------------
+             * Pada migration baseline, bucket umur negatif merupakan posisi
+             * historis yang sah. Jika LEBIH juga negatif sementara ada invoice
+             * post-baseline yang positif, membandingkan seluruh bucket positif
+             * langsung dengan AKHIR NET akan menganggap bucket negatif umur
+             * sebagai "kelebihan pembayaran" dan memotong invoice baru.
+             *
+             * Pertahankan nilai negatif umur (bukan LEBIH) ketika menentukan
+             * batas outstanding positif. Kelebihan positif yang memang masih
+             * perlu dibersihkan tetap ditangani allocator existing.
+             *
+             * Tidak ada customer_id, tanggal periode, atau nominal hardcode.
+             */
+            $protectedAgedCredit = 0.0;
+            if (
+                (float)$combinedBucket['b_lebih'] < -0.0001
+                && (
+                    (float)($c['post_base_b_1_30'] ?? 0) > 0.0001
+                    || (float)($c['post_base_b_31_60'] ?? 0) > 0.0001
+                    || (float)($c['post_base_b_61_90'] ?? 0) > 0.0001
+                    || (float)($c['post_base_bjt'] ?? 0) > 0.0001
+                )
+            ) {
+                foreach (['b_1_30', 'b_31_60', 'b_61_90'] as $ageKey) {
+                    $protectedAgedCredit += abs(min(
+                        (float)$combinedBucket[$ageKey],
+                        0.0
+                    ));
+                }
+            }
+
+            /*
+             * FIX CREDIT LEBIH HISTORIS - SOURCE-AWARE
+             * ------------------------------------------
+             * Apabila closing baseline mempunyai LEBIH negatif yang masih
+             * tersisa sesudah rollover dan pembayaran, ia adalah komponen
+             * kredit historis yang sah. Jangan mengurangi bucket invoice
+             * positif sebesar kredit tersebut hanya karena AKHIR bersifat net.
+             *
+             * Pelindung ini tidak diterapkan bersamaan dengan bucket umur
+             * negatif agar rule perlindungan SARMIN tetap dipertahankan dan
+             * tidak terjadi perlindungan kredit ganda.
+             */
+            $protectedHistoricalLebihCredit = 0.0;
+            $hasNegativeAgedBucket = false;
+            foreach (['b_1_30', 'b_31_60', 'b_61_90'] as $ageKey) {
+                if ((float)$combinedBucket[$ageKey] < -0.0001) {
+                    $hasNegativeAgedBucket = true;
+                    break;
+                }
+            }
+
+            $hasPositivePostBaselineBucket = (
+                (float)($c['post_base_b_1_30'] ?? 0) > 0.0001
+                || (float)($c['post_base_b_31_60'] ?? 0) > 0.0001
+                || (float)($c['post_base_b_61_90'] ?? 0) > 0.0001
+                || (float)($c['post_base_bjt'] ?? 0) > 0.0001
+            );
+
+            if (
+                !$hasNegativeAgedBucket
+                && $hasPositivePostBaselineBucket
+                && (float)($migrationSeed['b_lebih'] ?? 0) < -0.0001
+                && (float)$combinedBucket['b_lebih'] < -0.0001
+            ) {
+                $protectedHistoricalLebihCredit = min(
+                    abs((float)$combinedBucket['b_lebih']),
+                    abs((float)$migrationSeed['b_lebih'])
+                );
+            }
+
+            $targetPositiveOutstanding = max(
+                (float)$akhir + $protectedAgedCredit + $protectedHistoricalLebihCredit,
+                0.0
+            );
             $postBasePaymentExcess = max(
                 $positiveBucketTotal - $targetPositiveOutstanding,
                 0.0
@@ -3470,6 +3581,15 @@ foreach ($masterCustomers as $cid => $m) {
             $bLebih += $rev7CpMove;
             $rev7CpRemaining -= $rev7CpMove;
         }
+    }
+
+    /* Reklasifikasi akhir khusus penyajian bucket, sesudah semua rule Rev7.
+     * Tidak ikut perhitungan $akhir / timeline / payment allocator.
+     */
+    if (isset($bucketReclassMap[$cid])) {
+        $b1 += $bucketReclassMap[$cid]['b_1_30_delta'];
+        $bLebih += $bucketReclassMap[$cid]['b_lebih_delta'];
+        $bBelumJatuhTempo += $bucketReclassMap[$cid]['bjt_delta'];
     }
 
     $amounts = initAmountRow();

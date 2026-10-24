@@ -18,6 +18,25 @@ function parseDateR($v,$f){
     }
     return $f;
 }
+/**
+ * Normalisasi tampilan Shipping No menjadi 6 digit.
+ * - Jika nilai hanya digit dan panjang < 6 -> pad leading zero.
+ * - Jika sudah 6 digit atau mengandung non-digit -> biarkan apa adanya.
+ * - NULL / kosong -> biarkan kosong.
+ */
+function fmtShippingNoR($v) {
+    $v = trim((string)($v ?? ''));
+
+    if ($v === '') {
+        return '';
+    }
+
+    if (ctype_digit($v) && strlen($v) < 6) {
+        return str_pad($v, 6, '0', STR_PAD_LEFT);
+    }
+
+    return $v;
+}
 function fmtDateR($d){
     if(empty($d)||$d==='0000-00-00') return '';
     $t=strtotime($d); return $t?date('d-M-Y',$t):'';
@@ -239,7 +258,13 @@ WHERE hi.invoice_date BETWEEN ? AND ?
   AND UPPER(COALESCE(hs.order_no,'')) NOT LIKE '%CP-MCP%'
 
 ORDER BY
-    {$orderColumn} {$orderDirection},
+    CASE
+        WHEN '{$sort}' = 'shipping_no'
+            THEN LPAD(di.shipping_no, 6, '0')
+        WHEN '{$sort}' = 'invoice_no'
+            THEN di.invoice_no
+        ELSE di.shipping_no
+    END {$orderDirection},
     hi.invoice_date ASC,
     di.shipping_no ASC,
     di.invoice_no ASC,
@@ -521,7 +546,7 @@ $cats=['PP','KERTAS','PE','PE WARNA','LAIN LAIN'];
                 <tr><td colspan="20" class="text-center" style="padding:18px;color:#777">Tidak ada data invoice pada periode ini.</td></tr>
             <?php else: foreach($rows as $row): ?>
                 <tr>
-                    <td><?=h($row['shipping_no'])?></td>
+                    <td><?=h(fmtShippingNoR($row['shipping_no']))?></td>
                     <td><?=h($row['invoice_no'])?></td>
                     <td class="customer-cell" title="<?=h($row['customer_name'])?>"><?=h($row['customer_name'])?></td>
                     <td class="money-cell"><?=h(fmtMoneyR($row['total']))?></td>

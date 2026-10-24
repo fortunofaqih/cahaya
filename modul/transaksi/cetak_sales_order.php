@@ -722,22 +722,20 @@ $inventory_name = strtoupper(trim($detail_so['inventory_name'] ?? ''));
 
 // PP ROLL BOLA dan price_unit + price sama-sama terisi
 
+// RULE KHUSUS:
+// PP ROLL BOLA, PP ROLL MCP, PE ROLL STOKAN SSB, PE ROLL SSB, PP CAHAYA BOLA
+// dan price_unit + price sama-sama terisi
 if (
-
     (
-
         strpos($inventory_name, 'PP ROLL BOLA') !== false
-
         || strpos($inventory_name, 'PP ROLL MCP') !== false
-
+        || strpos($inventory_name, 'PE ROLL STOKAN SSB') !== false
+        || strpos($inventory_name, 'PE ROLL SSB') !== false
+        || strpos($inventory_name, 'PP CAHAYA BOLA') !== false
     )
-
     && $price_unit_raw > 0
-
     && $price_raw > 0
-
 ) {
-
     $harga = $price_unit_raw;
 
 
