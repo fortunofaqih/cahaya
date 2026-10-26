@@ -218,17 +218,12 @@ SELECT
     di.subtotal AS invoice_subtotal,
     ds.id AS shipping_detail_id,
     COALESCE(NULLIF(TRIM(ds.inventory_name),''), NULLIF(TRIM(mi.inventory_name),''), '') AS inventory_name,
-    CASE
-        WHEN UPPER(TRIM(COALESCE(ds.uom_pack_shipping,''))) <> ''
-         AND UPPER(TRIM(COALESCE(ds.uom_pack_shipping,''))) <> 'KG'
-            THEN COALESCE(ds.qty_pack_shipping,0)
-        WHEN UPPER(TRIM(COALESCE(ds.uom_detail_shipping,''))) <> ''
-         AND UPPER(TRIM(COALESCE(ds.uom_detail_shipping,''))) <> 'KG'
-            THEN COALESCE(ds.qty_detail_shipping,0)
-        WHEN UPPER(TRIM(COALESCE(ds.uom_shipping,''))) = 'KG'
-            THEN COALESCE(qic.qty_invoice, ds.qty_shipping, 0)
-        ELSE COALESCE(ds.qty_shipping,0)
-    END AS row_qty,
+ CASE
+    WHEN UPPER(COALESCE(ds.inventory_name,'')) REGEXP '(^|[^A-Z])(KERTAS|TERPAL|BOX)([^A-Z]|$)'
+        THEN COALESCE(ds.qty_pack_shipping, 0)
+
+    ELSE COALESCE(qic.qty_invoice, ds.qty_shipping, 0)
+END AS row_qty,
     CASE
         WHEN COALESCE(ds.subtotal,0) <> 0 THEN ABS(COALESCE(ds.subtotal,0))
 
