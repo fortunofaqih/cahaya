@@ -1013,6 +1013,83 @@ while ($r = mysqli_fetch_assoc($resInvoiceAgg)) {
 mysqli_stmt_close($stmtInvoiceAgg);
 
 /* ============================================================
+ * VERIFIKASI OUTSTANDING PER-INVOICE UNTUK CUSTOMER TANPA BASELINE
+ * ============================================================
+ * Gunakan pembayaran efektif per invoice hingga akhir periode.
+ * Pembayaran setelah endDate tidak mengurangi outstanding bulan laporan.
+ * Verifikasi digunakan hanya jika bucket BJT lama masih berisi bruto seluruh
+ * invoice periode; tidak digunakan untuk retur/koreksi/umur campuran.
+ * Formula 1, master transaksi, dan query invoice utama tidak diubah.
+ */
+$verifiedCurrentNotDue = [];
+$sqlVerifiedCurrentNotDue = "
+    SELECT
+        hi.customer_id,
+        COUNT(*) AS invoice_count,
+        SUM(ic.gross) AS gross_total,
+        SUM(LEAST(GREATEST(COALESCE(pi.paid_total, 0), 0), ic.gross)) AS paid_total,
+        SUM(GREATEST(ic.gross - COALESCE(pi.paid_total, 0), 0)) AS outstanding_total,
+        /* Klasifikasi bruto dan sisa invoice berdasarkan due_date aktual.
+         * Ini mendukung invoice lunas yang sudah lewat jatuh tempo 1-30 hari,
+         * selain invoice belum jatuh tempo yang telah ditangani sebelumnya. */
+        SUM(CASE WHEN DATEDIFF(?, DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days,0) DAY)) BETWEEN 1 AND 30
+                 THEN ic.gross ELSE 0 END) AS gross_1_30,
+        SUM(CASE WHEN DATEDIFF(?, DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days,0) DAY)) BETWEEN 1 AND 30
+                 THEN GREATEST(ic.gross - COALESCE(pi.paid_total,0),0) ELSE 0 END) AS outstanding_1_30,
+        SUM(CASE WHEN pi.paid_total > ic.gross + 0.01 THEN 1 ELSE 0 END) AS overpaid_count,
+        SUM(CASE WHEN DATE_ADD(hi.invoice_date, INTERVAL COALESCE(hi.days,0) DAY) < ?
+                 THEN 1 ELSE 0 END) AS overdue_count,
+        SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM head_retur_invoice hri
+                WHERE hri.invoice_no = hi.invoice_no
+                  AND hri.return_date <= ?
+                  AND LOWER(COALESCE(hri.status,'Open')) <> 'cancelled'
+            ) THEN 1 ELSE 0 END) AS return_count
+    FROM head_invoice hi
+    INNER JOIN (
+        SELECT invoice_no,
+               ROUND(SUM(CASE WHEN COALESCE(total,0) > 0
+                        THEN COALESCE(total,0) ELSE COALESCE(subtotal,0) END), 0) AS gross
+        FROM det_invoice GROUP BY invoice_no
+    ) ic ON ic.invoice_no = hi.invoice_no
+    LEFT JOIN (
+        SELECT db.invoice_no,
+               SUM(CASE
+                   WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source),''),'INVOICE')) = 'RETURN'
+                     OR (LOWER(TRIM(COALESCE(hb.keterangan,''))) = 'retur'
+                         AND COALESCE(TRIM(db.return_id),'') <> '')
+                     THEN 0
+                   WHEN hb.bayar_date <= ?
+                     THEN (CASE WHEN COALESCE(db.cash_amount,0) > 0
+                            THEN COALESCE(db.cash_amount,0)
+                            ELSE GREATEST(COALESCE(db.bayar_amount,0)-COALESCE(db.titip_amount,0),0)
+                           END) + COALESCE(db.titip_amount,0)
+                   ELSE 0 END) AS paid_total
+        FROM detail_bayar db
+        INNER JOIN head_bayar hb ON hb.bayar_no = db.bayar_no
+        WHERE COALESCE(db.invoice_no,'') <> ''
+          AND UPPER(COALESCE(db.invoice_no,'')) NOT LIKE '%CP-MCP%'
+          AND UPPER(COALESCE(db.shipping_no,'')) NOT LIKE '%CP-MCP%'
+        GROUP BY db.invoice_no
+    ) pi ON pi.invoice_no = hi.invoice_no
+    WHERE hi.invoice_date BETWEEN ? AND ?
+      AND UPPER(COALESCE(hi.invoice_no,'')) NOT LIKE '%CP-MCP%'
+      AND ic.gross > 0
+    GROUP BY hi.customer_id
+";
+$stmtVerifiedCurrentNotDue = mysqli_prepare($conn, $sqlVerifiedCurrentNotDue);
+mysqli_stmt_bind_param(
+    $stmtVerifiedCurrentNotDue, 'sssssss',
+    $asOfDate, $asOfDate, $asOfDate, $endDate, $endDate, $startDate, $endDate
+);
+mysqli_stmt_execute($stmtVerifiedCurrentNotDue);
+$resVerifiedCurrentNotDue = mysqli_stmt_get_result($stmtVerifiedCurrentNotDue);
+while ($ivr = mysqli_fetch_assoc($resVerifiedCurrentNotDue)) {
+    $verifiedCurrentNotDue[trim((string)$ivr['customer_id'])] = $ivr;
+}
+mysqli_stmt_close($stmtVerifiedCurrentNotDue);
+
+/* ============================================================
  * 3A. BUCKET INVOICE POST MIGRATION BASELINE
  * ============================================================
  * Clone query invoice production agar seluruh rule pay_inv / retur / titip /
@@ -1490,6 +1567,44 @@ titip_use AS (
       AND COALESCE(ref_no,'') <> ''
     GROUP BY ref_no, customer_id
 ),
+/*
+ * Rekonsiliasi pembayaran campuran CASH + RETURN pada nomor bayar yang sama.
+ * Berlaku hanya jika selisih nilai INVOICE vs cash+titip persis ditutup RETURN,
+ * jumlah detail signed cocok dengan header, dan header bernilai positif.
+ * Pembayaran RETURN murni (header 0) tetap mengikuti rule existing.
+ */
+mixed_return_payment AS (
+    SELECT hb_mix.bayar_no
+    FROM head_bayar hb_mix
+    INNER JOIN detail_bayar db_mix ON db_mix.bayar_no = hb_mix.bayar_no
+    GROUP BY hb_mix.bayar_no, hb_mix.total_bayar
+    HAVING COALESCE(hb_mix.total_bayar, 0) > 0
+       AND SUM(CASE
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db_mix.payment_source), ''), 'INVOICE')) = 'RETURN'
+            THEN ABS(COALESCE(db_mix.bayar_amount, 0)) ELSE 0 END) > 0.0001
+       AND SUM(CASE
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db_mix.payment_source), ''), 'INVOICE')) = 'INVOICE'
+             AND COALESCE(db_mix.cash_amount, 0) > 0
+            THEN GREATEST(
+                COALESCE(db_mix.bayar_amount, 0)
+                - COALESCE(db_mix.cash_amount, 0)
+                - COALESCE(db_mix.titip_amount, 0), 0)
+            ELSE 0 END) > 0.0001
+       AND ABS(
+           SUM(CASE
+               WHEN UPPER(COALESCE(NULLIF(TRIM(db_mix.payment_source), ''), 'INVOICE')) = 'INVOICE'
+                AND COALESCE(db_mix.cash_amount, 0) > 0
+               THEN GREATEST(
+                   COALESCE(db_mix.bayar_amount, 0)
+                   - COALESCE(db_mix.cash_amount, 0)
+                   - COALESCE(db_mix.titip_amount, 0), 0)
+               ELSE 0 END)
+           - SUM(CASE
+               WHEN UPPER(COALESCE(NULLIF(TRIM(db_mix.payment_source), ''), 'INVOICE')) = 'RETURN'
+               THEN ABS(COALESCE(db_mix.bayar_amount, 0)) ELSE 0 END)
+       ) <= 0.01
+       AND ABS(SUM(COALESCE(db_mix.bayar_amount, 0)) - hb_mix.total_bayar) <= 0.01
+),
 pay_base AS (
     SELECT
         hb.customer_id,
@@ -1563,6 +1678,19 @@ pay_base AS (
                 END
             )
 
+            /* Jika retur telah mengisi selisih bruto invoice vs cash,
+             * gunakan bruto pada INVOICE, lalu RETURN negatif sekali saja.
+             * Hanya untuk pembayaran campuran yang lolos rekonsiliasi CTE.
+             */
+            WHEN mrp.bayar_no IS NOT NULL
+             AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'INVOICE'
+             AND COALESCE(db.cash_amount, 0) > 0
+             AND COALESCE(db.bayar_amount, 0)
+                 > COALESCE(db.cash_amount, 0) + COALESCE(db.titip_amount, 0)
+            THEN GREATEST(
+                COALESCE(db.bayar_amount, 0) - COALESCE(db.titip_amount, 0), 0
+            )
+
             WHEN COALESCE(db.cash_amount, 0) > 0
                 THEN COALESCE(db.cash_amount, 0)
 
@@ -1617,6 +1745,8 @@ pay_base AS (
     LEFT JOIN titip_use tu
         ON tu.bayar_no = db.bayar_no
        AND tu.customer_id = hb.customer_id
+    LEFT JOIN mixed_return_payment mrp
+        ON mrp.bayar_no = hb.bayar_no
     LEFT JOIN latest_opening lo
         ON lo.customer_id = hb.customer_id
     LEFT JOIN head_invoice hi
@@ -2042,6 +2172,7 @@ $migrationOpeningSigned = [];
  * Formula 1 tidak disentuh.
  */
 $historicalReturnSettlementAbs = [];
+$historicalCpMcpZeroMarkerSettlementAbs = [];
 
 if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
     $sqlBaselinePayTimeline = str_replace(
@@ -2279,7 +2410,17 @@ if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
     $sqlHistoricalReturnSettlement = "
         SELECT
             hb.customer_id,
-            SUM(COALESCE(hri.return_amount, 0)) AS settlement_amount
+            SUM(COALESCE(hri.return_amount, 0)) AS settlement_amount,
+            SUM(CASE
+                WHEN UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+                  OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+                THEN CASE
+                    WHEN ABS(COALESCE(hri.grand_total, 0)) > 0.0001
+                    THEN ABS(hri.grand_total)
+                    ELSE ABS(COALESCE(hri.return_amount, 0))
+                END
+                ELSE 0
+            END) AS cp_mcp_settlement_amount
         FROM detail_bayar db
         INNER JOIN head_bayar hb
             ON hb.bayar_no = db.bayar_no
@@ -2342,6 +2483,9 @@ if ($endDate > $bucketBaselineDate && !empty($bucketBaselineMap)) {
         $historicalReturnSettlementAbs[$hrsCid] =
             (float)($historicalReturnSettlementAbs[$hrsCid] ?? 0)
             + abs((float)($hrs['settlement_amount'] ?? 0));
+        $historicalCpMcpZeroMarkerSettlementAbs[$hrsCid] =
+            (float)($historicalCpMcpZeroMarkerSettlementAbs[$hrsCid] ?? 0)
+            + abs((float)($hrs['cp_mcp_settlement_amount'] ?? 0));
     }
     mysqli_stmt_close($stmtHistoricalReturnSettlement);
 }
@@ -2909,6 +3053,35 @@ if (tableExists($conn, 'aging_bucket_reclassification')) {
     mysqli_stmt_close($stmtBucketReclass);
 }
 
+/* Source marker khusus retur CP-MCP dalam bulan laporan.
+ * Nilai ini hanya menjadi pengaman penempatan bucket; angka Formula 1
+ * dan mekanisme retur existing tetap memakai $sqlReturnAgg.
+ */
+$currentCpMcpReturnSource = [];
+$sqlCurrentCpMcpReturn = "
+    SELECT hri.customer_id,
+           SUM(COALESCE(hri.grand_total, 0)) AS cp_mcp_return_total
+    FROM head_retur_invoice hri
+    WHERE hri.return_date BETWEEN ? AND ?
+      AND LOWER(COALESCE(hri.status, 'Open')) <> 'cancelled'
+      AND (
+          UPPER(COALESCE(hri.invoice_no, '')) LIKE '%CP-MCP%'
+          OR UPPER(COALESCE(hri.shipping_no, '')) LIKE '%CP-MCP%'
+      )
+    GROUP BY hri.customer_id
+";
+$stmtCurrentCpMcpReturn = mysqli_prepare($conn, $sqlCurrentCpMcpReturn);
+mysqli_stmt_bind_param($stmtCurrentCpMcpReturn, 'ss', $startDate, $endDate);
+mysqli_stmt_execute($stmtCurrentCpMcpReturn);
+$resCurrentCpMcpReturn = mysqli_stmt_get_result($stmtCurrentCpMcpReturn);
+while ($cpSource = mysqli_fetch_assoc($resCurrentCpMcpReturn)) {
+    $cpCid = trim((string)($cpSource['customer_id'] ?? ''));
+    if ($cpCid !== '' && isset($masterCustomers[$cpCid])) {
+        $currentCpMcpReturnSource[$cpCid] = (float)($cpSource['cp_mcp_return_total'] ?? 0);
+    }
+}
+mysqli_stmt_close($stmtCurrentCpMcpReturn);
+
 /* ============================================================
  * 6. FINALISASI CARRY-FORWARD PER CUSTOMER
  * ============================================================ */
@@ -3366,6 +3539,71 @@ foreach ($masterCustomers as $cid => $m) {
         $bLebih = $c['b_lebih'];
         $bBelumJatuhTempo = $c['belum_jatuh_tempo'];
 
+        /* SOURCE-AWARE: verifikasi ulang invoice bulan berjalan ketika raw
+         * bucket ternyata masih menunjukkan BRUTO meski invoice sudah dibayar.
+         * Pertahankan rule lama BELUM JT (RUSLAN/ABDUL), tambahkan 1-30
+         * (EVERGREEN), hanya bila seluruh gross cocok dengan satu bucket,
+         * dan hasil outstanding cocok dengan Formula 1. Tidak menyentuh
+         * baseline, opening, retur, koreksi, serta transaksi periode lain.
+         */
+        $verifiedInv = $verifiedCurrentNotDue[$cid] ?? null;
+        if (
+            !$hasOpening
+            && !$hasMigrationBaseline
+            && $verifiedInv !== null
+            && (int)$verifiedInv['invoice_count'] > 0
+            && (int)$verifiedInv['return_count'] === 0
+            && (int)$verifiedInv['overpaid_count'] === 0
+            && abs((float)$c['pre_invoice']) <= 0.01
+            && abs((float)$c['pre_return']) <= 0.01
+            && abs((float)$c['period_return']) <= 0.01
+            && abs((float)$c['pre_invoice_correction']) <= 0.01
+            && abs((float)$c['period_invoice_correction']) <= 0.01
+            && abs((float)$c['orphan_total']) <= 0.01
+            /* Pemakaian titip pada detail invoice adalah pembayaran sah.
+             * Jangan wajibkan period_titip = 0: invoice dengan cash + titip
+             * tetap diverifikasi melalui paid_total per invoice serta guard
+             * outstanding_total - unused_titip_end == AKHIR di bawah.
+             * Guard saldo titip historis dan transaksi retur tetap aktif. */
+            && abs((float)$c['pre_cash']) <= 0.01
+            && abs((float)$c['pre_titip']) <= 0.01
+            && abs((float)$c['unused_titip_before']) <= 0.01
+            && abs((float)$c['period_invoice'] - (float)$verifiedInv['gross_total']) <= 0.01
+            && (
+                /* Invoice belum JT: rule existing tidak diubah. */
+                (
+                    (int)$verifiedInv['overdue_count'] === 0
+                    && abs((float)$bBelumJatuhTempo - (float)$verifiedInv['gross_total']) <= 0.01
+                    && abs((float)$b1) <= 0.01
+                )
+                ||
+                /* Invoice overdue 1-30: bruto mentah harus sama persis
+                 * dengan invoice yang terverifikasi, bukan residual palsu. */
+                (
+                    abs((float)$verifiedInv['gross_1_30'] - (float)$verifiedInv['gross_total']) <= 0.01
+                    && abs((float)$b1 - (float)$verifiedInv['gross_total']) <= 0.01
+                    && abs((float)$bBelumJatuhTempo) <= 0.01
+                )
+            )
+            && abs((float)$b2) <= 0.01
+            && abs((float)$b3) <= 0.01
+            && abs((float)$bLebih) <= 0.01
+            && (float)$verifiedInv['outstanding_total'] >= -0.01
+            && (float)$verifiedInv['outstanding_total'] <= (float)$verifiedInv['gross_total'] + 0.01
+            && (float)$verifiedInv['paid_total'] > 0.01
+            /* Guard agar nilai verifikasi konsisten dengan Formula 1. */
+            && abs(
+                (float)$akhir
+                - ((float)$verifiedInv['outstanding_total'] - (float)$c['unused_titip_end'])
+            ) <= 0.01
+        ) {
+            if (abs((float)$b1 - (float)$verifiedInv['gross_total']) <= 0.01) {
+                $b1 = (float)$verifiedInv['outstanding_1_30'];
+            } else {
+                $bBelumJatuhTempo = (float)$verifiedInv['outstanding_total'];
+            }
+        }
+
         if ($hasOpening) {
             if ($hasValidOpeningBucket) {
 
@@ -3539,6 +3777,61 @@ foreach ($masterCustomers as $cid => $m) {
     }
 
     /*
+     * REV8 - CP-MCP historical zero marker dengan credit baru sesudah baseline.
+     * ----------------------------------------------------------------------
+     * Bukti: RETURN zero di detail_bayar yang valid terhubung ke retur CP-MCP
+     * <= baseline. Pada Formula 1, RETURN legacy efektif (signed negatif)
+     * menutup saldo kredit lama; posisi bucket lama yang masih terbawa dari
+     * baseline tidak boleh ikut menjadi outstanding kredit baru.
+     *
+     * Setelah kredit historis dibersihkan, sisa credit CP-MCP yang masih
+     * belum terpakai diklasifikasikan sesuai umur RETUR (bukan umur invoice).
+     * Semua perpindahan di sini zero-sum; tidak mengubah AWAL, PENJUALAN,
+     * BAYAR, TITIP, maupun AKHIR. Tidak menggunakan customer atau angka tetap.
+     *
+     * Aktif hanya pada kombinasi marker CP-MCP legacy bernilai 0 DAN
+     * kredit retur belum terpakai yang telah ditemukan source query existing.
+     */
+    $cpZeroMarkerValue = (float)($historicalCpMcpZeroMarkerSettlementAbs[$cid] ?? 0);
+    $cpCreditByAge = [
+        'b1' => max((float)($c['credit_b_1_30'] ?? 0), 0.0),
+        'b2' => max((float)($c['credit_b_31_60'] ?? 0), 0.0),
+        'b3' => max((float)($c['credit_b_61_90'] ?? 0), 0.0),
+        'bBelumJatuhTempo' => max((float)($c['credit_bjt'] ?? 0), 0.0),
+    ];
+    $cpRemainingCreditAgeTotal = array_sum($cpCreditByAge);
+
+    if (
+        $useMigrationBaseline
+        && $endDate > $bucketBaselineDate
+        && $cpZeroMarkerValue > 0.0001
+        && $cpRemainingCreditAgeTotal > 0.0001
+        && $bLebih < -0.0001
+    ) {
+        // Bersihkan hanya nilai kredit umur historis yang benar-benar negatif.
+        // Sisanya dipindahkan sementara ke LEBIH supaya total tetap sama.
+        $cpHistoricalToClear = $cpZeroMarkerValue;
+        foreach (['b3', 'b2', 'b1'] as $cpHistoricalAgeVariable) {
+            if ($cpHistoricalToClear <= 0.0001) break;
+            if ((float)$$cpHistoricalAgeVariable >= -0.0001) continue;
+            $cpClear = min(abs((float)$$cpHistoricalAgeVariable), $cpHistoricalToClear);
+            $$cpHistoricalAgeVariable += $cpClear;
+            $bLebih -= $cpClear;
+            $cpHistoricalToClear -= $cpClear;
+        }
+
+        // Credit return yang benar-benar belum digunakan ditempatkan menurut
+        // periode retur, dengan batas sebesar residual LEBIH negatif.
+        // BJT = bulan retur, 1-30 = bulan setelahnya, dst.
+        foreach ($cpCreditByAge as $cpTargetVariable => $cpAmount) {
+            if ($cpAmount <= 0.0001 || $bLebih >= -0.0001) continue;
+            $cpMove = min($cpAmount, abs($bLebih));
+            $$cpTargetVariable -= $cpMove;
+            $bLebih += $cpMove;
+        }
+    }
+
+    /*
      * REV7 TAHAP 4 - RECLASS HISTORICAL CP-MCP CREDIT
      * --------------------------------------------------
      * Jalankan SETELAH Tahap 3 settlement cleanup.
@@ -3580,6 +3873,104 @@ foreach ($masterCustomers as $cid => $m) {
             $$rev7CpVar -= $rev7CpMove;
             $bLebih += $rev7CpMove;
             $rev7CpRemaining -= $rev7CpMove;
+        }
+    }
+
+    /* OPENING signed negatif yang efektif dan masuk snapshot sebelum
+     * baseline dapat meninggalkan umur kredit negatif historis sementara
+     * BJT tetap positif. Bersihkan hanya nilai yang terverifikasi dari
+     * transaksi opening, cap sesuai saldo baseline negatif, dan pindahkan
+     * imbangannya dari BJT. Tidak mengubah AKHIR dan tidak menyentuh
+     * refund / titip / customer tanpa baseline.
+     */
+    if ($useMigrationBaseline && $endDate > $bucketBaselineDate) {
+        $effectiveNegativeOpening = abs(min(
+            (float)($migrationOpeningSigned[$cid] ?? 0), 0.0
+        ));
+        $negativeSeedTotal = 0.0;
+        foreach (['b_1_30','b_31_60','b_61_90','b_lebih','belum_jatuh_tempo'] as $openingSeedKey) {
+            $negativeSeedTotal += abs(min(
+                (float)($bucketBaselineMap[$cid][$openingSeedKey] ?? 0), 0.0
+            ));
+        }
+        $openingCleanupCap = min($effectiveNegativeOpening, $negativeSeedTotal);
+        if (
+            $openingCleanupCap > 0.0001
+            && abs((float)$bLebih) <= 0.01
+            && $bBelumJatuhTempo > 0.0001
+        ) {
+            foreach (['b3','b2','b1'] as $openingAgeVar) {
+                if ($openingCleanupCap <= 0.0001 || $bBelumJatuhTempo <= 0.0001) break;
+                $agedCredit = (float)$$openingAgeVar;
+                if ($agedCredit >= -0.0001) continue;
+                $clearOpening = min(abs($agedCredit), $openingCleanupCap, $bBelumJatuhTempo);
+                $$openingAgeVar += $clearOpening;
+                $bBelumJatuhTempo -= $clearOpening;
+                $openingCleanupCap -= $clearOpening;
+            }
+        }
+    }
+
+    /* ============================================================
+     * SOURCE-AWARE CREDIT BULAN BERJALAN TANPA BASELINE / OPENING
+     * ------------------------------------------------------------
+     * Dua sumber kredit yang tidak mempunyai due_date invoice normal:
+     * 1) koreksi invoice aktif (signed negatif) bulan berjalan;
+     * 2) retur CP-MCP bulan berjalan yang belum digunakan (credit_bjt).
+     *
+     * HANYA untuk kasus murni: tanpa transaksi historis, invoice normal,
+     * payment, titip, saldo lain, ataupun reklasifikasi existing; kredit
+     * dari sumbernya harus tepat sama dengan AKHIR dan LEBIH residual.
+     * Offset ZERO-SUM dari LEBIH ke BJT. Tidak hardcode customer/angka/bulan.
+     * Customer yang mempunyai campuran/migrasi tidak disentuh.
+     * ============================================================ */
+    $creditOnlySource = 0.0;
+    $isCurrentCorrectionOnly = (
+        (float)$c['period_invoice_correction'] < -0.0001
+        && abs((float)$c['period_return']) <= 0.01
+        && abs((float)$c['credit_bjt']) <= 0.01
+        && abs((float)$penjualanNeto - (float)$c['period_invoice_correction']) <= 0.01
+    );
+    $isCurrentUnusedReturnOnly = (
+        (float)$c['period_return'] > 0.0001
+        && abs((float)$c['period_invoice_correction']) <= 0.01
+        && abs((float)$c['credit_bjt'] - (float)$c['period_return']) <= 0.01
+        && abs((float)($currentCpMcpReturnSource[$cid] ?? 0) - (float)$c['period_return']) <= 0.01
+        && abs((float)$c['period_return_offset'] - (float)$c['period_return']) <= 0.01
+        && abs((float)$penjualanNeto + (float)$c['period_return']) <= 0.01
+    );
+
+    if (
+        !$hasOpening
+        && !$hasMigrationBaseline
+        && !isset($bucketReclassMap[$cid])
+        && ($isCurrentCorrectionOnly || $isCurrentUnusedReturnOnly)
+        && abs((float)$saldoAwal) <= 0.01
+        && abs((float)$c['pre_invoice']) <= 0.01
+        && abs((float)$c['pre_invoice_correction']) <= 0.01
+        && abs((float)$c['pre_return']) <= 0.01
+        && abs((float)$c['period_invoice']) <= 0.01
+        && abs((float)$c['pre_cash']) <= 0.01
+        && abs((float)$c['pre_titip']) <= 0.01
+        && abs((float)$c['period_cash']) <= 0.01
+        && abs((float)$c['period_titip']) <= 0.01
+        && abs((float)$c['orphan_total']) <= 0.01
+        && abs((float)$c['unused_titip_end']) <= 0.01
+        && abs((float)$periodCash) <= 0.01
+        && abs((float)$periodTitip) <= 0.01
+        && abs((float)$b1) <= 0.01
+        && abs((float)$b2) <= 0.01
+        && abs((float)$b3) <= 0.01
+        && abs((float)$bBelumJatuhTempo) <= 0.01
+        && (float)$akhir < -0.0001
+        && abs((float)$bLebih - (float)$akhir) <= 0.01
+    ) {
+        $creditOnlySource = $isCurrentCorrectionOnly
+            ? (float)$c['period_invoice_correction']
+            : -(float)$c['credit_bjt'];
+        if (abs($creditOnlySource - (float)$akhir) <= 0.01) {
+            $bLebih -= $creditOnlySource;
+            $bBelumJatuhTempo += $creditOnlySource;
         }
     }
 
