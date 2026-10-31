@@ -92,6 +92,24 @@ function normalizeSqlDate($value) {
     throw new Exception('Format tanggal tidak valid: ' . $value);
 }
 
+function getOrderAllowAutoCorrect($conn, $order_no) {
+    $orderNoEsc = mysqli_real_escape_string($conn, $order_no);
+    $rs = mysqli_query($conn, "SELECT COALESCE(allow_auto_correct, 'Unchecked') AS flag FROM head_sales_order WHERE order_no = '$orderNoEsc' LIMIT 1");
+    $row = $rs ? mysqli_fetch_assoc($rs) : null;
+    return $row && strcasecmp(trim((string)$row['flag']), 'Checked') === 0;
+}
+function getInventoryUomFactor($conn, $inventoryId, $uom) {
+    $uom = strtoupper(trim((string)$uom));
+    if ($uom === 'KG') return 1.0;
+    if ($uom === '') throw new Exception('UoM Pack belum dipilih untuk inventory ' . $inventoryId);
+    $idEsc = mysqli_real_escape_string($conn, $inventoryId);
+    $uomEsc = mysqli_real_escape_string($conn, $uom);
+    $rs = mysqli_query($conn, "SELECT `Value` AS conversion_value FROM m_inventory_uom WHERE inventory_id='$idEsc' AND UPPER(TRIM(unit))='$uomEsc' LIMIT 1");
+    $row = $rs ? mysqli_fetch_assoc($rs) : null;
+    $factor = $row ? (float)$row['conversion_value'] : 0;
+    if ($factor <= 0) throw new Exception("Konversi UoM $uom untuk inventory $inventoryId tidak ditemukan.");
+    return $factor;
+}
 function getOrderTolerance($conn, $order_no) {
     $order_no_esc = mysqli_real_escape_string($conn, $order_no);
     $sql = "SELECT COALESCE(tolerance, 10.00) AS tolerance FROM head_sales_order WHERE order_no = '$order_no_esc' LIMIT 1";
@@ -200,6 +218,8 @@ $uom_detail_shippings = isset($_POST['uom_detail_shipping']) && is_array($_POST[
 $qty_detail_shippings = isset($_POST['qty_detail_shipping']) && is_array($_POST['qty_detail_shipping']) ? $_POST['qty_detail_shipping'] : [];
 $uom_detail_jsons = isset($_POST['uom_detail_shipping_json']) && is_array($_POST['uom_detail_shipping_json']) ? $_POST['uom_detail_shipping_json'] : [];
 $adjustment_shippings = isset($_POST['adjustment_shipping']) && is_array($_POST['adjustment_shipping']) ? $_POST['adjustment_shipping'] : [];
+$manual_pack_flags = isset($_POST['qty_pack_manual_override']) && is_array($_POST['qty_pack_manual_override']) ? $_POST['qty_pack_manual_override'] : [];
+$allowAutoCorrect = getOrderAllowAutoCorrect($conn, $order_no);
 $remarks_inventory_shippings = isset($_POST['remarks_inventory_shipping']) && is_array($_POST['remarks_inventory_shipping']) ? $_POST['remarks_inventory_shipping'] : [];
 
 // Validasi mandatory fields
@@ -247,6 +267,7 @@ for ($i = 0; $i < $total_items; $i++) {
     $qty_detail_shipping = isset($qty_detail_shippings[$i]) ? toDecimal($qty_detail_shippings[$i]) : 0;
     $uom_detail_json = isset($uom_detail_jsons[$i]) ? cleanInput($uom_detail_jsons[$i]) : '[]';
     $adjustment_shipping = isset($adjustment_shippings[$i]) ? toDecimal($adjustment_shippings[$i]) : 0;
+    $manualPackOverride = isset($manual_pack_flags[$i]) && (string)$manual_pack_flags[$i] === '1';
     $remarks_inventory_shipping = isset($remarks_inventory_shippings[$i]) ? cleanInput($remarks_inventory_shippings[$i]) : '';
 
     /*
@@ -316,6 +337,24 @@ for ($i = 0; $i < $total_items; $i++) {
     if (!empty($clean_uom_details)) {
         $uom_detail_shipping = $first_uom_detail;
         $qty_detail_shipping = $total_qty_detail;
+    }
+
+    // Auto Correct baru: Qty Pack manual prioritas; detail-first mengikuti konversi.
+    // Untuk shipping existing penanda default=1 agar edit tidak merusak angka lama.
+    if ($allowAutoCorrect && $manualPackOverride && $qty_pack_shipping > 0) {
+        $factor = getInventoryUomFactor($conn, $inventory_id, $uom_pack_shipping);
+        $qty_shipping = $qty_pack_shipping * $factor;
+        $uom_shipping = 'KG';
+    } elseif ($allowAutoCorrect && !$manualPackOverride && !empty($clean_uom_details)) {
+        $qtyDefault = 0;
+        foreach ($clean_uom_details as $ud) {
+            $detailFactor = getInventoryUomFactor($conn, $inventory_id, $ud['uom']);
+            $qtyDefault += $ud['qty'] * $detailFactor;
+        }
+        $packFactor = getInventoryUomFactor($conn, $inventory_id, $uom_pack_shipping);
+        $qty_shipping = $qtyDefault;
+        $qty_pack_shipping = $qtyDefault / $packFactor;
+        $uom_shipping = 'KG';
     }
 
     $items[] = [

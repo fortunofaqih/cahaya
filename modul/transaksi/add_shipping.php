@@ -878,6 +878,26 @@ function isServiceRow($row) {
     return !!($row && $row.length && String($row.attr('data-is-service')) === '1');
 }
 
+// Qty Pack yang diubah langsung oleh user menjadi acuan, terlepas dari urutan UoM Detail.
+function isManualQtyPackRow($row) {
+    return $row.find('.qty-pack-manual-override').val() === '1';
+}
+function syncQtyFromManualPack($row) {
+    if (!$row || !$row.length || isServiceRow($row)) return true;
+    var inventoryId = $.trim($row.find('.inv-id').val());
+    var uomPack = $.trim($row.find('.inv-uom-pack-select').val());
+    var qtyPack = parseFloat($row.find('.qty-pack-shipping').val());
+    if (!isFinite(qtyPack) || qtyPack <= 0) return false;
+    var factor = getUomConversionValue(inventoryId, uomPack);
+    if ((factor === null || factor <= 0) && uomPack.toUpperCase() === 'KG') factor = 1;
+    if (factor === null || factor <= 0) {
+        showNotification('Konversi UoM Pack ' + uomPack + ' tidak ditemukan untuk ' + inventoryId, 'error');
+        return false;
+    }
+    $row.find('.qty-shipping').val(formatDecimal(qtyPack * factor));
+    return true;
+}
+
 function applyShippingAutoCorrect($row) {
     if (!isShippingAutoCorrectEnabled() || !$row || !$row.length || isServiceRow($row)) {
         return true;
@@ -887,6 +907,11 @@ function applyShippingAutoCorrect($row) {
     var uomPack = $.trim($row.find('.inv-uom-pack-select').val());
     var detailJson = $row.find('.uom-detail-json').val();
     var details = parseUomDetailJson(detailJson);
+
+    // Prioritas input manual Qty Pack (diisi sebelum/atau setelah UoM Detail).
+    if (isManualQtyPackRow($row)) {
+        return syncQtyFromManualPack($row);
+    }
 
     if (!inventoryId || details.length === 0) {
         updateAutoCorrectRowState();
@@ -1001,6 +1026,7 @@ function buildRow(data) {
                 '<input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="">' +
                 '<input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="">' +
                 '<input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="">' +
+                '<input type="hidden" name="qty_pack_manual_override[]" class="qty-pack-manual-override" value="0">' +
             '</td>' +
             '<td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="' + escAttr(data.remarks || '') + '" placeholder="Catatan jasa..."></td>' +
             '<td style="text-align:center;"><button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button></td>' +
@@ -1036,6 +1062,7 @@ function buildRow(data) {
             '<input type="hidden" name="uom_detail_shipping[]" class="uom-detail-legacy-uom" value="">' +
             '<input type="hidden" name="qty_detail_shipping[]" class="qty-detail-legacy-qty" value="0">' +
             '<input type="hidden" name="uom_detail_shipping_json[]" class="uom-detail-json" value="' + escAttr(uomDetailJson) + '">' +
+            '<input type="hidden" name="qty_pack_manual_override[]" class="qty-pack-manual-override" value="0">' +
         '</td>' +
         '<td><input type="text" name="remarks_inventory_shipping[]" class="inv-remarks" value="' + escAttr(data.remarks || '') + '" placeholder="Catatan..."></td>' +
         '<td style="text-align:center;"><button type="button" class="btn-vs btn-danger" onclick="removeRow(this)"><i class="fa fa-trash"></i></button></td>' +
@@ -1093,15 +1120,15 @@ function updateAutoCorrectRowState() {
         var hasUomDetail =
             parseUomDetailJson($row.find('.uom-detail-json').val()).length > 0;
 
-        var autoCalculated =
-            isShippingAutoCorrectEnabled() && hasUomDetail;
-
-        $row.find('.qty-shipping, .qty-pack-shipping')
-            .prop('readonly', autoCalculated)
-            .css(
-                'background',
-                autoCalculated ? '#eaf4ff' : '#ffffff'
-            );
+        var autoCalculated = isShippingAutoCorrectEnabled() && hasUomDetail;
+        var manualPack = isManualQtyPackRow($row);
+        // Qty Pack selalu dapat diubah agar user bisa mengambil alih hasil auto correct.
+        $row.find('.qty-shipping')
+            .prop('readonly', autoCalculated || (manualPack && isShippingAutoCorrectEnabled()))
+            .css('background', (autoCalculated || (manualPack && isShippingAutoCorrectEnabled())) ? '#eaf4ff' : '#ffffff');
+        $row.find('.qty-pack-shipping')
+            .prop('readonly', false)
+            .css('background', manualPack ? '#fff9e6' : '#ffffff');
     });
 }
 
@@ -1411,16 +1438,30 @@ $(document).on('input change', '.qty-shipping', function() {
 $(document).on('input change', '.qty-pack-shipping', function() {
     var $row = $(this).closest('.detail-row');
 
-    if (isKgPackRow($row)) {
+    var newQtyPack = parseFloat($(this).val()) || 0;
+    $row.find('.qty-pack-manual-override').val(newQtyPack > 0 ? '1' : '0');
+    if (isShippingAutoCorrectEnabled() && newQtyPack > 0) {
+        syncQtyFromManualPack($row);
+    } else if (isKgPackRow($row)) {
         syncQtyKgPack($row, 'qty_pack');
     }
+    if (isShippingAutoCorrectEnabled() && newQtyPack <= 0 &&
+        parseUomDetailJson($row.find('.uom-detail-json').val()).length) {
+        applyShippingAutoCorrect($row);
+    }
+    updateAutoCorrectRowState();
 });
 
 $(document).on('change', '.inv-uom-pack-select', function() {
     var $row = $(this).closest('.detail-row');
 
     if (isShippingAutoCorrectEnabled()) {
-        applyShippingAutoCorrect($row);
+        if (isManualQtyPackRow($row)) {
+            syncQtyFromManualPack($row);
+        } else {
+            applyShippingAutoCorrect($row);
+        }
+        updateAutoCorrectRowState();
         return;
     }
 

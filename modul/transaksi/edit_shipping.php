@@ -26,7 +26,8 @@ $query_header = mysqli_query($conn, "
     SELECT 
         hs.*,
         mg.name AS gudang_name,
-        COALESCE(hso.tolerance, 10.00) AS order_tolerance
+        COALESCE(hso.tolerance, 10.00) AS order_tolerance,
+        COALESCE(hso.allow_auto_correct, 'Unchecked') AS order_allow_auto_correct
     FROM hed_shipping hs
     LEFT JOIN m_gudang mg ON hs.gudang_id = mg.gudang_id
     LEFT JOIN head_sales_order hso ON hso.order_no = hs.order_no
@@ -113,6 +114,7 @@ $order_rs = mysqli_query($conn, "
         h.customer_city,
         h.shipment_location,
         h.tolerance,
+        h.allow_auto_correct,
         h.status,
         h.approval_status
     FROM head_sales_order h
@@ -518,7 +520,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                         data-customer-address="<?= h($o['customer_address'] ?? '') ?>"
                                         data-customer-city="<?= h($o['customer_city'] ?? '') ?>"
                                         data-shipment-location="<?= h($o['shipment_location'] ?? '') ?>"
-                                        data-tolerance="<?= h($o['tolerance'] ?? '10.00') ?>">
+                                        data-tolerance="<?= h($o['tolerance'] ?? '10.00') ?>" data-allow-auto-correct="<?= h($o['allow_auto_correct'] ?? 'Unchecked') ?>">
                                     <?= h($o['order_no'] ?? '') ?> - <?= h($o['customer_name'] ?? '') ?>
                                 </option>
                             <?php endwhile; ?>
@@ -531,7 +533,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                     data-customer-address="<?= h($header['customer_address'] ?? '') ?>"
                                     data-customer-city="<?= h($header['customer_city'] ?? '') ?>"
                                     data-shipment-location="<?= h($header['shipment_location'] ?? '') ?>"
-                                    data-tolerance="<?= h($header['order_tolerance'] ?? '10.00') ?>">
+                                    data-tolerance="<?= h($header['order_tolerance'] ?? '10.00') ?>" data-allow-auto-correct="<?= h($header['order_allow_auto_correct'] ?? 'Unchecked') ?>">
                                 <?= h($header['order_no'] ?? '') ?> - <?= h($header['customer_name'] ?? '') ?> (Current)
                             </option>
                             <?php endif; ?>
@@ -647,6 +649,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
                                 <input type="text" name="inventory_id[]" class="inv-id" value="<?= h($detail['inventory_id'] ?? '') ?>" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">
                                 <input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="<?= h($detail['current_inventory_name'] ?? $detail['inventory_name'] ?? '') ?>">
                                 <input type="hidden" name="detail_id[]" value="<?= h($detail['id'] ?? '') ?>">
+                                <input type="hidden" name="qty_pack_manual_override[]" class="qty-pack-manual-override" value="1">
                             </td>
                             <td><input type="text" class="inv-name-display" value="<?= h($detail['current_inventory_name'] ?? $detail['inventory_name'] ?? '') ?>" readonly style="background:#f1f3f5;"></td>
                             <td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="<?= h(number_format((float)($detail['qty_shipping'] ?? 0), 4, '.', '')) ?>" style="text-align:right;"></td>
@@ -760,6 +763,7 @@ $date_modified_display = formatDateIndonesian($header['date_modified']);
 var inventoryUomData = {};
 var rowCounter = <?= count($details) ?>;
 var currentOrderNo = '<?= h($header['order_no'] ?? '') ?>';
+var selectedOrderAllowAutoCorrect = <?= strcasecmp(trim((string)($header['order_allow_auto_correct'] ?? 'Unchecked')), 'Checked') === 0 ? 'true' : 'false' ?>;
 
 // Ambil data UoM dari database via AJAX
 $.ajax({
@@ -858,6 +862,84 @@ function syncUomDetailLegacyFields($row, jsonValue) {
     $row.find('.qty-detail-legacy-qty').val(formatDecimal(totalQty));
 }
 
+
+// REV: Qty Pack manual memiliki prioritas atas UoM Detail saat Auto Correct aktif.
+// Baris existing dianggap manual agar nilai historis tidak berubah saat Edit dibuka.
+function isShippingAutoCorrectEnabled() { return selectedOrderAllowAutoCorrect === true; }
+function isManualQtyPackRow($row) {
+    return $row.find('.qty-pack-manual-override').val() === '1';
+}
+function getUomConversionValue(inventoryId, unit) {
+    if (!inventoryId || !unit || !inventoryUomData[inventoryId]) return null;
+    var target = String(unit).trim().toUpperCase();
+    var list = inventoryUomData[inventoryId];
+    for (var i = 0; i < list.length; i++) {
+        if (String(list[i].unit || '').trim().toUpperCase() !== target) continue;
+        var raw = list[i].value;
+        if (raw === undefined) raw = list[i].Value;
+        if (raw === undefined) raw = list[i].conversion_value;
+        var v = parseFloat(raw);
+        return isFinite(v) ? v : null;
+    }
+    return null;
+}
+function syncQtyFromManualPack($row) {
+    var qtyPack = parseFloat($row.find('.qty-pack-shipping').val()) || 0;
+    if (qtyPack <= 0) return true;
+    var invId = $.trim($row.find('.inv-id').val());
+    var uomPack = $.trim($row.find('.inv-uom-pack-select').val());
+    var factor = getUomConversionValue(invId, uomPack);
+    if ((factor === null || factor <= 0) && uomPack.toUpperCase() === 'KG') factor = 1;
+    if (factor === null || factor <= 0) {
+        showNotification('Konversi UoM Pack ' + uomPack + ' untuk ' + invId + ' tidak ditemukan.', 'error');
+        return false;
+    }
+    $row.find('.qty-shipping').val(formatDecimal(qtyPack * factor));
+    return true;
+}
+function applyShippingAutoCorrect($row) {
+    if (!isShippingAutoCorrectEnabled() || !$row || !$row.length) return true;
+    if (isManualQtyPackRow($row)) return syncQtyFromManualPack($row);
+    var invId = $.trim($row.find('.inv-id').val());
+    var details = parseUomDetailJson($row.find('.uom-detail-json').val());
+    if (!details.length) return true;
+    var qtyKg = 0;
+    for (var i = 0; i < details.length; i++) {
+        var unit = $.trim(details[i].uom || '');
+        var qty = parseFloat(details[i].qty) || 0;
+        if (!unit || qty <= 0) continue;
+        var factor = getUomConversionValue(invId, unit);
+        if ((factor === null || factor <= 0) && unit.toUpperCase() === 'KG') factor = 1;
+        if (factor === null || factor <= 0) {
+            showNotification('Konversi UoM Detail ' + unit + ' untuk ' + invId + ' tidak ditemukan.', 'error');
+            return false;
+        }
+        qtyKg += qty * factor;
+    }
+    if (qtyKg <= 0) return false;
+    var packUnit = $.trim($row.find('.inv-uom-pack-select').val());
+    var packFactor = getUomConversionValue(invId, packUnit);
+    if ((packFactor === null || packFactor <= 0) && packUnit.toUpperCase() === 'KG') packFactor = 1;
+    if (packFactor === null || packFactor <= 0) {
+        showNotification('Konversi UoM Pack ' + packUnit + ' untuk ' + invId + ' tidak ditemukan.', 'error');
+        return false;
+    }
+    $row.find('.qty-shipping').val(formatDecimal(qtyKg));
+    $row.find('.qty-pack-shipping').val(formatDecimal(qtyKg / packFactor));
+    return true;
+}
+function updateAutoCorrectRowState() {
+    // Qty Pack tetap editable; Qty dihitung otomatis bila detail tersedia atau Qty Pack manual.
+    $('#detailBody .detail-row').each(function() {
+        var $row = $(this);
+        var hasDetails = parseUomDetailJson($row.find('.uom-detail-json').val()).length > 0;
+        var automatic = isShippingAutoCorrectEnabled() && (hasDetails || isManualQtyPackRow($row));
+        $row.find('.qty-pack-shipping').prop('readonly', false).css('background', '#ffffff');
+        $row.find('.qty-shipping').prop('readonly', automatic)
+            .css('background', automatic ? '#eaf4ff' : '#ffffff');
+    });
+}
+
 function updateRowNumbers() {
     var rows = document.querySelectorAll('#detailBody .detail-row');
     rows.forEach(function(r, i) {
@@ -905,6 +987,7 @@ function buildRow(data) {
             '<input type="text" name="inventory_id[]" class="inv-id" value="' + escAttr(data.inventory_id || '') + '" readonly style="background:#f1f3f5; font-weight:bold; text-align:center;">' +
             '<input type="hidden" name="inventory_name[]" class="inv-name-hidden" value="' + escAttr(data.inventory_name || '') + '">' +
             '<input type="hidden" name="detail_id[]" value="new">' +
+            '<input type="hidden" name="qty_pack_manual_override[]" class="qty-pack-manual-override" value="0">' +
         '</td>' +
         '<td><input type="text" class="inv-name-display" value="' + escAttr(data.inventory_name || '') + '" readonly style="background:#f1f3f5;"></td>' +
         '<td><input type="number" step="0.0001" name="qty_shipping[]" class="qty-shipping" value="' + formatDecimal(data.qty || 0) + '" style="text-align:right;"></td>' +
@@ -926,6 +1009,7 @@ function addRow(data) {
     var $newRow = $(buildRow(data || {}));
     $('#detailBody').append($newRow);
     syncUomDetailLegacyFields($newRow, $newRow.find('.uom-detail-json').val());
+    updateAutoCorrectRowState();
     updateRowNumbers();
 }
 
@@ -1153,6 +1237,8 @@ function saveUomDetailModal() {
         .text(summary)
         .toggleClass('empty', details.length === 0);
 
+    if (isShippingAutoCorrectEnabled()) applyShippingAutoCorrect(activeUomDetailRow);
+    updateAutoCorrectRowState();
     closeUomDetailModal();
 }
 
@@ -1167,7 +1253,13 @@ $(document).on('input change', '.qty-shipping', function() {
 $(document).on('input change', '.qty-pack-shipping', function() {
     var $row = $(this).closest('.detail-row');
 
-    if (isKgPackRow($row)) {
+    var v = parseFloat($(this).val()) || 0;
+    $row.find('.qty-pack-manual-override').val(v > 0 ? '1' : '0');
+    if (isShippingAutoCorrectEnabled()) {
+        if (v > 0) syncQtyFromManualPack($row);
+        else applyShippingAutoCorrect($row);
+        updateAutoCorrectRowState();
+    } else if (isKgPackRow($row)) {
         syncQtyKgPack($row, 'qty_pack');
     }
 });
@@ -1175,6 +1267,11 @@ $(document).on('input change', '.qty-pack-shipping', function() {
 $(document).on('change', '.inv-uom-pack-select', function() {
     var $row = $(this).closest('.detail-row');
 
+    if (isShippingAutoCorrectEnabled()) {
+        applyShippingAutoCorrect($row);
+        updateAutoCorrectRowState();
+        return;
+    }
     if (!isKgPackRow($row)) {
         return;
     }
@@ -1303,6 +1400,8 @@ $(document).on('change', '#order_no', function() {
     $('#customer_address').val(opt.getAttribute('data-customer-address') || '');
     $('#customer_city').val(opt.getAttribute('data-customer-city') || '');
     $('#shipment_location').val(opt.getAttribute('data-shipment-location') || '');
+    selectedOrderAllowAutoCorrect = String(opt.getAttribute('data-allow-auto-correct') || '').trim().toLowerCase() === 'checked';
+    updateAutoCorrectRowState();
 });
 
 $(document).ready(function() {
@@ -1329,6 +1428,7 @@ $(document).ready(function() {
     });
 
     initExistingRows();
+    updateAutoCorrectRowState();
     updateRowNumbers();
 
     $('#selectAll').on('change', function() {
@@ -1390,6 +1490,13 @@ $(document).ready(function() {
             return false;
         }
 
+        if (isShippingAutoCorrectEnabled()) {
+            var calcValid = true;
+            $('#detailBody .detail-row').each(function() {
+                if (!applyShippingAutoCorrect($(this))) { calcValid = false; return false; }
+            });
+            if (!calcValid) { e.preventDefault(); alert('Gagal Update: konversi UoM tidak valid.'); return false; }
+        }
         if (!validateToleranceBeforeSubmit()) {
             e.preventDefault();
             return false;
