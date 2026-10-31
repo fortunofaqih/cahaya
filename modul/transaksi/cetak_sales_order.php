@@ -732,6 +732,7 @@ if (
         || strpos($inventory_name, 'PE ROLL STOKAN SSB') !== false
         || strpos($inventory_name, 'PE ROLL SSB') !== false
         || strpos($inventory_name, 'PP CAHAYA BOLA') !== false
+        || strpos($inventory_name, 'PE ROLL BOLA') !== false
     )
     && $price_unit_raw > 0
     && $price_raw > 0
