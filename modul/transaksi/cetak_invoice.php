@@ -3,6 +3,7 @@
 // REVISI: Semua konten dinaikkan 1mm ke atas agar Total tercetak sempurna
 // REVISI: Harga menggunakan price_unit (prioritas utama) atau price (prioritas kedua)
 //         Subtotal TETAP menggunakan rumus EXISTING (tidak diubah)
+// REVISI: Print bersih - title/header/footer/page browser TIDAK ikut tercetak
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -154,8 +155,6 @@ mysqli_stmt_close($stmtDet);
 $maxRowSlots = 10; // 10 baris fisik x 5mm per baris di nota
 
 // REVISI: Konstanta OFFSET untuk menaikkan semua konten 1mm ke atas
-// Untuk menaikkan konten, gunakan nilai NEGATIF (-1)
-// Untuk menurunkan konten, gunakan nilai POSITIF (+1)
 $verticalOffset = -1; // semua konten dinaikkan 1mm
 ?>
 <!DOCTYPE html>
@@ -230,11 +229,6 @@ $verticalOffset = -1; // semua konten dinaikkan 1mm
             line-height: 5mm;
         }
 
-        /* ===== BARU: kolom Harga Satuan & Jumlah, 0,5cm di kanan name-col.
-           Lebar masih ESTIMASI (belum ada ukuran cm pasti dari foto nota untuk
-           kolom ini) -> silakan koreksi setelah test print.
-           Qty/Nama Barang TIDAK dicetak ulang di sini karena kertas fisik ini
-           sudah dicetak sebelumnya oleh proses shipping. ===== */
         .price-col {
             left: 135mm; /* digeser 1cm ke kiri dari 145mm */
             width: 30mm;
@@ -278,45 +272,57 @@ $verticalOffset = -1; // semua konten dinaikkan 1mm
             margin: 5mm 6mm 5mm 6mm;
         }
 
-        @media print {
-            @page {
-                size: 21.5cm 33cm portrait;
-                margin: 0;
-            }
+       @media print {
+    @page {
+        size: 21.5cm 33cm portrait;
+        margin: 0;
+    }
 
-            html, body {
-                margin: 0 !important;
-                padding: 0 !important;
-                background: #fff !important;
-            }
+    html, body {
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+        width: 215mm !important;
+        /* JANGAN paksa height 330mm - biarkan auto agar tidak overflow */
+        height: auto !important;
+        overflow: hidden !important;
+    }
 
-            body * {
-                visibility: hidden !important;
-            }
+    body * {
+        visibility: hidden !important;
+    }
 
-            .page, .page * {
-                visibility: visible !important;
-            }
+    .page, .page * {
+        visibility: visible !important;
+    }
 
-            .no-print {
-                display: none !important;
-                visibility: hidden !important;
-            }
+    .no-print {
+        display: none !important;
+        visibility: hidden !important;
+    }
 
-            .page {
-                position: relative !important;
-                margin: 0 !important;
-                width: 215mm !important;
-                height: 330mm !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                page-break-after: always;
-            }
+    .page {
+        position: relative !important;
+        top: 0 !important;
+        left: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 215mm !important;
+        /* Kurangi 1mm sebagai safety margin agar tidak overflow ke halaman baru */
+        height: 329mm !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        border: 0 !important;
+        page-break-inside: avoid;
+        /* HAPUS page-break-after: always dari sini */
+    }
 
-            .page:last-of-type {
-                page-break-after: auto;
-            }
-        }
+    /* Hanya beri page-break SEBELUM halaman ke-2 dan seterusnya */
+    .page + .page {
+        page-break-before: always;
+        break-before: page;
+    }
+}
     </style>
 </head>
 <body>
@@ -324,7 +330,6 @@ $verticalOffset = -1; // semua konten dinaikkan 1mm
 <div class="no-print">
     <a class="btn btn-secondary" href="../../index.php?page=invoice">Kembali</a>
     <button class="btn btn-success" onclick="window.print()">Cetak / Print</button>
-
 </div>
 
 <?php foreach ($shippingList as $ship):
@@ -332,8 +337,7 @@ $verticalOffset = -1; // semua konten dinaikkan 1mm
 ?>
 <div class="page">
     <?php
-    // REVISI: Semua nilai top dikurangi 1mm (offset -1)
-    $startTop = 82 + $verticalOffset; // 82 - 1 = 81mm
+    $startTop = 82 + $verticalOffset;
     $rowHeight = 5.0;
     $currentTop = $startTop;
     $usedSlots = 0;
@@ -362,8 +366,7 @@ $verticalOffset = -1; // semua konten dinaikkan 1mm
         $usedSlots += 1;
     endforeach;
 
-    // REVISI: Total tetap menggunakan $currentTop + 1 (sesuai keinginan user)
-    $totalTop = $currentTop + 1; // tetap +1
+    $totalTop = $currentTop + 1;
     $totalInvoiceText = 'Rp ' . fmtMoney($totalInvoice);
     $totalInvoiceFontSize = fitFontSize($totalInvoiceText, 30, 10, 6);
     ?>
