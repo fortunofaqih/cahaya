@@ -604,6 +604,38 @@ function getShippingPaymentData(
 }
 
 
+function getCorrectionPaymentData(mysqli $conn, int $correctionId, string $customerId): array {
+    $stmt = mysqli_prepare($conn, "
+        SELECT correction_id, correction_no, correction_date, customer_id,
+               correction_amount, category
+        FROM invoice_correction
+        WHERE correction_id=? AND customer_id=?
+          AND LOWER(COALESCE(status,'Active'))='active'
+          AND correction_date >= '2026-08-01'
+          AND correction_amount < 0
+        LIMIT 1 FOR UPDATE
+    ");
+    mysqli_stmt_bind_param($stmt, 'is', $correctionId, $customerId);
+    mysqli_stmt_execute($stmt);
+    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+    if (!$row) throw new Exception('Koreksi Invoice tidak ditemukan, bukan milik customer, cancelled, atau melewati cutoff.');
+    $stmt = mysqli_prepare($conn, "
+        SELECT COALESCE(SUM(ABS(bayar_amount)),0) AS used_amount
+        FROM detail_bayar
+        WHERE payment_source='CORRECTION' AND correction_id=?
+    ");
+    mysqli_stmt_bind_param($stmt, 'i', $correctionId);
+    mysqli_stmt_execute($stmt);
+    $used = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+    $row['available_amount'] = roundPaymentMoney(max(
+        roundPaymentMoney(abs((float)$row['correction_amount'])) -
+        (float)($used['used_amount'] ?? 0), 0
+    ));
+    return $row;
+}
+
 function getOpeningPaymentData(
     mysqli $conn,
     int $openingId,
@@ -1149,12 +1181,25 @@ foreach (
         )
     );
 
-    if (!in_array($source, ['INVOICE', 'OPENING'], true)) {
+    if (!in_array($source, ['INVOICE', 'OPENING', 'CORRECTION'], true)) {
         redirectWithAlert(
             'error',
             'Sumber pembayaran tidak valid.',
             'add_bayar'
         );
+    }
+
+    if ($source === 'CORRECTION') {
+        $correctionId = (int)($item['correction_id'] ?? 0);
+        if ($correctionId <= 0) redirectWithAlert('error','ID Koreksi Invoice tidak valid.','add_bayar');
+        $key = 'CORRECTION|' . $correctionId;
+        if (isset($selectedPosted[$key])) redirectWithAlert('error','Koreksi Invoice dipilih ganda.','add_bayar');
+        $selectedPosted[$key] = [
+            'source'=>'CORRECTION',
+            'correction_id'=>$correctionId,
+            'pay_now'=>roundPaymentMoney(parseNumber($item['pay_now'] ?? 0))
+        ];
+        continue;
     }
 
     if ($source === 'OPENING') {
@@ -1346,6 +1391,27 @@ try {
         $selectedPosted
         as $posted
     ) {
+        if (($posted['source'] ?? 'INVOICE') === 'CORRECTION') {
+            $correction = getCorrectionPaymentData($conn, (int)$posted['correction_id'], $customerId);
+            $available = (float)$correction['available_amount'];
+            $payNow = roundPaymentMoney((float)$posted['pay_now']);
+            if ($available <= 0.01 || $payNow >= -0.01 || abs($payNow) > $available + 0.01) {
+                throw new Exception('Pemakaian koreksi '.$correction['correction_no'].' harus minus, tidak nol, dan tidak melebihi sisa Rp '.number_format($available,2,',','.'));
+            }
+            $selectedTotal -= $available;
+            $requestedPaymentTotal += $payNow;
+            $absoluteRequestedPaymentTotal += abs($payNow);
+            $validItems[] = [
+                'source'=>'CORRECTION', 'correction_id'=>(int)$correction['correction_id'],
+                'correction_no'=>(string)$correction['correction_no'],
+                'opening_id'=>null, 'opening_sign'=>-1, 'invoice_no'=>'',
+                'invoice_date'=>(string)$correction['correction_date'],
+                'shipping_no'=>'', 'shipping_date'=>'',
+                'shipping_amount'=>roundPaymentMoney(abs((float)$correction['correction_amount'])),
+                'sisa_before'=>$available, 'pay_now'=>$payNow
+            ];
+            continue;
+        }
         if (($posted['source'] ?? 'INVOICE') === 'OPENING') {
             $opening = getOpeningPaymentData(
                 $conn,
@@ -1520,6 +1586,7 @@ try {
     |--------------------------------------------------------------------------
     */
     $hasNegativeOpening = false;
+    $hasNegativeCorrection = false;
     $hasPositiveDebtItem = false;
 
     foreach ($validItems as $validItem) {
@@ -1528,6 +1595,8 @@ try {
             (int)($validItem['opening_sign'] ?? 1) < 0
         ) {
             $hasNegativeOpening = true;
+        } elseif (($validItem['source'] ?? '') === 'CORRECTION') {
+            $hasNegativeCorrection = true;
         } else {
             $hasPositiveDebtItem = true;
         }
@@ -1547,8 +1616,9 @@ try {
      *
      * Rule netting lama tetap berlaku bila kredit digabung dengan item positif.
      */
+    $hasAnyNegativeCredit = $hasNegativeOpening || $hasNegativeCorrection;
     $isNegativeOpeningStandalone =
-        $hasNegativeOpening &&
+        $hasAnyNegativeCredit &&
         !$hasPositiveDebtItem;
 
     /*
@@ -1557,7 +1627,7 @@ try {
      * negatif saling menutup, tetapi user tetap benar-benar mengisi settlement.
      */
     $isOpeningCreditNetting =
-        $hasNegativeOpening &&
+        $hasAnyNegativeCredit &&
         $hasPositiveDebtItem &&
         $absoluteRequestedPaymentTotal > 0.01;
 
@@ -1658,7 +1728,7 @@ try {
     | Retur tidak menurunkan batas Bayar Sekarang; retur hanya menurunkan
     | kebutuhan Cash/Transfer + Titip.
     */
-    if ($requestedPaymentTotal > $selectedTotal + 0.01) {
+    if ($selectedTotal > 0 && $requestedPaymentTotal > $selectedTotal + 0.01) {
         throw new Exception(
             'Total Bayar Sekarang tidak boleh melebihi total sisa tagihan terpilih. ' .
             'Total tagihan: Rp ' . number_format($selectedTotal, 2, ',', '.') .
@@ -1851,8 +1921,9 @@ try {
     if (!$isNegativeOpeningStandalone) {
         foreach ($validItems as $creditItem) {
             if (
-                ($creditItem['source'] ?? 'INVOICE') === 'OPENING' &&
-                (int)($creditItem['opening_sign'] ?? 1) < 0
+                (($creditItem['source'] ?? 'INVOICE') === 'OPENING' &&
+                 (int)($creditItem['opening_sign'] ?? 1) < 0) ||
+                ($creditItem['source'] ?? '') === 'CORRECTION'
             ) {
                 $remainingOpeningCreditForPayment +=
                     abs(roundPaymentMoney((float)($creditItem['pay_now'] ?? 0)));
@@ -1911,6 +1982,33 @@ try {
         $validItems
         as $item
     ) {
+        if (($item['source'] ?? '') === 'CORRECTION') {
+            $amount = roundPaymentMoney((float)$item['pay_now']);
+            $remaining = roundPaymentMoney(max((float)$item['sisa_before'] - abs($amount),0));
+            $zero = 0.0;
+            $blank = '';
+            $nullId = null;
+            $correctionId = (int)$item['correction_id'];
+            $correctionSource = 'CORRECTION';
+            $correctionRemarks = trim('Koreksi Invoice '.$item['correction_no'].' | '.$remarks);
+            $correctionDate = $item['invoice_date'];
+            $faceAmount = (float)$item['shipping_amount'];
+            $stmtCorrection = mysqli_prepare($conn, "
+                INSERT INTO detail_bayar
+                (bayar_no,invoice_no,shipping_no,opening_id,payment_source,
+                 opening_effect_piutang,return_id,invoice_date,invoice_amount,
+                 cash_amount,titip_amount,bayar_amount,sisa_after,remarks,
+                 create_user,date_created,correction_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)
+            ");
+            mysqli_stmt_bind_param($stmtCorrection,'sssisissdddddssi',
+                $bayarNo,$blank,$blank,$nullId,$correctionSource,$nullId,
+                $blank,$correctionDate,$faceAmount,$zero,$zero,$amount,$remaining,
+                $correctionRemarks,$username,$correctionId);
+            mysqli_stmt_execute($stmtCorrection);
+            mysqli_stmt_close($stmtCorrection);
+            continue;
+        }
         $sisaBefore =
             roundPaymentMoney(
                 (float)$item[

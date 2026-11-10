@@ -460,6 +460,30 @@ while ($row = mysqli_fetch_assoc($resOpening)) {
     $openingBalances[] = $row;
 }
 
+/* KOREKSI INVOICE: kredit standalone, parsial, dan tidak boleh dipakai ganda. */
+$corrections = [];
+$sqlCorrections = "
+    SELECT ic.correction_id, ic.correction_no, ic.correction_date,
+           ic.customer_id, ic.category, ic.invoice_no, ic.shipping_no,
+           ic.correction_amount,
+           COALESCE(used.used_amount,0) AS used_amount,
+           GREATEST(ROUND(ABS(ic.correction_amount),0) - COALESCE(used.used_amount,0),0) AS available_amount
+    FROM invoice_correction ic
+    LEFT JOIN (
+        SELECT correction_id, SUM(ABS(bayar_amount)) AS used_amount
+        FROM detail_bayar
+        WHERE payment_source='CORRECTION' AND correction_id IS NOT NULL
+        GROUP BY correction_id
+    ) used ON used.correction_id = ic.correction_id
+    WHERE LOWER(COALESCE(ic.status,'Active'))='active'
+      AND ic.correction_date >= '2026-08-01'
+      AND ic.correction_amount < 0
+    HAVING available_amount > 0.01
+    ORDER BY ic.correction_date ASC, ic.correction_id ASC
+";
+$resCorrections = mysqli_query($conn, $sqlCorrections);
+while ($c = mysqli_fetch_assoc($resCorrections)) { $corrections[] = $c; }
+
 /*
  * Daftar Retur aktif per customer - SUPPORT MULTI + PARSIAL.
  *
@@ -750,6 +774,26 @@ foreach ($returnsByCustomer as $cid => $returnRows) {
     ];
 }
 
+/* Customer yang hanya mempunyai Koreksi Invoice tetap dapat dipilih. */
+foreach ($corrections as $correction) {
+    $cid = trim((string)$correction['customer_id']);
+    if ($cid === '' || isset($paymentCustomers[$cid])) continue;
+    mysqli_stmt_bind_param($stmtMasterCustomer, 's', $cid);
+    mysqli_stmt_execute($stmtMasterCustomer);
+    $master = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtMasterCustomer));
+    if (!$master) continue;
+    mysqli_stmt_bind_param($stmtSaldoTitipCustomer, 's', $cid);
+    mysqli_stmt_execute($stmtSaldoTitipCustomer);
+    $titip = mysqli_fetch_assoc(mysqli_stmt_get_result($stmtSaldoTitipCustomer));
+    $paymentCustomers[$cid] = [
+        'customer_id' => $cid,
+        'customer_name' => (string)($master['customer'] ?? ''),
+        'customer_address' => (string)($master['address'] ?? ''),
+        'customer_city' => (string)($master['city'] ?? ''),
+        'saldo_titip' => (float)($titip['saldo_titip'] ?? 0)
+    ];
+}
+
 if ($stmtMasterCustomer) {
     mysqli_stmt_close(
         $stmtMasterCustomer
@@ -1020,6 +1064,34 @@ uasort($paymentCustomers, function ($a, $b) {
                             </td>
                         </tr>
                     <?php endforeach; ?>
+                    <?php $correctionIndexBase = count($shippings) + count($openingBalances); ?>
+                    <?php foreach ($corrections as $k => $correction): ?>
+                        <?php $itemIndex = $correctionIndexBase + $k; ?>
+                        <tr class="invoice-row correction-row"
+                            data-customer-id="<?= h($correction['customer_id']) ?>"
+                            data-sisa="<?= h($correction['available_amount']) ?>"
+                            style="display:none;">
+                            <td class="text-center">
+                                <input type="checkbox" class="row-checkbox js-select-invoice"
+                                    name="items[<?= $itemIndex ?>][selected]" value="1">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][source]" value="CORRECTION">
+                                <input type="hidden" name="items[<?= $itemIndex ?>][correction_id]" value="<?= (int)$correction['correction_id'] ?>">
+                            </td>
+                            <td><strong>KOREKSI (-)</strong></td>
+                            <td><?= h($correction['correction_no']) ?></td>
+                            <td><?= h(formatDateDisplay($correction['correction_date'])) ?></td>
+                            <td><?= h($correction['shipping_no'] ?: '-') ?></td>
+                            <td>-</td>
+                            <td class="money">- Rp <?= h(formatMoney(abs((float)$correction['correction_amount']))) ?></td>
+                            <td class="money">Rp <?= h(formatMoney($correction['used_amount'])) ?></td>
+                            <td class="money">- Rp <?= h(formatMoney($correction['available_amount'])) ?></td>
+                            <td class="money">
+                                <input type="text" class="pay-now-input js-pay-now"
+                                    name="items[<?= $itemIndex ?>][pay_now]"
+                                    value="0,00" autocomplete="off" disabled>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
@@ -1246,7 +1318,9 @@ function getSelectedOpeningDirection() {
             $(this).find('input[name$="[source]"]').val() || 'INVOICE'
         ).toUpperCase();
 
-        if (source === 'OPENING') {
+        if (source === 'CORRECTION') {
+            hasNegativeOpening = true;
+        } else if (source === 'OPENING') {
             const sign = parseInt(
                 $(this).find('input[name$="[opening_sign]"]').val() || '1',
                 10
@@ -1304,7 +1378,7 @@ function getSelectedTotal() {
             : 1;
 
         const isNegativeOpening =
-            source === 'OPENING' && openingSign < 0;
+            (source === 'OPENING' && openingSign < 0) || source === 'CORRECTION';
 
         /*
          * PENTING:
@@ -1472,7 +1546,7 @@ function checkNominal() {
         return;
     }
 
-    if (payNowTotal > selectedTotal + 0.01) {
+    if (selectedTotal > 0 && payNowTotal > selectedTotal + 0.01) {
         warning
             .addClass('warning-danger')
             .html(
@@ -1641,7 +1715,7 @@ $(document).ready(function () {
         } else if (customerId) {
             $('#noInvoiceMessage')
                 .text(
-                    'Tidak ada invoice/shipping atau saldo awal yang masih outstanding. Jika customer memiliki Retur aktif, pilih pada bagian Retur Customer.'
+                    'Tidak ada piutang, saldo awal, atau koreksi yang tersedia. Jika ada Retur aktif, pilih pada bagian Retur Customer.'
                 )
                 .show();
         } else {
@@ -1681,7 +1755,7 @@ $(document).ready(function () {
 
             const sisa = parseFloat(row.data('sisa')) || 0;
             const initialPayNow =
-                source === 'OPENING' && openingSign < 0
+                ((source === 'OPENING' && openingSign < 0) || source === 'CORRECTION')
                     ? -sisa
                     : sisa;
 
@@ -1720,7 +1794,7 @@ $(document).ready(function () {
             : 1;
 
         const isNegativeOpening =
-            source === 'OPENING' && openingSign < 0;
+            (source === 'OPENING' && openingSign < 0) || source === 'CORRECTION';
 
         if (isNegativeOpening) {
             /*
@@ -1837,7 +1911,7 @@ $(document).ready(function () {
         }
 
         if (selected.count < 1 && selectedReturnId === '') {
-            alert('Minimal centang 1 piutang (Invoice/Shipping atau Saldo Awal) atau pilih 1 Retur Customer.');
+            alert('Minimal pilih Invoice/Shipping, Saldo Awal, Koreksi Invoice, atau Retur Customer.');
             e.preventDefault();
             return false;
         }
@@ -1848,7 +1922,7 @@ $(document).ready(function () {
             return false;
         }
 
-        if (selected.payNowTotal > selected.total + 0.01) {
+        if (selected.total > 0 && selected.payNowTotal > selected.total + 0.01) {
             alert(
                 'Total Bayar Sekarang tidak boleh melebihi sisa tagihan terpilih. Maksimal: Rp ' +
                 formatRupiah(selected.total)
@@ -1962,7 +2036,7 @@ $(document).on('input', '.js-pay-now', function () {
         : 1;
 
     const isNegativeOpening =
-        source === 'OPENING' && openingSign < 0;
+        (source === 'OPENING' && openingSign < 0) || source === 'CORRECTION';
 
     let raw = String($(this).val() || '');
     let digits = raw.replace(/\D/g, '');

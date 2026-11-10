@@ -1627,6 +1627,11 @@ pay_base AS (
         */
         0 AS is_legacy_target,
         CASE
+            /* Koreksi Invoice adalah pembayaran kredit signed negatif.
+             * Nominal berasal dari detail_bayar, bukan dari cash/titip fisik. */
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'CORRECTION'
+            THEN -1 * ABS(COALESCE(db.bayar_amount, 0))
+
             /*
              * RETURN adalah pembayaran signed negatif.
              * Data baru memakai bayar_amount negatif; data legacy 0 fallback
@@ -1701,7 +1706,8 @@ pay_base AS (
         END AS cash_raw,
 
         CASE
-            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
+            WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'CORRECTION'
+              OR UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'RETURN'
               OR UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) = 'OPENING'
               OR COALESCE(db.opening_id, 0) > 0
               OR (
@@ -1724,6 +1730,7 @@ pay_base AS (
 
         CASE
             WHEN UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) <> 'RETURN'
+             AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) <> 'CORRECTION'
              AND UPPER(COALESCE(NULLIF(TRIM(db.payment_source), ''), 'INVOICE')) <> 'OPENING'
              AND COALESCE(db.opening_id,0) = 0
              AND (COALESCE(db.invoice_no, '') = '' OR hi.invoice_no IS NULL)
